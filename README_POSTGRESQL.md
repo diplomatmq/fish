@@ -54,7 +54,7 @@ DB_PORT=5432
 DB_NAME=fishbot
 DB_USER=postgres
 DB_PASSWORD=password
-BOT_TOKEN=7371447792:AAFsHgac_D_8VKoMHqRrzxXjUKO10_f7tOw
+BOT_TOKEN=?
 ```
 
 ## 🔧 Установка зависимостей
