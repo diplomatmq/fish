@@ -1,4 +1,5 @@
 FROM python:3.11-slim
+# CACHEBUST: 2026-02-13T01:23:45
 WORKDIR /app
 
 # Install system deps for Pillow and others if needed (small set)
