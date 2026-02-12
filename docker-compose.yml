@@ -1,4 +1,16 @@
 version: '3.8'
+services:
+  app:
+    build: .
+    volumes:
+      - fishdata:/data
+    environment:
+      - FISHBOT_DB_PATH=/data/fishbot.db
+    ports:
+      - "8000:8000"
+volumes:
+  fishdata:
+version: '3.8'
 
 services:
   postgres:

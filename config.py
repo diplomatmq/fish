@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 # Токен бота Telegram
 BOT_TOKEN = os.getenv('BOT_TOKEN')  # set via environment variable or CI secrets
 
-# Путь к базе данных SQLite
-DB_PATH = Path(__file__).parent / 'fishbot.db'
+# Путь к базе данных SQLite — можно переопределить через окружение FISHBOT_DB_PATH
+DB_PATH = Path(os.getenv('FISHBOT_DB_PATH', Path(__file__).parent / 'fishbot.db'))
 
 # Названия валют
 COIN_NAME = "монеты"
