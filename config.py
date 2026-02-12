@@ -3,6 +3,14 @@ import os
 from pathlib import Path
 from datetime import datetime, timedelta
 
+# Load .env file (if present) so os.getenv() can read values from it during dev
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    # python-dotenv not installed — it's optional in production where env vars are set
+    pass
+
 # Токен бота Telegram
 BOT_TOKEN = os.getenv('BOT_TOKEN')  # set via environment variable or CI secrets
 

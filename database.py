@@ -51,10 +51,36 @@ class Database:
         self.init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(DB_PATH, timeout=10)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=5000")
+        # Ensure DB_PATH is a string for sqlite
+        path = str(DB_PATH)
+        conn = sqlite3.connect(path, timeout=10)
+
+        # Try to set WAL journal mode; if filesystem doesn't support WAL
+        # (some network or managed volumes), fall back to DELETE mode.
+        try:
+            cur = conn.execute("PRAGMA journal_mode=WAL")
+            # Some SQLite builds return a row, some return nothing; ignore result
+            try:
+                _ = cur.fetchone()
+            except Exception:
+                pass
+        except Exception:
+            try:
+                conn.execute("PRAGMA journal_mode=DELETE")
+            except Exception:
+                # If even that fails, continue — connection may still work
+                pass
+
+        # Set other pragmas, ignore failures to avoid crashing on unsupported FS
+        try:
+            conn.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            pass
+        try:
+            conn.execute("PRAGMA busy_timeout=5000")
+        except Exception:
+            pass
+
         return conn
 
     def _get_temp_rod_uses(self, rod_name: str) -> Optional[int]:
