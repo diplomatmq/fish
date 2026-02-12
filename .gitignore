@@ -1,0 +1,30 @@
+.venv/
+.venv\
+__pycache__/
+*.pyc
+.env
+.env.*
+*.sqlite3
+.DS_Store
+.vscode/
+.idea/
+
+# Do NOT ignore the main SQLite DB if you want it in repository
+# fishbot.db
+
+# Ignore virtual env scripts folder on Windows
+*.egg-info/
+build/
+dist/
+
+# SQLite temporary/journal files
+fishbot.db-shm
+fishbot.db-wal
+
+# local backups
+backups/
+
+# large installers (ignored during cleanups)
+TunnelBear-Installer.exe
+*.exe
+fishbot.db 
