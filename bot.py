@@ -3884,6 +3884,7 @@ class FishBot:
                 title=f"Закинуть сейчас",
                 description=description,
                 payload=invoice_payload,
+                provider_token="",  # Пусто для Telegram Stars
                 currency='XTR',
                 prices=prices
             )
