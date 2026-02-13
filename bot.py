@@ -4173,9 +4173,55 @@ def main():
 
         await update.message.reply_text("\n\n".join(lines))
 
+    async def dbstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        owner_id = 793216884
+        if getattr(update.effective_user, 'id', None) != owner_id:
+            await update.message.reply_text("Нет доступа.")
+            return
+
+        out_lines = []
+        try:
+            import sqlite3
+            path = os.environ.get('FISHBOT_DB_PATH', DB_PATH)
+            conn = sqlite3.connect(path)
+            cur = conn.cursor()
+            # Basic counts
+            for q, label in [
+                ("SELECT COUNT(*) FROM players", "Players"),
+                ("SELECT COUNT(*) FROM chat_configs", "Chat configs"),
+                ("SELECT COUNT(*) FROM caught_fish", "Caught fish"),
+                ("SELECT COUNT(*) FROM star_transactions", "Star transactions"),
+            ]:
+                try:
+                    cur.execute(q)
+                    val = cur.fetchone()[0]
+                except Exception:
+                    val = 'n/a'
+                out_lines.append(f"{label}: {val}")
+
+            # Top players by coins
+            out_lines.append("\nTop players by coins:")
+            try:
+                cur.execute("SELECT user_id, username, coins, stars FROM players ORDER BY coins DESC LIMIT 5")
+                rows = cur.fetchall()
+                if rows:
+                    for r in rows:
+                        out_lines.append(f"{r[1]} ({r[0]}): coins={r[2]} stars={r[3]}")
+                else:
+                    out_lines.append("(none)")
+            except Exception as e:
+                out_lines.append("Top query failed: " + str(e))
+
+            conn.close()
+        except Exception as e:
+            out_lines.append("DB error: " + str(e))
+
+        await update.message.reply_text("\n".join(out_lines))
+
     # Добавление обработчиков
     application.add_handler(CommandHandler("dbinfo", dbinfo_command))
     application.add_handler(CommandHandler("start", bot_instance.start))
+    application.add_handler(CommandHandler("dbstats", lambda u, c: dbstats_command(u, c)))
     application.add_handler(CommandHandler("fish", bot_instance.fish_command))
     application.add_handler(CommandHandler("menu", bot_instance.menu_command))
     application.add_handler(CommandHandler("shop", bot_instance.handle_shop))
