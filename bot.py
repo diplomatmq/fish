@@ -1837,7 +1837,7 @@ class FishBot:
                 player_net = db.get_player_net(user_id, net_name, chat_id)
                 message += f"📦 Использований: {player_net['uses_left']}"
         else:
-            player = db.get_player(user_id, payment_chat_id)
+            player = db.get_player(user_id, chat_id)
             net = db.get_net(net_name)
             if not net:
                 message = "❌ Сеть не найдена!"
