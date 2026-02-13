@@ -4271,55 +4271,107 @@ def main():
             await update.message.reply_text("Эту команду можно запускать только в личных сообщениях боту.")
             return
 
+        # Aggregate star totals from `star_transactions` for all time, grouped by chat_id.
         try:
-            chats = db.get_all_chat_stars()
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = None
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT chat_id, COALESCE(chat_title, '') as chat_title, SUM(total_amount) as total
+                FROM star_transactions
+                WHERE chat_id IS NOT NULL
+                GROUP BY chat_id
+                ORDER BY total DESC
+            """)
+            rows = cur.fetchall()
+            conn.close()
         except Exception as e:
-            logger.exception("chatstar: DB error: %s", e)
+            logger.exception("chatstar: DB error reading star_transactions: %s", e)
             await update.message.reply_text("Ошибка доступа к БД.")
             return
 
-        if not chats:
+        if not rows:
             await update.message.reply_text("Нет данных по чатам.")
             return
 
-        total = sum(int(c.get('stars_total', 0)) for c in chats)
-        lines = [f"Всего звёзд: {total}", ""]
-        for c in chats:
-            title = c.get('chat_title') or ''
-            if not title:
-                # try fetching title from Telegram and update DB
-                try:
-                    chat_id = c.get('chat_id')
-                    if chat_id:
-                        # use context.bot (bound to this handler) to query chat info
-                        chat_obj = await context.bot.get_chat(chat_id)
-                        # prefer group/channel title, then username, then personal name
-                        fetched_title = None
-                        if getattr(chat_obj, 'title', None):
-                            fetched_title = chat_obj.title
-                        elif getattr(chat_obj, 'username', None):
-                            fetched_title = f"@{chat_obj.username}"
-                        else:
-                            parts = []
-                            if getattr(chat_obj, 'first_name', None):
-                                parts.append(chat_obj.first_name)
-                            if getattr(chat_obj, 'last_name', None):
-                                parts.append(chat_obj.last_name)
-                            if parts:
-                                fetched_title = ' '.join(parts)
+        lines = []
+        total = 0
+        # For each chat_id, resolve title (prefer stored title), include only non-private chats
+        for chat_id, stored_title, total_amount in rows:
+            # skip null/empty chat_id
+            if chat_id is None:
+                continue
 
-                        if fetched_title:
-                            title = fetched_title
-                            try:
-                                db.update_chat_title(chat_id, title)
-                            except Exception:
-                                logger.debug("Couldn't update chat title in DB for %s", chat_id)
-                except Exception:
-                    title = f"chat:{c.get('chat_id')}"
-            if not title:
-                title = f"chat:{c.get('chat_id')}"
-            stars = c.get('stars_total', 0)
-            lines.append(f"{title} — {stars}")
+            resolved_title = stored_title or ''
+            is_private = False
+            # If we don't have a title or want to validate it's a group, query Telegram
+            try:
+                chat_obj = await context.bot.get_chat(chat_id)
+                chat_type = getattr(chat_obj, 'type', None)
+                if chat_type == 'private':
+                    is_private = True
+                # prefer group/channel title
+                if getattr(chat_obj, 'title', None):
+                    resolved_title = chat_obj.title
+                elif getattr(chat_obj, 'username', None):
+                    # For channels/groups with usernames, show the title if available; username isn't desired
+                    if not resolved_title:
+                        resolved_title = f"@{chat_obj.username}"
+                else:
+                    # personal name fallback
+                    parts = []
+                    if getattr(chat_obj, 'first_name', None):
+                        parts.append(chat_obj.first_name)
+                    if getattr(chat_obj, 'last_name', None):
+                        parts.append(chat_obj.last_name)
+                    if parts and not resolved_title:
+                        resolved_title = ' '.join(parts)
+                # update DB stored title for future
+                if resolved_title:
+                    try:
+                        db.update_chat_title(chat_id, resolved_title)
+                    except Exception:
+                        logger.debug('chatstar: cannot update chat title for %s', chat_id)
+            except Exception:
+                # can't resolve via API; leave stored_title as-is
+                pass
+
+            if is_private:
+                # skip personal chats — only groups/channels desired
+                continue
+
+            display_title = resolved_title or f"chat:{chat_id}"
+            lines.append((display_title, int(total_amount or 0), chat_id))
+            total += int(total_amount or 0)
+
+        if not lines:
+            await update.message.reply_text("Нет групповых чатов с платежами.")
+            return
+
+        # sort by total desc
+        lines.sort(key=lambda x: x[1], reverse=True)
+
+        out_lines = [f"Всего звёзд: {total}", ""]
+        for title, amt, cid in lines:
+            out_lines.append(f"{title} — {amt}")
+
+        text = "\n".join(out_lines)
+        if len(text) > 3900:
+            # chunk by lines
+            chunk = []
+            cur_len = 0
+            for ln in out_lines:
+                if cur_len + len(ln) + 1 > 3900:
+                    await bot_instance._safe_send_message(chat_id=owner_id, text="\n".join(chunk))
+                    chunk = [ln]
+                    cur_len = len(ln) + 1
+                else:
+                    chunk.append(ln)
+                    cur_len += len(ln) + 1
+            if chunk:
+                await bot_instance._safe_send_message(chat_id=owner_id, text="\n".join(chunk))
+        else:
+            await bot_instance._safe_send_message(chat_id=owner_id, text=text)
 
         # Send as multiple messages if too long
         text = "\n".join(lines)
