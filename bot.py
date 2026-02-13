@@ -3572,22 +3572,25 @@ class FishBot:
 
         # Сохраняем транзакцию
         if telegram_payment_charge_id:
-            db.add_star_transaction(
-                user_id=user_id,
-                telegram_payment_charge_id=telegram_payment_charge_id,
-                total_amount=total_amount,
-                refund_status="none"
-            )
-            # Increment chat-level stars counter (track how many stars this chat brought)
+            # try to include chat metadata when recording the transaction
+            chat_title = None
             try:
+                chat_title = update.effective_chat.title
+            except Exception:
                 chat_title = None
-                try:
-                    chat_title = update.effective_chat.title
-                except Exception:
-                    chat_title = None
+            try:
+                # If DB supports chat_id/chat_title columns, add them via migration-aware method
+                db.add_star_transaction(
+                    user_id=user_id,
+                    telegram_payment_charge_id=telegram_payment_charge_id,
+                    total_amount=total_amount,
+                    refund_status="none"
+                )
+                # update chat-level aggregate (this will also save chat_title in chat_configs)
                 db.increment_chat_stars(chat_id, total_amount, chat_title=chat_title)
             except Exception as e:
-                logger.warning("Failed to increment chat stars: %s", e)
+                logger.warning("Failed to record star transaction or increment chat stars: %s", e)
+            # If DB has explicit star_transactions chat columns we will keep them in migration
         
         # Убираем запланированный таймаут для этого сообщения
         timeout_key = f"payment_{update.effective_chat.id}_{update.message.message_id}"
@@ -4233,7 +4236,24 @@ def main():
         total = sum(int(c.get('stars_total', 0)) for c in chats)
         lines = [f"Всего звёзд: {total}", ""]
         for c in chats:
-            title = c.get('chat_title') or f"chat:{c.get('chat_id')}"
+            title = c.get('chat_title') or ''
+            if not title:
+                # try fetching title from Telegram and update DB
+                try:
+                    chat_id = c.get('chat_id')
+                    if chat_id:
+                        chat_obj = await self.application.bot.get_chat(chat_id)
+                        fetched_title = getattr(chat_obj, 'title', None) or getattr(chat_obj, 'username', None) or (getattr(chat_obj, 'first_name', None) or '')
+                        if fetched_title:
+                            title = fetched_title
+                            try:
+                                db.update_chat_title(chat_id, title)
+                            except Exception:
+                                pass
+                except Exception:
+                    title = f"chat:{c.get('chat_id')}"
+            if not title:
+                title = f"chat:{c.get('chat_id')}"
             stars = c.get('stars_total', 0)
             lines.append(f"{title} — {stars}")
 
