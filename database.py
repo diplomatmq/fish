@@ -284,7 +284,10 @@ class Database:
                     admin_user_id INTEGER NOT NULL,
                     is_configured INTEGER DEFAULT 1,
                     admin_ref_link TEXT,
-                    chat_invite_link TEXT,
+                    chat_inv_link TEXT,
+                    chat_title TEXT,
+                    stars_total INTEGER DEFAULT 0,
+                    chat_inv_link TEXT,
                     configured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -335,6 +338,22 @@ class Database:
             if 'chat_id' not in columns:
                 cursor.execute('ALTER TABLE players ADD COLUMN chat_id INTEGER')
                 conn.commit()
+
+            # Ensure chat_configs has columns for tracking title and total stars
+            cursor.execute("PRAGMA table_info(chat_configs)")
+            chat_conf_cols = [c[1] for c in cursor.fetchall()]
+            if 'stars_total' not in chat_conf_cols:
+                try:
+                    cursor.execute('ALTER TABLE chat_configs ADD COLUMN stars_total INTEGER DEFAULT 0')
+                    conn.commit()
+                except Exception:
+                    pass
+            if 'chat_title' not in chat_conf_cols:
+                try:
+                    cursor.execute('ALTER TABLE chat_configs ADD COLUMN chat_title TEXT')
+                    conn.commit()
+                except Exception:
+                    pass
 
             if 'xp' not in columns:
                 cursor.execute('ALTER TABLE players ADD COLUMN xp INTEGER DEFAULT 0')
@@ -1840,6 +1859,34 @@ class Database:
             ''', (user_id, telegram_payment_charge_id, total_amount, refund_status))
             conn.commit()
             return cursor.rowcount > 0
+
+    def increment_chat_stars(self, chat_id: int, amount: int, chat_title: Optional[str] = None) -> bool:
+        """Увеличить счётчик звёзд для чата. Создаст запись если нужно."""
+        if chat_id is None:
+            return False
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                # Ensure row exists
+                cursor.execute('INSERT OR IGNORE INTO chat_configs (chat_id, admin_user_id, is_configured, chat_title, stars_total) VALUES (?, ?, 1, ?, 0)', (chat_id, 0, chat_title))
+                # Update title if provided
+                if chat_title is not None:
+                    cursor.execute('UPDATE chat_configs SET chat_title = ? WHERE chat_id = ?', (chat_title, chat_id))
+                cursor.execute('UPDATE chat_configs SET stars_total = COALESCE(stars_total, 0) + ? WHERE chat_id = ?', (amount, chat_id))
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error("increment_chat_stars error: %s", e)
+            return False
+
+    def get_all_chat_stars(self) -> List[Dict[str, Any]]:
+        """Return list of chats with their title and total stars."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT chat_id, COALESCE(chat_title, "") as chat_title, COALESCE(stars_total,0) as stars_total FROM chat_configs ORDER BY stars_total DESC')
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, r)) for r in rows]
 
     def get_star_transaction(self, telegram_payment_charge_id: str) -> Optional[Dict[str, Any]]:
         """Получить транзакцию по telegram_payment_charge_id"""

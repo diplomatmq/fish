@@ -18,7 +18,7 @@ def get_button_style(text: str) -> str:
     if any(x in text_lower for x in ["нет", "отмена", "отклон", "cancel", "no", "decline"]):
         return "destructive"
     return None
-from telegram.error import BadRequest
+from telegram.error import BadRequest, RetryAfter
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, PreCheckoutQueryHandler, filters, ContextTypes, Defaults, ExtBot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from database import db, DB_PATH, BAMBOO_ROD, TEMP_ROD_RANGES
 from game_logic import game
 from config import BOT_TOKEN, COIN_NAME, STAR_NAME, GUARANTEED_CATCH_COST, get_current_season, RULES_TEXT, RULES_LINK, INFO_LINK
+import notifications
 from fish_stickers import FISH_INFO, FISH_STICKERS
 from trash_stickers import TRASH_STICKERS
 from weather import weather_system
@@ -149,6 +150,51 @@ class FishBot:
         self.active_timeouts = {}  # Отслеживание активных таймеров
         self.active_invoices = {}  # Отслеживание активных инвойсов по пользователям
         self.application = None  # Будет установлено в main()
+
+    # --- Safe API wrappers to handle Flood control (RetryAfter) ---
+    async def _safe_send_message(self, **kwargs):
+        for attempt in range(3):
+            try:
+                return await self.application.bot.send_message(**kwargs)
+            except RetryAfter as e:
+                wait = getattr(e, 'retry_after', None) or getattr(e, 'timeout', 1)
+                logger.warning("RetryAfter on send_message, waiting %s sec (attempt %s)", wait, attempt + 1)
+                await asyncio.sleep(float(wait) + 1)
+        logger.error("_safe_send_message: failed after retries args=%s", kwargs)
+        return None
+
+    async def _safe_send_document(self, **kwargs):
+        for attempt in range(3):
+            try:
+                return await self.application.bot.send_document(**kwargs)
+            except RetryAfter as e:
+                wait = getattr(e, 'retry_after', None) or getattr(e, 'timeout', 1)
+                logger.warning("RetryAfter on send_document, waiting %s sec (attempt %s)", wait, attempt + 1)
+                await asyncio.sleep(float(wait) + 1)
+        logger.error("_safe_send_document: failed after retries args=%s", kwargs)
+        return None
+
+    async def _safe_edit_message_text(self, **kwargs):
+        for attempt in range(3):
+            try:
+                return await self.application.bot.edit_message_text(**kwargs)
+            except RetryAfter as e:
+                wait = getattr(e, 'retry_after', None) or getattr(e, 'timeout', 1)
+                logger.warning("RetryAfter on edit_message_text, waiting %s sec (attempt %s)", wait, attempt + 1)
+                await asyncio.sleep(float(wait) + 1)
+        logger.error("_safe_edit_message_text: failed after retries args=%s", kwargs)
+        return None
+
+    async def _safe_send_invoice(self, **kwargs):
+        for attempt in range(3):
+            try:
+                return await self.application.bot.send_invoice(**kwargs)
+            except RetryAfter as e:
+                wait = getattr(e, 'retry_after', None) or getattr(e, 'timeout', 1)
+                logger.warning("RetryAfter on send_invoice, waiting %s sec (attempt %s)", wait, attempt + 1)
+                await asyncio.sleep(float(wait) + 1)
+        logger.error("_safe_send_invoice: failed after retries args=%s", kwargs)
+        return None
 
         
     async def cancel_previous_invoice(self, user_id: int):
@@ -286,29 +332,9 @@ class FishBot:
             logger.error(f"Error in auto_recover_rods: {e}")
         
     async def welcome_new_member(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Приветствие новых участников группы"""
-        for new_member in update.message.new_chat_members:
-            # Не приветствуем ботов
-            if new_member.is_bot:
-                continue
-
-            username = f"@{new_member.username}" if new_member.username else new_member.first_name
-
-            welcome_message = f"""
-👋 Привет, рыбак {username}!
-
-🎣 Добро пожаловать в нашу рыболовную компанию!
-
-📝 Для начала:
-1️⃣ Отправь команду /start чтобы создать профиль
-2️⃣ Используй /menu для управления рыбалкой
-3️⃣ Команда /fish - забросить удочку прямо в чате
-4️⃣ /help - список всех команд
-
-🐟 Удачной рыбалки!
-            """
-
-            await update.message.reply_text(welcome_message)
+        """Handler for new members is disabled to avoid auto-greeting."""
+        # Greeting new members is intentionally disabled.
+        return
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
@@ -380,6 +406,45 @@ class FishBot:
                         db.init_player_rod(user_id, player['current_rod'], chat_id)
 
         await update.message.reply_text(welcome_text)
+
+    async def stars_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Admin-only command in private chat: list chats and total stars they've brought."""
+        admin_id = 793216884
+        user_id = update.effective_user.id
+        # Restrict to admin
+        if user_id != admin_id:
+            try:
+                await update.message.reply_text("Команда доступна только владельцу бота.")
+            except Exception:
+                pass
+            return
+
+        # Only in private chat
+        if update.effective_chat.type != 'private':
+            try:
+                await update.message.reply_text("Команду используйте в личном чате с ботом.")
+            except Exception:
+                pass
+            return
+
+        try:
+            rows = db.get_all_chat_stars()
+            if not rows:
+                await update.message.reply_text("Нет данных по звёздам для чатов.")
+                return
+
+            lines = []
+            for r in rows:
+                title = r.get('chat_title') or f"chat {r.get('chat_id')}"
+                lines.append(f"{title} - {r.get('stars_total', 0)} ⭐")
+
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            logger.error("stars_command error: %s", e)
+            try:
+                await update.message.reply_text("Ошибка при получении данных.")
+            except Exception:
+                pass
     
     async def fish_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /fish - просто забросить удочку"""
@@ -3513,6 +3578,16 @@ class FishBot:
                 total_amount=total_amount,
                 refund_status="none"
             )
+            # Increment chat-level stars counter (track how many stars this chat brought)
+            try:
+                chat_title = None
+                try:
+                    chat_title = update.effective_chat.title
+                except Exception:
+                    chat_title = None
+                db.increment_chat_stars(group_chat_id, total_amount, chat_title=chat_title)
+            except Exception as e:
+                logger.warning("Failed to increment chat stars: %s", e)
         
         # Убираем запланированный таймаут для этого сообщения
         timeout_key = f"payment_{update.effective_chat.id}_{update.message.message_id}"
@@ -3572,7 +3647,7 @@ class FishBot:
         except Exception as e:
             logger.error(f"Critical error in guaranteed catch for user {user_id}: {e}", exc_info=True)
             message = f"❌ Произошла критическая ошибка при выполнении улова: {str(e)}. Пожалуйста, обратитесь в поддержку."
-            await self.application.bot.send_message(
+            await self._safe_send_message(
                 chat_id=update.effective_chat.id,
                 text=message
             )
@@ -3599,52 +3674,31 @@ class FishBot:
                 if trash_name in TRASH_STICKERS:
                     trash_image = TRASH_STICKERS[trash_name]
                     image_path = Path(__file__).parent / trash_image
-                    if group_message_id:
-                        sticker_message = await self.application.bot.send_document(
-                            chat_id=group_chat_id,
-                            document=open(image_path, 'rb'),
-                            reply_to_message_id=group_message_id
-                        )
-                    else:
-                        sticker_message = await self.application.bot.send_document(
-                            chat_id=group_chat_id,
-                            document=open(image_path, 'rb')
-                        )
-
-                    if sticker_message:
-                        context.bot_data.setdefault('last_bot_stickers', {})[group_chat_id] = sticker_message.message_id
-                        context.bot_data.setdefault('sticker_fish_map', {})[sticker_message.message_id] = {
-                            'fish_name': trash_name,
-                            'weight': trash.get('weight', 0),
-                            'price': trash.get('price', 0),
-                            'location': result.get('location', location),
-                            'rarity': 'Мусор'
-                        }
+                    # Enqueue document send (persisted). We reply to the original group message for safety.
+                    await notifications.enqueue_notification('send_document', {
+                        'chat_id': group_chat_id,
+                        'document_path': str(image_path),
+                        'reply_to_message_id': group_message_id
+                    })
             except Exception as e:
                 logger.warning(f"Could not send trash image for {trash.get('name')}: {e}")
 
             # If we had a sticker, reply with info to the sticker; otherwise reply to the original group message
-            if sticker_message:
-                await self.application.bot.send_message(
-                    chat_id=group_chat_id,
-                    text=message,
-                    reply_to_message_id=sticker_message.message_id
-                )
-            else:
-                await self.application.bot.send_message(
-                    chat_id=group_chat_id,
-                    text=message,
-                    reply_to_message_id=group_message_id
-                )
+            # Enqueue text reply to group (reply to original invoice message)
+            await notifications.enqueue_notification('send_message', {
+                'chat_id': group_chat_id,
+                'text': message,
+                'reply_to_message_id': group_message_id
+            })
             return
 
         fish = result.get('fish')
         if not fish:
             logger.error("Guaranteed catch missing fish data for user %s", user_id)
-            await self.application.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="❌ Не удалось получить данные улова. Звезды будут возвращены."
-            )
+            await notifications.enqueue_notification('send_message', {
+                'chat_id': update.effective_chat.id,
+                'text': "❌ Не удалось получить данные улова. Звезды будут возвращены."
+            })
             await self.refund_star_payment(user_id, telegram_payment_charge_id)
             return
 
@@ -3684,53 +3738,31 @@ class FishBot:
                 fish_image = FISH_STICKERS[fish['name']]
                 image_path = Path(__file__).parent / fish_image
                 # Отправляем в ответ на исходное сообщение с кнопкой
-                if group_message_id:
-                    sticker_message = await self.application.bot.send_document(
-                        chat_id=group_chat_id,
-                        document=open(image_path, 'rb'),
-                        reply_to_message_id=group_message_id
-                    )
-                else:
-                    # Если нет group_message_id, отправляем просто так
-                    sticker_message = await self.application.bot.send_document(
-                        chat_id=group_chat_id,
-                        document=open(image_path, 'rb')
-                    )
-                if sticker_message:
-                    context.bot_data.setdefault("last_bot_stickers", {})[group_chat_id] = sticker_message.message_id
-                    context.bot_data.setdefault("sticker_fish_map", {})[sticker_message.message_id] = {
-                        "fish_name": fish['name'],
-                        "weight": weight,
-                        "price": fish['price'],
-                        "location": result['location'],
-                        "rarity": fish['rarity']
-                    }
+                # Enqueue sending fish sticker and a follow-up text reply to the group
+                await notifications.enqueue_notification('send_document', {
+                    'chat_id': group_chat_id,
+                    'document_path': str(image_path),
+                    'reply_to_message_id': group_message_id
+                })
+                await notifications.enqueue_notification('send_message', {
+                    'chat_id': group_chat_id,
+                    'text': message,
+                    'reply_to_message_id': group_message_id
+                })
             except Exception as e:
                 logger.warning(f"Could not send fish image for {fish['name']}: {e}")
 
         # Отправляем сообщение в ответ на стикер
-        if sticker_message:
-            await self.application.bot.send_message(
-                chat_id=group_chat_id,
-                text=message,
-                reply_to_message_id=sticker_message.message_id
-            )
-        else:
-            # Если стикера не было, отправляем обычное сообщение в ответ на исходное
-            await self.application.bot.send_message(
-                chat_id=group_chat_id,
-                text=message,
-                reply_to_message_id=group_message_id
-            )
+        # Message(s) already enqueued above for fish case
 
         if result.get('temp_rod_broken'):
-            await self.application.bot.send_message(
-                chat_id=group_chat_id,
-                text=(
+            await notifications.enqueue_notification('send_message', {
+                'chat_id': group_chat_id,
+                'text': (
                     "💥 Временная удочка сломалась после удачного улова.\n"
                     "Теперь активна бамбуковая. Купить новую можно в магазине."
                 )
-            )
+            })
 
     async def refund_star_payment(self, user_id: int, telegram_payment_charge_id: str) -> bool:
         """Возврат Telegram Stars пользователю"""
@@ -4069,6 +4101,14 @@ def main():
     
     # Устанавливаем приложение в экземпляр бота
     bot_instance.application = application
+
+    # Инициализируем очередь уведомлений и стартуем воркер
+    try:
+        notifications.init_notifications_table()
+        # start_worker creates background task
+        await notifications.start_worker(application)
+    except Exception as e:
+        logger.error("Failed to start notifications worker: %s", e)
     
     # Создаем asyncio scheduler
     bot_instance.scheduler = AsyncIOScheduler()
@@ -4086,6 +4126,7 @@ def main():
     application.add_handler(CommandHandler("stats", bot_instance.stats_command))
     application.add_handler(CommandHandler("rules", bot_instance.rules_command))
     application.add_handler(CommandHandler("info", bot_instance.info_command))
+    application.add_handler(CommandHandler("stars", bot_instance.stars_command))
     application.add_handler(CommandHandler("topl", bot_instance.topl_command))
     application.add_handler(CommandHandler("leaderboard", bot_instance.leaderboard_command))
     application.add_handler(CommandHandler("repair", bot_instance.repair_command))
@@ -4096,8 +4137,8 @@ def main():
     application.add_handler(PreCheckoutQueryHandler(bot_instance.precheckout_callback))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, bot_instance.successful_payment_callback))
     
-    # Обработчик новых участников группы (ДОЛЖЕН БЫТЬ ДО filters.ALL!)
-    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, bot_instance.welcome_new_member))
+    # Обработчик новых участников группы отключён — не присылаем автоматические приветствия
+    # (application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, bot_instance.welcome_new_member)))
     
     # Обработчик сообщений о рыбалке и покупке наживки (должен быть перед filters.ALL)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_fish_message))
