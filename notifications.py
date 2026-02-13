@@ -98,7 +98,7 @@ async def _worker(application, poll_interval: float):
                             # Try fallback: if entities parsing failed, resend as plain text
                             msg = str(bre)
                             logger.warning("BadRequest while sending notification %s: %s", nid, msg)
-                            if 'Can't parse entities' in msg or 'unexpected end of name token' in msg:
+                            if "Can't parse entities" in msg or "unexpected end of name token" in msg:
                                 # attempt to resend without parse_mode (plain text)
                                 fallback_kwargs = dict(kwargs)
                                 fallback_kwargs.pop('parse_mode', None)
