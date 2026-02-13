@@ -3649,44 +3649,44 @@ class FishBot:
         # Извлекаем локацию и chat_id из payload (если есть) или используем текущую
         payload = payment.invoice_payload
         # Process payload and perform actions (inner blocks handle errors)
-            if payload and payload.startswith("repair_rod_"):
-                # Обработка восстановления удочки
-                rod_name = payload.replace("repair_rod_", "")
-                if rod_name in TEMP_ROD_RANGES:
-                    try:
-                        await update.message.reply_text(
-                            "❌ Эта удочка одноразовая и не ремонтируется."
-                        )
-                    except Exception as e:
-                        logger.warning(f"Could not send temp rod repair rejection to {user_id}: {e}")
-                    return
-                db.repair_rod(user_id, rod_name, update.effective_chat.id)
-
-                # Отправляем подтверждение в ЛС
+        if payload and payload.startswith("repair_rod_"):
+            # Обработка восстановления удочки
+            rod_name = payload.replace("repair_rod_", "")
+            if rod_name in TEMP_ROD_RANGES:
                 try:
                     await update.message.reply_text(
-                        f"✅ Удочка '{rod_name}' полностью восстановлена!"
+                        "❌ Эта удочка одноразовая и не ремонтируется."
                     )
                 except Exception as e:
-                    logger.warning(f"Could not send repair confirmation to {user_id}: {e}")
+                    logger.warning(f"Could not send temp rod repair rejection to {user_id}: {e}")
                 return
+            db.repair_rod(user_id, rod_name, update.effective_chat.id)
 
-            elif payload and payload.startswith("guaranteed_"):
-                parts = payload.replace("guaranteed_", "").rsplit("_", 2)
-                if len(parts) >= 3:
-                    location = parts[0]
-                    group_chat_id = int(parts[1])
-                elif len(parts) == 2:
-                    location = parts[0]
-                    group_chat_id = int(parts[1])
-                else:
-                    location = "Неизвестно"
-                    group_chat_id = update.effective_chat.id
+            # Отправляем подтверждение в ЛС
+            try:
+                await update.message.reply_text(
+                    f"✅ Удочка '{rod_name}' полностью восстановлена!"
+                )
+            except Exception as e:
+                logger.warning(f"Could not send repair confirmation to {user_id}: {e}")
+            return
+
+        elif payload and payload.startswith("guaranteed_"):
+            parts = payload.replace("guaranteed_", "").rsplit("_", 2)
+            if len(parts) >= 3:
+                location = parts[0]
+                group_chat_id = int(parts[1])
+            elif len(parts) == 2:
+                location = parts[0]
+                group_chat_id = int(parts[1])
             else:
-                # Получаем текущую локацию игрока
-                player = db.get_player(user_id, payment_chat_id)
-                location = player['current_location']
+                location = "Неизвестно"
                 group_chat_id = update.effective_chat.id
+        else:
+            # Получаем текущую локацию игрока
+            player = db.get_player(user_id, payment_chat_id)
+            location = player['current_location']
+            group_chat_id = update.effective_chat.id
 
             # Получаем и сохраняем информацию о сообщении с кнопкой ДО удаления из active_invoices
             group_message_id = None
