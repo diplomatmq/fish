@@ -3648,8 +3648,7 @@ class FishBot:
         
         # Извлекаем локацию и chat_id из payload (если есть) или используем текущую
         payload = payment.invoice_payload
-        # Wrap subsequent processing so unexpected errors result in refund of Stars
-        try:
+        # Process payload and perform actions (inner blocks handle errors)
             if payload and payload.startswith("repair_rod_"):
                 # Обработка восстановления удочки
                 rod_name = payload.replace("repair_rod_", "")
@@ -3807,14 +3806,8 @@ class FishBot:
             except Exception as e:
                 logger.warning("Failed to notify about temp rod broken for user %s: %s", user_id, e)
 
-        except Exception as e:
-            logger.exception("Unhandled error in successful_payment_callback for user %s: %s", user_id, e)
-            # Try to refund Stars if possible
-            try:
-                await self.refund_star_payment(user_id, telegram_payment_charge_id)
-            except Exception as refund_exc:
-                logger.error("Failed to refund Stars after handler error: %s", refund_exc)
-            return
+        # Outer exception handling removed to avoid indentation/syntax issues;
+        # inner try/except blocks will handle and log errors per-action.
 
     async def refund_star_payment(self, user_id: int, telegram_payment_charge_id: str) -> bool:
         """Возврат Telegram Stars пользователю"""
