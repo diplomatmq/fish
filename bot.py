@@ -4209,98 +4209,7 @@ def main():
 
         await update.message.reply_text("\n".join(out_lines))
 
-    async def pending_notifs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        owner_id = 793216884
-        if getattr(update.effective_user, 'id', None) != owner_id:
-            await update.message.reply_text("Нет доступа.")
-            return
-        try:
-            import sqlite3, time
-            path = os.environ.get('FISHBOT_DB_PATH', DB_PATH)
-            conn = sqlite3.connect(path)
-            cur = conn.cursor()
-            now = int(time.time())
-            cur.execute(f"SELECT id, method, attempts, next_try, created_at, substr(kwargs,1,300) FROM {notifications.NOTIFICATIONS_TABLE} ORDER BY created_at DESC LIMIT 50")
-            rows = cur.fetchall()
-            conn.close()
-            if not rows:
-                await update.message.reply_text("Очередь уведомлений пуста.")
-                return
-            lines = []
-            for r in rows:
-                nid, method, attempts, next_try, created_at, kwargs_snip = r
-                status = 'ready' if next_try <= now else 'wait'
-                lines.append(f"{nid}: {method} attempts={attempts} next_try={next_try} status={status} data={kwargs_snip}")
-            # send as multiple messages to avoid Telegram length limits
-            chunk = '\n\n'.join(lines)
-            for i in range(0, len(chunk), 3900):
-                await update.message.reply_text(chunk[i:i+3900])
-        except Exception as e:
-            logger.exception("pending_notifs_command failed: %s", e)
-            await update.message.reply_text("Ошибка при чтении очереди: " + str(e))
-
-    async def deliver_notifs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        owner_id = 793216884
-        if getattr(update.effective_user, 'id', None) != owner_id:
-            await update.message.reply_text("Нет доступа.")
-            return
-        await update.message.reply_text("Запускаю один проход доставки уведомлений...")
-        try:
-            import sqlite3, time, json
-            path = os.environ.get('FISHBOT_DB_PATH', DB_PATH)
-            now = int(time.time())
-            conn = sqlite3.connect(path)
-            cur = conn.cursor()
-            cur.execute(f"SELECT id, method, kwargs, attempts FROM {notifications.NOTIFICATIONS_TABLE} WHERE next_try <= ? ORDER BY created_at LIMIT 20", (now,))
-            rows = cur.fetchall()
-            sent = 0
-            for row in rows:
-                nid, method, kwargs_json, attempts = row
-                try:
-                    kwargs = json.loads(kwargs_json)
-                except Exception:
-                    cur.execute(f"DELETE FROM {notifications.NOTIFICATIONS_TABLE} WHERE id = ?", (nid,))
-                    conn.commit()
-                    continue
-
-                try:
-                    if method == 'send_document' and 'document_path' in kwargs:
-                        doc_path = kwargs.pop('document_path')
-                        if not Path(doc_path).exists():
-                            cur.execute(f"DELETE FROM {notifications.NOTIFICATIONS_TABLE} WHERE id = ?", (nid,))
-                            conn.commit()
-                            continue
-                        with open(doc_path, 'rb') as f:
-                            await application.bot.send_document(**{**kwargs, 'document': f})
-                    else:
-                        func = getattr(application.bot, method, None)
-                        if not func:
-                            cur.execute(f"DELETE FROM {notifications.NOTIFICATIONS_TABLE} WHERE id = ?", (nid,))
-                            conn.commit()
-                            continue
-                        await func(**kwargs)
-
-                    # success -> delete
-                    cur.execute(f"DELETE FROM {notifications.NOTIFICATIONS_TABLE} WHERE id = ?", (nid,))
-                    conn.commit()
-                    sent += 1
-                except RetryAfter as e:
-                    wait = getattr(e, 'retry_after', None) or 1
-                    attempts_next = attempts + 1
-                    next_try = int(time.time()) + int(wait) + 1
-                    cur.execute(f"UPDATE {notifications.NOTIFICATIONS_TABLE} SET attempts = ?, next_try = ? WHERE id = ?", (attempts_next, next_try, nid))
-                    conn.commit()
-                except Exception as e:
-                    attempts_next = attempts + 1
-                    backoff = min(3600, 2 ** attempts_next)
-                    next_try = int(time.time()) + backoff
-                    cur.execute(f"UPDATE {notifications.NOTIFICATIONS_TABLE} SET attempts = ?, next_try = ? WHERE id = ?", (attempts_next, next_try, nid))
-                    conn.commit()
-            conn.close()
-            await update.message.reply_text(f"Готово. Отправлено: {sent}")
-        except Exception as e:
-            logger.exception("deliver_notifs_command failed: %s", e)
-            await update.message.reply_text("Ошибка при доставке уведомлений: " + str(e))
+    # debug notification commands removed — notifications are sent automatically on successful payments
 
     async def backupdb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         owner_id = 793216884
@@ -4324,8 +4233,7 @@ def main():
     application.add_handler(CommandHandler("start", bot_instance.start))
     application.add_handler(CommandHandler("dbstats", lambda u, c: dbstats_command(u, c)))
     application.add_handler(CommandHandler("backupdb", lambda u, c: backupdb_command(u, c)))
-    application.add_handler(CommandHandler("pending_notifs", pending_notifs_command))
-    application.add_handler(CommandHandler("deliver_notifs", deliver_notifs_command))
+    # debug handlers removed
     application.add_handler(CommandHandler("fish", bot_instance.fish_command))
     application.add_handler(CommandHandler("menu", bot_instance.menu_command))
     application.add_handler(CommandHandler("shop", bot_instance.handle_shop))
