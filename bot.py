@@ -3682,7 +3682,7 @@ class FishBot:
                 group_chat_id = update.effective_chat.id
         else:
             # Получаем текущую локацию игрока
-            player = db.get_player(user_id, chat_id)
+            player = db.get_player(user_id, payment_chat_id)
             location = player['current_location']
             group_chat_id = update.effective_chat.id
         
@@ -4139,7 +4139,9 @@ def main():
         try:
             # Ensure DB table exists synchronously, then schedule the async worker
             notifications.init_notifications_table()
-            application.create_task(notifications.start_worker(application))
+            # Schedule the notifications worker to start once the event loop is running
+            loop = asyncio.get_event_loop()
+            loop.call_soon_threadsafe(lambda: asyncio.create_task(notifications.start_worker(application)))
         except Exception as e:
             logger.exception("post_init: failed to start notifications worker: %s", e)
 
