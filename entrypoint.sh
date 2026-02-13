@@ -5,11 +5,14 @@ set -e
 TARGET_DIR=${FISHBOT_DB_PATH:-/data/fishbot.db}
 TARGET_PATH=$(dirname "$TARGET_DIR")
 
+# ensure target directory exists with sensible permissions
 mkdir -p "$TARGET_PATH"
+chmod 0755 "$TARGET_PATH" || true
 
 # Helper: check if a file looks like a valid SQLite DB
 is_sqlite() {
   [ -f "$1" ] || return 1
+  # read first 16 bytes and look for SQLite header
   head -c 16 "$1" 2>/dev/null | grep -q "SQLite format 3"
 }
 
@@ -38,14 +41,19 @@ if [ ! -f "$TARGET_DIR" ]; then
   # Prefer a bundled initial DB named fishbot.initial.db (committed as a normal file)
   if [ -f ./fishbot.initial.db ]; then
     if is_sqlite ./fishbot.initial.db; then
-      cp ./fishbot.initial.db "$TARGET_DIR"
+      # copy atomically
+      tmp_dest="${TARGET_DIR}.tmp"
+      cp ./fishbot.initial.db "$tmp_dest" && mv -f "$tmp_dest" "$TARGET_DIR"
+      chmod 0644 "$TARGET_DIR" || true
       echo "Copied initial fishbot.initial.db to $TARGET_DIR"
     else
       echo "Bundled fishbot.initial.db exists but is not a valid SQLite file — not copying."
     fi
   elif [ -f ./fishbot.db ]; then
     if is_sqlite ./fishbot.db; then
-      cp ./fishbot.db "$TARGET_DIR"
+      tmp_dest="${TARGET_DIR}.tmp"
+      cp ./fishbot.db "$tmp_dest" && mv -f "$tmp_dest" "$TARGET_DIR"
+      chmod 0644 "$TARGET_DIR" || true
       echo "Copied bundled fishbot.db to $TARGET_DIR"
     else
       echo "Bundled fishbot.db exists but is not valid — not copying."
@@ -63,12 +71,14 @@ if [ ! -f "$TARGET_DIR" ]; then
         echo "No curl or wget available to download initial DB"
       fi
       if is_sqlite "$tmpfile"; then
-        cp "$tmpfile" "$TARGET_DIR"
+        tmp_dest="${TARGET_DIR}.tmp"
+        cp "$tmpfile" "$tmp_dest" && mv -f "$tmp_dest" "$TARGET_DIR"
+        chmod 0644 "$TARGET_DIR" || true
         echo "Downloaded and copied initial DB to $TARGET_DIR"
         rm -f "$tmpfile"
       else
         echo "Downloaded file is not a valid SQLite DB; leaving $TARGET_DIR empty for the application to create."
-        rm -f "$tmpfile"
+        rm -f "$tmpfile" || true
       fi
     else
       echo "A new DB will be created at $TARGET_DIR when app runs"
@@ -87,4 +97,4 @@ fi
 export FISHBOT_DB_PATH="$TARGET_DIR"
 
 # Start the bot (this replaces the shell process)
-exec python bot.py
+exec python -u bot.py
