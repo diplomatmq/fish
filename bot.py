@@ -458,7 +458,7 @@ class FishBot:
         
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
-        player = db.get_player(user_id, chat_id)
+        player = db.get_player(user_id, group_chat_id)
         
         if not player:
             # Автоматически создаём профиль в этом чате при первом использовании /fish
@@ -3651,51 +3651,52 @@ class FishBot:
         # Wrap subsequent processing so unexpected errors result in refund of Stars
         try:
             if payload and payload.startswith("repair_rod_"):
-            # Обработка восстановления удочки
-            rod_name = payload.replace("repair_rod_", "")
-            if rod_name in TEMP_ROD_RANGES:
+                # Обработка восстановления удочки
+                rod_name = payload.replace("repair_rod_", "")
+                if rod_name in TEMP_ROD_RANGES:
+                    try:
+                        await update.message.reply_text(
+                            "❌ Эта удочка одноразовая и не ремонтируется."
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not send temp rod repair rejection to {user_id}: {e}")
+                    return
+                db.repair_rod(user_id, rod_name, update.effective_chat.id)
+
+                # Отправляем подтверждение в ЛС
                 try:
                     await update.message.reply_text(
-                        "❌ Эта удочка одноразовая и не ремонтируется."
+                        f"✅ Удочка '{rod_name}' полностью восстановлена!"
                     )
                 except Exception as e:
-                    logger.warning(f"Could not send temp rod repair rejection to {user_id}: {e}")
+                    logger.warning(f"Could not send repair confirmation to {user_id}: {e}")
                 return
-            db.repair_rod(user_id, rod_name, update.effective_chat.id)
-            
-            # Отправляем подтверждение в ЛС
-            try:
-                await update.message.reply_text(
-                    f"✅ Удочка '{rod_name}' полностью восстановлена!"
-                )
-            except Exception as e:
-                logger.warning(f"Could not send repair confirmation to {user_id}: {e}")
-            return
-        elif payload and payload.startswith("guaranteed_"):
-            parts = payload.replace("guaranteed_", "").rsplit("_", 2)
-            if len(parts) >= 3:
-                location = parts[0]
-                group_chat_id = int(parts[1])
-            elif len(parts) == 2:
-                location = parts[0]
-                group_chat_id = int(parts[1])
+
+            elif payload and payload.startswith("guaranteed_"):
+                parts = payload.replace("guaranteed_", "").rsplit("_", 2)
+                if len(parts) >= 3:
+                    location = parts[0]
+                    group_chat_id = int(parts[1])
+                elif len(parts) == 2:
+                    location = parts[0]
+                    group_chat_id = int(parts[1])
+                else:
+                    location = "Неизвестно"
+                    group_chat_id = update.effective_chat.id
             else:
-                location = "Неизвестно"
+                # Получаем текущую локацию игрока
+                player = db.get_player(user_id, payment_chat_id)
+                location = player['current_location']
                 group_chat_id = update.effective_chat.id
-        else:
-            # Получаем текущую локацию игрока
-            player = db.get_player(user_id, payment_chat_id)
-            location = player['current_location']
-            group_chat_id = update.effective_chat.id
-        
-        # Получаем и сохраняем информацию о сообщении с кнопкой ДО удаления из active_invoices
-        group_message_id = None
-        if user_id in self.active_invoices:
-            group_message_id = self.active_invoices[user_id].get('group_message_id')
-            # Теперь удаляем инвойс из активных
-            del self.active_invoices[user_id]
-        
-        # Выполняем гарантированный улов (все проверки уже пройдены в precheckout)
+
+            # Получаем и сохраняем информацию о сообщении с кнопкой ДО удаления из active_invoices
+            group_message_id = None
+            if user_id in self.active_invoices:
+                group_message_id = self.active_invoices[user_id].get('group_message_id')
+                # Теперь удаляем инвойс из активных
+                del self.active_invoices[user_id]
+
+            # Выполняем гарантированный улов (все проверки уже пройдены в precheckout)
             try:
                 result = game.fish(user_id, group_chat_id, location, guaranteed=True)
             except Exception as e:
@@ -3797,11 +3798,11 @@ class FishBot:
         # Отправляем сообщение в ответ на стикер
         # Message(s) already enqueued above for fish case
 
-            if result.get('temp_rod_broken'):
-                await self._safe_send_message(chat_id=group_chat_id, text=(
-                    "💥 Временная удочка сломалась после удачного улова.\n"
-                    "Теперь активна бамбуковая. Купить новую можно в магазине."
-                ))
+        if result.get('temp_rod_broken'):
+            await self._safe_send_message(chat_id=group_chat_id, text=(
+                "💥 Временная удочка сломалась после удачного улова.\n"
+                "Теперь активна бамбуковая. Купить новую можно в магазине."
+            ))
         except Exception as e:
             logger.exception("Unhandled error in successful_payment_callback for user %s: %s", user_id, e)
             # Try to refund Stars if possible
