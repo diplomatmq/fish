@@ -4363,11 +4363,11 @@ def main():
     # Добавление обработчиков
     application.add_handler(CommandHandler("dbinfo", dbinfo_command))
     application.add_handler(CommandHandler("start", bot_instance.start))
-    application.add_handler(CommandHandler("dbstats", lambda u, c: dbstats_command(u, c)))
-    application.add_handler(CommandHandler("backupdb", lambda u, c: backupdb_command(u, c)))
-    application.add_handler(CommandHandler("grant_net", lambda u, c: grant_net_command(u, c)))
-    application.add_handler(CommandHandler("grant_rod", lambda u, c: grant_rod_command(u, c)))
-    application.add_handler(CommandHandler("chatstar", lambda u, c: chatstar_command(u, c)))
+    application.add_handler(CommandHandler("dbstats", dbstats_command))
+    application.add_handler(CommandHandler("backupdb", backupdb_command))
+    application.add_handler(CommandHandler("grant_net", grant_net_command))
+    application.add_handler(CommandHandler("grant_rod", grant_rod_command))
+    application.add_handler(CommandHandler("chatstar", chatstar_command))
     # debug handlers removed
     application.add_handler(CommandHandler("fish", bot_instance.fish_command))
     application.add_handler(CommandHandler("menu", bot_instance.menu_command))
