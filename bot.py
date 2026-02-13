@@ -4218,10 +4218,28 @@ def main():
 
         await update.message.reply_text("\n".join(out_lines))
 
+    async def backupdb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        owner_id = 793216884
+        if getattr(update.effective_user, 'id', None) != owner_id:
+            await update.message.reply_text("Нет доступа.")
+            return
+        try:
+            import shutil, time, os
+            src = os.environ.get('FISHBOT_DB_PATH', DB_PATH)
+            dst_dir = os.path.join(os.path.dirname(src), 'backups')
+            os.makedirs(dst_dir, exist_ok=True)
+            ts = int(time.time())
+            dst = os.path.join(dst_dir, f'fishbot.db.{ts}')
+            shutil.copy2(src, dst)
+            await update.message.reply_text(f"Backup created: {dst}")
+        except Exception as e:
+            await update.message.reply_text("Backup failed: " + str(e))
+
     # Добавление обработчиков
     application.add_handler(CommandHandler("dbinfo", dbinfo_command))
     application.add_handler(CommandHandler("start", bot_instance.start))
     application.add_handler(CommandHandler("dbstats", lambda u, c: dbstats_command(u, c)))
+    application.add_handler(CommandHandler("backupdb", lambda u, c: backupdb_command(u, c)))
     application.add_handler(CommandHandler("fish", bot_instance.fish_command))
     application.add_handler(CommandHandler("menu", bot_instance.menu_command))
     application.add_handler(CommandHandler("shop", bot_instance.handle_shop))
