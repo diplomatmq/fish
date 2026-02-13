@@ -355,7 +355,7 @@ class FishBot:
         chat_id = update.effective_chat.id
         username = update.effective_user.username or update.effective_user.first_name
 
-        player = db.get_player(user_id, group_chat_id)
+        player = db.get_player(user_id, chat_id)
         if not player:
             # Создаем нового игрока
             player = db.create_player(user_id, username, chat_id)
@@ -458,7 +458,7 @@ class FishBot:
         
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
-        player = db.get_player(user_id, group_chat_id)
+        player = db.get_player(user_id, chat_id)
         
         if not player:
             # Автоматически создаём профиль в этом чате при первом использовании /fish
