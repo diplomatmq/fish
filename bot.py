@@ -4373,24 +4373,7 @@ def main():
         else:
             await bot_instance._safe_send_message(chat_id=owner_id, text=text)
 
-        # Send as multiple messages if too long
-        text = "\n".join(lines)
-        if len(text) > 3900:
-            # chunk by lines
-            chunk = []
-            cur_len = 0
-            for ln in lines:
-                if cur_len + len(ln) + 1 > 3900:
-                    await bot_instance._safe_send_message(chat_id=owner_id, text="\n".join(chunk))
-                    chunk = [ln]
-                    cur_len = len(ln) + 1
-                else:
-                    chunk.append(ln)
-                    cur_len += len(ln) + 1
-            if chunk:
-                await bot_instance._safe_send_message(chat_id=owner_id, text="\n".join(chunk))
-        else:
-            await bot_instance._safe_send_message(chat_id=owner_id, text=text)
+        # (duplicate chunking removed)
 
     async def grant_net_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         owner_id = 793216884
