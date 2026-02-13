@@ -4244,14 +4244,29 @@ def main():
                 try:
                     chat_id = c.get('chat_id')
                     if chat_id:
-                        chat_obj = await self.application.bot.get_chat(chat_id)
-                        fetched_title = getattr(chat_obj, 'title', None) or getattr(chat_obj, 'username', None) or (getattr(chat_obj, 'first_name', None) or '')
+                        # use context.bot (bound to this handler) to query chat info
+                        chat_obj = await context.bot.get_chat(chat_id)
+                        # prefer group/channel title, then username, then personal name
+                        fetched_title = None
+                        if getattr(chat_obj, 'title', None):
+                            fetched_title = chat_obj.title
+                        elif getattr(chat_obj, 'username', None):
+                            fetched_title = f"@{chat_obj.username}"
+                        else:
+                            parts = []
+                            if getattr(chat_obj, 'first_name', None):
+                                parts.append(chat_obj.first_name)
+                            if getattr(chat_obj, 'last_name', None):
+                                parts.append(chat_obj.last_name)
+                            if parts:
+                                fetched_title = ' '.join(parts)
+
                         if fetched_title:
                             title = fetched_title
                             try:
                                 db.update_chat_title(chat_id, title)
                             except Exception:
-                                pass
+                                logger.debug("Couldn't update chat title in DB for %s", chat_id)
                 except Exception:
                     title = f"chat:{c.get('chat_id')}"
             if not title:
