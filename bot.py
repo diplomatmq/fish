@@ -4105,8 +4105,25 @@ def main():
     # Инициализируем очередь уведомлений и стартуем воркер
     try:
         notifications.init_notifications_table()
-        # start_worker creates background task
-        await notifications.start_worker(application)
+        # start_worker creates background task — schedule it safely
+        import asyncio, threading
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            loop.create_task(notifications.start_worker(application))
+        else:
+            # If no running loop, start the low-level worker in a background thread
+            def _run_worker():
+                try:
+                    asyncio.run(notifications._worker(application, 1.0))
+                except Exception as _e:
+                    logger.exception("Notifications background worker failed: %s", _e)
+
+            t = threading.Thread(target=_run_worker, daemon=True)
+            t.start()
     except Exception as e:
         logger.error("Failed to start notifications worker: %s", e)
     
