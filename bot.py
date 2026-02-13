@@ -4213,11 +4213,88 @@ def main():
         except Exception as e:
             await update.message.reply_text("Backup failed: " + str(e))
 
+    async def grant_net_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        owner_id = 793216884
+        if getattr(update.effective_user, 'id', None) != owner_id:
+            await update.message.reply_text("Нет доступа.")
+            return
+
+        parts = (update.message.text or '').split()
+        if len(parts) < 3:
+            await update.message.reply_text("Использование: /grant_net <user_id> <net_name|netN> [count]")
+            return
+        try:
+            target_user = int(parts[1])
+        except Exception:
+            await update.message.reply_text("Неверный user_id. Пример: /grant_net 123456 net0 1")
+            return
+        raw_net = parts[2]
+        count = 1
+        if len(parts) >= 4:
+            try:
+                count = int(parts[3])
+            except Exception:
+                count = 1
+
+        # Map netN -> index in nets list (0-based)
+        net_name = raw_net
+        m = re.match(r'^net(\d+)$', raw_net, re.I)
+        if m:
+            idx = int(m.group(1))
+            nets = db.get_nets()
+            if 0 <= idx < len(nets):
+                net_name = nets[idx]['name']
+            else:
+                await update.message.reply_text(f"Нет сети с индексом {idx}")
+                return
+
+        ok = db.grant_net(target_user, net_name, getattr(update.effective_chat, 'id', -1), count)
+        if ok:
+            await update.message.reply_text(f"Сеть '{net_name}' выдана пользователю {target_user} (x{count}).")
+        else:
+            await update.message.reply_text(f"Не удалось выдать сеть '{net_name}'. Проверьте имя сети.")
+
+    async def grant_rod_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        owner_id = 793216884
+        if getattr(update.effective_user, 'id', None) != owner_id:
+            await update.message.reply_text("Нет доступа.")
+            return
+
+        parts = (update.message.text or '').split()
+        if len(parts) < 3:
+            await update.message.reply_text("Использование: /grant_rod <user_id> <rod_name|rodN>")
+            return
+        try:
+            target_user = int(parts[1])
+        except Exception:
+            await update.message.reply_text("Неверный user_id. Пример: /grant_rod 123456 rod0")
+            return
+        raw_rod = parts[2]
+
+        rod_name = raw_rod
+        m = re.match(r'^rod(\d+)$', raw_rod, re.I)
+        if m:
+            idx = int(m.group(1))
+            rods = db.get_rods()
+            if 0 <= idx < len(rods):
+                rod_name = rods[idx]['name']
+            else:
+                await update.message.reply_text(f"Нет удочки с индексом {idx}")
+                return
+
+        ok = db.grant_rod(target_user, rod_name, getattr(update.effective_chat, 'id', -1))
+        if ok:
+            await update.message.reply_text(f"Удочка '{rod_name}' выдана пользователю {target_user}.")
+        else:
+            await update.message.reply_text(f"Не удалось выдать удочку '{rod_name}'. Проверьте имя удочки.")
+
     # Добавление обработчиков
     application.add_handler(CommandHandler("dbinfo", dbinfo_command))
     application.add_handler(CommandHandler("start", bot_instance.start))
     application.add_handler(CommandHandler("dbstats", lambda u, c: dbstats_command(u, c)))
     application.add_handler(CommandHandler("backupdb", lambda u, c: backupdb_command(u, c)))
+    application.add_handler(CommandHandler("grant_net", lambda u, c: grant_net_command(u, c)))
+    application.add_handler(CommandHandler("grant_rod", lambda u, c: grant_rod_command(u, c)))
     # debug handlers removed
     application.add_handler(CommandHandler("fish", bot_instance.fish_command))
     application.add_handler(CommandHandler("menu", bot_instance.menu_command))

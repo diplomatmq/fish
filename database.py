@@ -2254,6 +2254,74 @@ class Database:
                 rows = cursor.fetchall()
                 nets = [dict(zip(columns, row)) for row in rows]
             return nets
+
+    def grant_net(self, user_id: int, net_name: str, chat_id: int, count: int = 1) -> bool:
+        """Выдать пользователю указанную сеть (глобально).
+        Если запись уже есть — увеличиваем `uses_left`, иначе создаём запись.
+        """
+        net = self.get_net(net_name)
+        if not net:
+            return False
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT uses_left FROM player_nets
+                WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND net_name = ?
+            ''', (user_id, net_name))
+            row = cursor.fetchone()
+            if row:
+                current = row[0]
+                if current == -1:
+                    # Уже бесконечная сеть
+                    return True
+                # Увеличиваем на count * max_uses (если max_uses == -1 — делаем -1)
+                if net.get('max_uses', -1) == -1:
+                    new = -1
+                else:
+                    new = current + int(count) * int(net.get('max_uses', 1))
+                cursor.execute('''
+                    UPDATE player_nets SET uses_left = ?
+                    WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND net_name = ?
+                ''', (new, user_id, net_name))
+            else:
+                if net.get('max_uses', -1) == -1:
+                    uses = -1
+                else:
+                    uses = int(count) * int(net.get('max_uses', 1))
+                cursor.execute('''
+                    INSERT OR REPLACE INTO player_nets (user_id, net_name, uses_left, chat_id)
+                    VALUES (?, ?, ?, -1)
+                ''', (user_id, net_name, uses))
+            conn.commit()
+            return True
+
+    def grant_rod(self, user_id: int, rod_name: str, chat_id: int) -> bool:
+        """Выдать пользователю удочку (глобально). Если уже есть — восстанавливаем до полной прочности."""
+        rod = self.get_rod(rod_name)
+        if not rod:
+            return False
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            # Проверяем наличие глобальной записи
+            cursor.execute('''
+                SELECT 1 FROM player_rods
+                WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND rod_name = ?
+            ''', (user_id, rod_name))
+            if cursor.fetchone():
+                cursor.execute('''
+                    UPDATE player_rods
+                    SET current_durability = ?, max_durability = ?
+                    WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND rod_name = ?
+                ''', (rod.get('max_durability', rod.get('durability', 0)), rod.get('max_durability', rod.get('durability', 0)), user_id, rod_name))
+            else:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO player_rods (user_id, rod_name, current_durability, max_durability, chat_id)
+                    VALUES (?, ?, ?, ?, -1)
+                ''', (user_id, rod_name, rod.get('max_durability', rod.get('durability', 0)), rod.get('max_durability', rod.get('durability', 0))))
+            conn.commit()
+            return True
     
     def buy_net(self, user_id: int, net_name: str, chat_id: int) -> bool:
         """Купить сеть в конкретном чате"""
