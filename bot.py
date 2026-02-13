@@ -3753,7 +3753,7 @@ class FishBot:
         weight = result['weight']
         length = result['length']
 
-        player = db.get_player(user_id, chat_id)
+        player = db.get_player(user_id, payment_chat_id)
         logger.info(
             "Catch: user=%s (%s) fish=%s location=%s bait=%s weight=%.2fkg length=%.1fcm guaranteed=True",
             update.effective_user.id,
@@ -3799,18 +3799,22 @@ class FishBot:
         # Message(s) already enqueued above for fish case
 
         if result.get('temp_rod_broken'):
-            await self._safe_send_message(chat_id=group_chat_id, text=(
-                "💥 Временная удочка сломалась после удачного улова.\n"
-                "Теперь активна бамбуковая. Купить новую можно в магазине."
-            ))
-        except Exception as e:
-            logger.exception("Unhandled error in successful_payment_callback for user %s: %s", user_id, e)
-            # Try to refund Stars if possible
             try:
-                await self.refund_star_payment(user_id, telegram_payment_charge_id)
-            except Exception as refund_exc:
-                logger.error("Failed to refund Stars after handler error: %s", refund_exc)
-            return
+                await self._safe_send_message(chat_id=group_chat_id, text=(
+                    "💥 Временная удочка сломалась после удачного улова.\n"
+                    "Теперь активна бамбуковая. Купить новую можно в магазине."
+                ))
+            except Exception as e:
+                logger.warning("Failed to notify about temp rod broken for user %s: %s", user_id, e)
+
+    except Exception as e:
+        logger.exception("Unhandled error in successful_payment_callback for user %s: %s", user_id, e)
+        # Try to refund Stars if possible
+        try:
+            await self.refund_star_payment(user_id, telegram_payment_charge_id)
+        except Exception as refund_exc:
+            logger.error("Failed to refund Stars after handler error: %s", refund_exc)
+        return
 
     async def refund_star_payment(self, user_id: int, telegram_payment_charge_id: str) -> bool:
         """Возврат Telegram Stars пользователю"""
