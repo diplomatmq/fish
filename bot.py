@@ -3565,31 +3565,78 @@ class FishBot:
         """Обработка успешной оплаты через Telegram Stars"""
         payment = update.message.successful_payment
         user_id = update.effective_user.id
-        chat_id = update.effective_chat.id
+        # By default the payment update appears in the user's private chat
+        payment_chat_id = update.effective_chat.id
 
         telegram_payment_charge_id = getattr(payment, "telegram_payment_charge_id", None)
         total_amount = getattr(payment, "total_amount", 0)
 
+        # Determine target chat for this transaction: prefer group_chat_id from active_invoices
+        target_chat_id = None
+        target_chat_title = None
+        try:
+            inv = self.active_invoices.get(user_id)
+            if inv and inv.get('group_chat_id'):
+                target_chat_id = inv.get('group_chat_id')
+        except Exception:
+            target_chat_id = None
+
+        # Fallback: try parse invoice payload which may contain the originating chat_id
+        if not target_chat_id:
+            payload = getattr(payment, 'invoice_payload', '') or ''
+            if payload and payload.startswith('guaranteed_'):
+                # payload format: guaranteed_<location>_<chat_id>_<timestamp>
+                parts = payload.split('_')
+                if len(parts) >= 4:
+                    try:
+                        possible_chat_id = int(parts[-2])
+                        target_chat_id = possible_chat_id
+                    except Exception:
+                        pass
+
+        # If still not found, fall back to the chat where the payment message appeared
+        if not target_chat_id:
+            target_chat_id = payment_chat_id
+
+        # Try to resolve chat title for the target chat (prefer stored title if available)
+        try:
+            # If the target chat is different from the private chat, query Telegram for its title
+            if target_chat_id and target_chat_id != payment_chat_id:
+                try:
+                    chat_obj = await context.bot.get_chat(target_chat_id)
+                    if getattr(chat_obj, 'title', None):
+                        target_chat_title = chat_obj.title
+                    elif getattr(chat_obj, 'username', None):
+                        target_chat_title = f"@{chat_obj.username}"
+                    else:
+                        parts = []
+                        if getattr(chat_obj, 'first_name', None):
+                            parts.append(chat_obj.first_name)
+                        if getattr(chat_obj, 'last_name', None):
+                            parts.append(chat_obj.last_name)
+                        if parts:
+                            target_chat_title = ' '.join(parts)
+                except Exception:
+                    target_chat_title = None
+            else:
+                # payment happened in private chat — keep title as None (DB may store username elsewhere)
+                target_chat_title = None
+        except Exception:
+            target_chat_title = None
+
         # Сохраняем транзакцию
         if telegram_payment_charge_id:
-            # try to include chat metadata when recording the transaction
-            chat_title = None
             try:
-                chat_title = update.effective_chat.title
-            except Exception:
-                chat_title = None
-            try:
-                # If DB supports chat_id/chat_title columns, add them via migration-aware method
                 db.add_star_transaction(
                     user_id=user_id,
                     telegram_payment_charge_id=telegram_payment_charge_id,
                     total_amount=total_amount,
                     refund_status="none",
-                    chat_id=chat_id,
-                    chat_title=chat_title,
+                    chat_id=target_chat_id,
+                    chat_title=target_chat_title,
                 )
                 # update chat-level aggregate (this will also save chat_title in chat_configs)
-                db.increment_chat_stars(chat_id, total_amount, chat_title=chat_title)
+                db.increment_chat_stars(target_chat_id, total_amount, chat_title=target_chat_title)
             except Exception as e:
                 logger.warning("Failed to record star transaction or increment chat stars: %s", e)
             # If DB has explicit star_transactions chat columns we will keep them in migration
