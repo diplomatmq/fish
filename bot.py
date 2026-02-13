@@ -3585,7 +3585,7 @@ class FishBot:
                     chat_title = update.effective_chat.title
                 except Exception:
                     chat_title = None
-                db.increment_chat_stars(group_chat_id, total_amount, chat_title=chat_title)
+                db.increment_chat_stars(chat_id, total_amount, chat_title=chat_title)
             except Exception as e:
                 logger.warning("Failed to increment chat stars: %s", e)
         
@@ -4105,25 +4105,16 @@ def main():
     # Инициализируем очередь уведомлений и стартуем воркер
     try:
         notifications.init_notifications_table()
-        # start_worker creates background task — schedule it safely
-        import asyncio, threading
+        # Schedule the notifications worker on the application's asyncio loop
         try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
-            loop.create_task(notifications.start_worker(application))
-        else:
-            # If no running loop, start the low-level worker in a background thread
-            def _run_worker():
-                try:
-                    asyncio.run(notifications._worker(application, 1.0))
-                except Exception as _e:
-                    logger.exception("Notifications background worker failed: %s", _e)
-
-            t = threading.Thread(target=_run_worker, daemon=True)
-            t.start()
+            application.create_task(notifications.start_worker(application))
+        except Exception:
+            # Fallback: try scheduling on current running loop
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(notifications.start_worker(application))
+            except Exception as e:
+                logger.exception("Failed to schedule notifications worker: %s", e)
     except Exception as e:
         logger.error("Failed to start notifications worker: %s", e)
     

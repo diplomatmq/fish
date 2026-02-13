@@ -100,14 +100,14 @@ async def _worker(application, poll_interval: float):
                     wait = getattr(e, 'retry_after', None) or 1
                     attempts_next = attempts + 1
                     next_try = int(time.time()) + int(wait) + 1
-                    _reschedule_notification(nid, attempts_next, next_try)
+                    await _reschedule_notification(nid, attempts_next, next_try)
                     logger.warning("RetryAfter for notification %s, retrying in %s sec", nid, wait)
                 except Exception as e:
                     # non-retryable error: exponential backoff
                     attempts_next = attempts + 1
                     backoff = min(3600, 2 ** attempts_next)
                     next_try = int(time.time()) + backoff
-                    _reschedule_notification(nid, attempts_next, next_try)
+                    await _reschedule_notification(nid, attempts_next, next_try)
                     logger.exception("Error sending notification %s, rescheduled (attempt %s)", nid, attempts_next)
 
         except Exception as e:
