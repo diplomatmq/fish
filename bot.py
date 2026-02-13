@@ -4082,26 +4082,19 @@ def main():
     # Создаем приложение
     defaults = Defaults(parse_mode="HTML")
     emoji_bot = EmojiBot(token=BOT_TOKEN, defaults=defaults)
-    application = Application.builder().bot(emoji_bot).build()
-    
+
+    async def _post_init(application: Application):
+        try:
+            # Ensure DB table exists synchronously, then schedule the async worker
+            notifications.init_notifications_table()
+            application.create_task(notifications.start_worker(application))
+        except Exception as e:
+            logger.exception("post_init: failed to start notifications worker: %s", e)
+
+    application = Application.builder().bot(emoji_bot).post_init(_post_init).build()
+
     # Устанавливаем приложение в экземпляр бота
     bot_instance.application = application
-
-    # Инициализируем очередь уведомлений и стартуем воркер
-    try:
-        notifications.init_notifications_table()
-        # Schedule the notifications worker on the application's asyncio loop
-        try:
-            application.create_task(notifications.start_worker(application))
-        except Exception:
-            # Fallback: try scheduling on current running loop
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(notifications.start_worker(application))
-            except Exception as e:
-                logger.exception("Failed to schedule notifications worker: %s", e)
-    except Exception as e:
-        logger.error("Failed to start notifications worker: %s", e)
     
     # Создаем asyncio scheduler
     bot_instance.scheduler = AsyncIOScheduler()
@@ -4213,55 +4206,55 @@ def main():
         except Exception as e:
             await update.message.reply_text("Backup failed: " + str(e))
 
-        async def chatstar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-            """Owner-only: return list of chats and stars_total. Use in private chat."""
-            owner_id = 793216884
-            if getattr(update.effective_user, 'id', None) != owner_id:
-                await update.message.reply_text("Нет доступа.")
-                return
+    async def chatstar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Owner-only: return list of chats and stars_total. Use in private chat."""
+        owner_id = 793216884
+        if getattr(update.effective_user, 'id', None) != owner_id:
+            await update.message.reply_text("Нет доступа.")
+            return
 
-            # Ensure command is used in private
-            chat = update.effective_chat
-            if chat is None or getattr(chat, 'type', None) != 'private':
-                await update.message.reply_text("Эту команду можно запускать только в личных сообщениях боту.")
-                return
+        # Ensure command is used in private
+        chat = update.effective_chat
+        if chat is None or getattr(chat, 'type', None) != 'private':
+            await update.message.reply_text("Эту команду можно запускать только в личных сообщениях боту.")
+            return
 
-            try:
-                chats = db.get_all_chat_stars()
-            except Exception as e:
-                logger.exception("chatstar: DB error: %s", e)
-                await update.message.reply_text("Ошибка доступа к БД.")
-                return
+        try:
+            chats = db.get_all_chat_stars()
+        except Exception as e:
+            logger.exception("chatstar: DB error: %s", e)
+            await update.message.reply_text("Ошибка доступа к БД.")
+            return
 
-            if not chats:
-                await update.message.reply_text("Нет данных по чатам.")
-                return
+        if not chats:
+            await update.message.reply_text("Нет данных по чатам.")
+            return
 
-            total = sum(int(c.get('stars_total', 0)) for c in chats)
-            lines = [f"Всего звёзд: {total}", ""]
-            for c in chats:
-                title = c.get('chat_title') or f"chat:{c.get('chat_id')}"
-                stars = c.get('stars_total', 0)
-                lines.append(f"{title} — {stars}")
+        total = sum(int(c.get('stars_total', 0)) for c in chats)
+        lines = [f"Всего звёзд: {total}", ""]
+        for c in chats:
+            title = c.get('chat_title') or f"chat:{c.get('chat_id')}"
+            stars = c.get('stars_total', 0)
+            lines.append(f"{title} — {stars}")
 
-            # Send as multiple messages if too long
-            text = "\n".join(lines)
-            if len(text) > 3900:
-                # chunk by lines
-                chunk = []
-                cur_len = 0
-                for ln in lines:
-                    if cur_len + len(ln) + 1 > 3900:
-                        await bot_instance._safe_send_message(chat_id=owner_id, text="\n".join(chunk))
-                        chunk = [ln]
-                        cur_len = len(ln) + 1
-                    else:
-                        chunk.append(ln)
-                        cur_len += len(ln) + 1
-                if chunk:
+        # Send as multiple messages if too long
+        text = "\n".join(lines)
+        if len(text) > 3900:
+            # chunk by lines
+            chunk = []
+            cur_len = 0
+            for ln in lines:
+                if cur_len + len(ln) + 1 > 3900:
                     await bot_instance._safe_send_message(chat_id=owner_id, text="\n".join(chunk))
-            else:
-                await bot_instance._safe_send_message(chat_id=owner_id, text=text)
+                    chunk = [ln]
+                    cur_len = len(ln) + 1
+                else:
+                    chunk.append(ln)
+                    cur_len += len(ln) + 1
+            if chunk:
+                await bot_instance._safe_send_message(chat_id=owner_id, text="\n".join(chunk))
+        else:
+            await bot_instance._safe_send_message(chat_id=owner_id, text=text)
 
     async def grant_net_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         owner_id = 793216884
