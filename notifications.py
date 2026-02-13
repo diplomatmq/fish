@@ -6,7 +6,7 @@ import logging
 from typing import Any, Dict
 from pathlib import Path
 from config import DB_PATH
-from telegram.error import RetryAfter
+from telegram.error import RetryAfter, BadRequest
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,23 @@ async def _worker(application, poll_interval: float):
                             logger.error("Unknown bot method for notification %s: %s", nid, method)
                             _delete_notification(nid)
                             continue
-                        await func(**kwargs)
+                        try:
+                            await func(**kwargs)
+                        except BadRequest as bre:
+                            # Try fallback: if entities parsing failed, resend as plain text
+                            msg = str(bre)
+                            logger.warning("BadRequest while sending notification %s: %s", nid, msg)
+                            if 'Can't parse entities' in msg or 'unexpected end of name token' in msg:
+                                # attempt to resend without parse_mode (plain text)
+                                fallback_kwargs = dict(kwargs)
+                                fallback_kwargs.pop('parse_mode', None)
+                                try:
+                                    await func(**fallback_kwargs)
+                                except Exception as e2:
+                                    logger.exception("Fallback send failed for notification %s: %s", nid, e2)
+                                    raise
+                            else:
+                                raise
 
                     # success -> delete
                     _delete_notification(nid)
