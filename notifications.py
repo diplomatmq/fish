@@ -42,13 +42,21 @@ async def enqueue_notification(method: str, kwargs: Dict[str, Any], delay_second
         cur.execute(f"INSERT INTO {NOTIFICATIONS_TABLE} (method, kwargs, attempts, next_try, created_at) VALUES (?, ?, 0, ?, ?)",
                     (method, json.dumps(kwargs, ensure_ascii=False), next_try, created_at))
         conn.commit()
+        logger.debug("Enqueued notification: %s %s (next_try=%s)", method, kwargs if isinstance(kwargs, dict) else str(kwargs), next_try)
     finally:
         conn.close()
 
 async def start_worker(application, poll_interval: float = 1.0):
     """Запустить фоновую задачу-воркер для отправки уведомлений."""
-    loop = asyncio.get_event_loop()
-    loop.create_task(_worker(application, poll_interval))
+    # Prefer scheduling the worker on the provided Application event loop so it uses the same asyncio context
+    try:
+        application.create_task(_worker(application, poll_interval))
+        logger.info("Notifications worker scheduled on application loop")
+    except Exception:
+        # Fallback to scheduling on the running loop
+        loop = asyncio.get_event_loop()
+        loop.create_task(_worker(application, poll_interval))
+        logger.info("Notifications worker scheduled on fallback event loop")
 
 async def _worker(application, poll_interval: float):
     path = str(DB_PATH)
@@ -68,6 +76,7 @@ async def _worker(application, poll_interval: float):
             for row in rows:
                 nid, method, kwargs_json, attempts = row
                 try:
+                    logger.debug("Processing notification %s method=%s attempts=%s", nid, method, attempts)
                     kwargs = json.loads(kwargs_json)
                 except Exception:
                     logger.exception("Invalid kwargs in notification %s, deleting", nid)
