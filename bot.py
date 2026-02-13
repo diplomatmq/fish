@@ -355,7 +355,7 @@ class FishBot:
         chat_id = update.effective_chat.id
         username = update.effective_user.username or update.effective_user.first_name
 
-        player = db.get_player(user_id, chat_id)
+        player = db.get_player(user_id, group_chat_id)
         if not player:
             # Создаем нового игрока
             player = db.create_player(user_id, username, chat_id)
@@ -3648,7 +3648,9 @@ class FishBot:
         
         # Извлекаем локацию и chat_id из payload (если есть) или используем текущую
         payload = payment.invoice_payload
-        if payload and payload.startswith("repair_rod_"):
+        # Wrap subsequent processing so unexpected errors result in refund of Stars
+        try:
+            if payload and payload.startswith("repair_rod_"):
             # Обработка восстановления удочки
             rod_name = payload.replace("repair_rod_", "")
             if rod_name in TEMP_ROD_RANGES:
@@ -3694,19 +3696,19 @@ class FishBot:
             del self.active_invoices[user_id]
         
         # Выполняем гарантированный улов (все проверки уже пройдены в precheckout)
-        try:
-            result = game.fish(user_id, group_chat_id, location, guaranteed=True)
-        except Exception as e:
-            logger.error(f"Critical error in guaranteed catch for user {user_id}: {e}", exc_info=True)
-            message = f"❌ Произошла критическая ошибка при выполнении улова: {str(e)}. Пожалуйста, обратитесь в поддержку."
-            await self._safe_send_message(
-                chat_id=update.effective_chat.id,
-                text=message
-            )
+            try:
+                result = game.fish(user_id, group_chat_id, location, guaranteed=True)
+            except Exception as e:
+                logger.error(f"Critical error in guaranteed catch for user {user_id}: {e}", exc_info=True)
+                message = f"❌ Произошла критическая ошибка при выполнении улова: {str(e)}. Пожалуйста, обратитесь в поддержку."
+                await self._safe_send_message(
+                    chat_id=update.effective_chat.id,
+                    text=message
+                )
 
-            # Возвращаем звезды, если оплата прошла, но улов не был обработан
-            await self.refund_star_payment(user_id, telegram_payment_charge_id)
-            return
+                # Возвращаем звезды, если оплата прошла, но улов не был обработан
+                await self.refund_star_payment(user_id, telegram_payment_charge_id)
+                return
         
         # If result indicates trash (even when success==False in game logic), handle it here
         if result.get('is_trash'):
@@ -3795,11 +3797,19 @@ class FishBot:
         # Отправляем сообщение в ответ на стикер
         # Message(s) already enqueued above for fish case
 
-        if result.get('temp_rod_broken'):
-            await self._safe_send_message(chat_id=group_chat_id, text=(
-                "💥 Временная удочка сломалась после удачного улова.\n"
-                "Теперь активна бамбуковая. Купить новую можно в магазине."
-            ))
+            if result.get('temp_rod_broken'):
+                await self._safe_send_message(chat_id=group_chat_id, text=(
+                    "💥 Временная удочка сломалась после удачного улова.\n"
+                    "Теперь активна бамбуковая. Купить новую можно в магазине."
+                ))
+        except Exception as e:
+            logger.exception("Unhandled error in successful_payment_callback for user %s: %s", user_id, e)
+            # Try to refund Stars if possible
+            try:
+                await self.refund_star_payment(user_id, telegram_payment_charge_id)
+            except Exception as refund_exc:
+                logger.error("Failed to refund Stars after handler error: %s", refund_exc)
+            return
 
     async def refund_star_payment(self, user_id: int, telegram_payment_charge_id: str) -> bool:
         """Возврат Telegram Stars пользователю"""
