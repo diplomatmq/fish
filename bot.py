@@ -3671,34 +3671,27 @@ class FishBot:
             sticker_message = None
             try:
                 trash_name = trash.get('name')
-                if trash_name in TRASH_STICKERS:
+                    if trash_name in TRASH_STICKERS:
                     trash_image = TRASH_STICKERS[trash_name]
                     image_path = Path(__file__).parent / trash_image
-                    # Enqueue document send (persisted). We reply to the original group message for safety.
-                    await notifications.enqueue_notification('send_document', {
-                        'chat_id': group_chat_id,
-                        'document_path': str(image_path),
-                        'reply_to_message_id': group_message_id
-                    })
+                    # Send document immediately (send in the same handler so it's delivered on payment)
+                    try:
+                        with open(image_path, 'rb') as f:
+                            await self._safe_send_document(chat_id=group_chat_id, document=f, reply_to_message_id=group_message_id)
+                    except Exception as e:
+                        logger.warning(f"Immediate send of trash image failed for notification: %s", e)
             except Exception as e:
                 logger.warning(f"Could not send trash image for {trash.get('name')}: {e}")
 
             # If we had a sticker, reply with info to the sticker; otherwise reply to the original group message
-            # Enqueue text reply to group (reply to original invoice message)
-            await notifications.enqueue_notification('send_message', {
-                'chat_id': group_chat_id,
-                'text': message,
-                'reply_to_message_id': group_message_id
-            })
+            # Send text reply to group immediately
+            await self._safe_send_message(chat_id=group_chat_id, text=message, reply_to_message_id=group_message_id)
             return
 
         fish = result.get('fish')
         if not fish:
             logger.error("Guaranteed catch missing fish data for user %s", user_id)
-            await notifications.enqueue_notification('send_message', {
-                'chat_id': update.effective_chat.id,
-                'text': "❌ Не удалось получить данные улова. Звезды будут возвращены."
-            })
+            await self._safe_send_message(chat_id=update.effective_chat.id, text="❌ Не удалось получить данные улова. Звезды будут возвращены.")
             await self.refund_star_payment(user_id, telegram_payment_charge_id)
             return
 
@@ -3734,35 +3727,27 @@ class FishBot:
         # Отправляем стикер рыбы если он есть - в ответ на сообщение с кнопкой
         sticker_message = None
         if fish['name'] in FISH_STICKERS:
-            try:
-                fish_image = FISH_STICKERS[fish['name']]
-                image_path = Path(__file__).parent / fish_image
-                # Отправляем в ответ на исходное сообщение с кнопкой
-                # Enqueue sending fish sticker and a follow-up text reply to the group
-                await notifications.enqueue_notification('send_document', {
-                    'chat_id': group_chat_id,
-                    'document_path': str(image_path),
-                    'reply_to_message_id': group_message_id
-                })
-                await notifications.enqueue_notification('send_message', {
-                    'chat_id': group_chat_id,
-                    'text': message,
-                    'reply_to_message_id': group_message_id
-                })
-            except Exception as e:
-                logger.warning(f"Could not send fish image for {fish['name']}: {e}")
+                try:
+                    fish_image = FISH_STICKERS[fish['name']]
+                    image_path = Path(__file__).parent / fish_image
+                    # Send sticker/document immediately and follow-up text reply to the group
+                    try:
+                        with open(image_path, 'rb') as f:
+                            await self._safe_send_document(chat_id=group_chat_id, document=f, reply_to_message_id=group_message_id)
+                    except Exception as e:
+                        logger.warning("Immediate send of fish image failed: %s", e)
+                    await self._safe_send_message(chat_id=group_chat_id, text=message, reply_to_message_id=group_message_id)
+                except Exception as e:
+                    logger.warning(f"Could not send fish image for {fish['name']}: {e}")
 
         # Отправляем сообщение в ответ на стикер
         # Message(s) already enqueued above for fish case
 
         if result.get('temp_rod_broken'):
-            await notifications.enqueue_notification('send_message', {
-                'chat_id': group_chat_id,
-                'text': (
-                    "💥 Временная удочка сломалась после удачного улова.\n"
-                    "Теперь активна бамбуковая. Купить новую можно в магазине."
-                )
-            })
+            await self._safe_send_message(chat_id=group_chat_id, text=(
+                "💥 Временная удочка сломалась после удачного улова.\n"
+                "Теперь активна бамбуковая. Купить новую можно в магазине."
+            ))
 
     async def refund_star_payment(self, user_id: int, telegram_payment_charge_id: str) -> bool:
         """Возврат Telegram Stars пользователю"""
