@@ -4131,8 +4131,50 @@ def main():
     bot_instance.scheduler = AsyncIOScheduler()
     # Scheduler будет запущен после запуска приложения
     print("✅ Application создана успешно")
-    
+
+    async def dbinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Owner-only helper to inspect runtime DB file on the container
+        owner_id = 793216884
+        user_id = getattr(update.effective_user, 'id', None)
+        if user_id != owner_id:
+            await update.message.reply_text("Нет доступа.")
+            return
+
+        path = os.environ.get('FISHBOT_DB_PATH', DB_PATH)
+        lines = []
+        try:
+            st = os.stat(path)
+            lines.append(f"Path: {path}")
+            lines.append(f"Size: {st.st_size} bytes")
+            lines.append(f"Mtime: {datetime.fromtimestamp(st.st_mtime)}")
+            with open(path, 'rb') as f:
+                header = f.read(16)
+            try:
+                header_text = header.decode('ascii', errors='replace')
+            except Exception:
+                header_text = str(header)
+            lines.append(f"Header: {header.hex()}  ({header_text})")
+        except Exception as e:
+            lines.append("DB read error: " + str(e))
+
+        backups_list = []
+        try:
+            backups_dir = Path('/data/backups')
+            if backups_dir.exists():
+                for b in sorted(backups_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)[:5]:
+                    backups_list.append(f"{b.name}  {b.stat().st_size} bytes  {datetime.fromtimestamp(b.stat().st_mtime)}")
+        except Exception:
+            pass
+
+        if backups_list:
+            lines.append("Backups:\n" + "\n".join(backups_list))
+        else:
+            lines.append("Backups: none")
+
+        await update.message.reply_text("\n\n".join(lines))
+
     # Добавление обработчиков
+    application.add_handler(CommandHandler("dbinfo", dbinfo_command))
     application.add_handler(CommandHandler("start", bot_instance.start))
     application.add_handler(CommandHandler("fish", bot_instance.fish_command))
     application.add_handler(CommandHandler("menu", bot_instance.menu_command))
