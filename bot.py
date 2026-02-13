@@ -4251,6 +4251,18 @@ def main():
         ok = db.grant_net(target_user, net_name, getattr(update.effective_chat, 'id', -1), count)
         if ok:
             await update.message.reply_text(f"Сеть '{net_name}' выдана пользователю {target_user} (x{count}).")
+            # Попытаться отправить личное сообщение получателю
+            sender = update.effective_user
+            sender_name = getattr(sender, 'username', None) or getattr(sender, 'first_name', 'Пользователь')
+            dm_text = f"{sender_name} подарил вам: {net_name}." 
+            try:
+                # use bot_instance safe wrapper
+                res = await bot_instance._safe_send_message(chat_id=target_user, text=dm_text)
+                if res is None:
+                    await update.message.reply_text(f"Не удалось доставить уведомление пользователю {target_user} (возможно, он не писал боту).")
+            except Exception as e:
+                logger.exception("Failed to send DM after grant_net: %s", e)
+                await update.message.reply_text("Не удалось отправить личное сообщение получателю.")
         else:
             await update.message.reply_text(f"Не удалось выдать сеть '{net_name}'. Проверьте имя сети.")
 
@@ -4285,6 +4297,16 @@ def main():
         ok = db.grant_rod(target_user, rod_name, getattr(update.effective_chat, 'id', -1))
         if ok:
             await update.message.reply_text(f"Удочка '{rod_name}' выдана пользователю {target_user}.")
+            sender = update.effective_user
+            sender_name = getattr(sender, 'username', None) or getattr(sender, 'first_name', 'Пользователь')
+            dm_text = f"{sender_name} подарил вам: {rod_name}."
+            try:
+                res = await bot_instance._safe_send_message(chat_id=target_user, text=dm_text)
+                if res is None:
+                    await update.message.reply_text(f"Не удалось доставить уведомление пользователю {target_user} (возможно, он не писал боту).")
+            except Exception as e:
+                logger.exception("Failed to send DM after grant_rod: %s", e)
+                await update.message.reply_text("Не удалось отправить личное сообщение получателю.")
         else:
             await update.message.reply_text(f"Не удалось выдать удочку '{rod_name}'. Проверьте имя удочки.")
 
