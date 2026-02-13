@@ -3584,7 +3584,9 @@ class FishBot:
                     user_id=user_id,
                     telegram_payment_charge_id=telegram_payment_charge_id,
                     total_amount=total_amount,
-                    refund_status="none"
+                    refund_status="none",
+                    chat_id=chat_id,
+                    chat_title=chat_title,
                 )
                 # update chat-level aggregate (this will also save chat_title in chat_configs)
                 db.increment_chat_stars(chat_id, total_amount, chat_title=chat_title)

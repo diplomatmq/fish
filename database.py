@@ -445,15 +445,15 @@ class Database:
                 cursor.execute('ALTER TABLE fish ADD COLUMN required_level INTEGER DEFAULT 0')
                 conn.commit()
 
-                    # Ensure star_transactions has chat_id and chat_title columns (migration for older DBs)
-                    cursor.execute("PRAGMA table_info(star_transactions)")
-                    st_cols = [c[1] for c in cursor.fetchall()]
-                    if 'chat_id' not in st_cols:
-                        cursor.execute('ALTER TABLE star_transactions ADD COLUMN chat_id INTEGER')
-                        conn.commit()
-                    if 'chat_title' not in st_cols:
-                        cursor.execute("ALTER TABLE star_transactions ADD COLUMN chat_title TEXT")
-                        conn.commit()
+            # Ensure star_transactions has chat_id and chat_title columns (migration for older DBs)
+            cursor.execute("PRAGMA table_info(star_transactions)")
+            st_cols = [c[1] for c in cursor.fetchall()]
+            if 'chat_id' not in st_cols:
+                cursor.execute('ALTER TABLE star_transactions ADD COLUMN chat_id INTEGER')
+                conn.commit()
+            if 'chat_title' not in st_cols:
+                cursor.execute("ALTER TABLE star_transactions ADD COLUMN chat_title TEXT")
+                conn.commit()
             
             # Добавляем chat_id в player_rods
             cursor.execute("PRAGMA table_info(player_rods)")
@@ -1859,7 +1859,7 @@ class Database:
             suitable_list = [b.strip() for b in suitable_baits.split(',')]
             return bait_name in suitable_list
 
-    def add_star_transaction(self, user_id: int, telegram_payment_charge_id: str, total_amount: int, refund_status: str = "none") -> bool:
+    def add_star_transaction(self, user_id: int, telegram_payment_charge_id: str, total_amount: int, refund_status: str = "none", chat_id: Optional[int] = None, chat_title: Optional[str] = None) -> bool:
         """Добавить запись о транзакции Telegram Stars"""
         if not telegram_payment_charge_id:
             return False
@@ -1876,7 +1876,7 @@ class Database:
                 cursor.execute('''
                     INSERT OR IGNORE INTO star_transactions (user_id, telegram_payment_charge_id, total_amount, chat_id, chat_title, refund_status)
                     VALUES (?, ?, ?, ?, ?, ?)
-                ''', (user_id, telegram_payment_charge_id, total_amount, None, None, refund_status))
+                ''', (user_id, telegram_payment_charge_id, total_amount, chat_id, chat_title, refund_status))
             else:
                 cursor.execute('''
                     INSERT OR IGNORE INTO star_transactions (user_id, telegram_payment_charge_id, total_amount, refund_status)
