@@ -277,10 +277,8 @@ class FishingGame:
             logger.info("   🎯 Rarity: LEGENDARY (adjusted roll in 9701-9999)")
         
         # Получаем список рыб для локации и сезона
-        if force_legendary:
-            fish_list = db.get_fish_by_location_any_season(location, min_level=player_level)
-        else:
-            fish_list = db.get_fish_by_location(location, self.current_season, min_level=player_level)
+        # Всегда учитывать сезон при выборе списка рыб (даже для легендарных)
+        fish_list = db.get_fish_by_location(location, self.current_season, min_level=player_level)
         # Normalize rows to dicts in case some DB callers return tuples
         fish_list = self._normalize_fish_list(fish_list)
         if fish_list is None:
@@ -299,7 +297,14 @@ class FishingGame:
         if force_legendary:
             legendary_fish = [f for f in fish_list if f['rarity'] == target_rarity]
             if not legendary_fish:
-                legendary_fish = fish_list
+                logger.info(f"   ⚠️ No fish of rarity {target_rarity} available in season {self.current_season} for location {location} - SNAP")
+                db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
+                return {
+                    "success": False,
+                    "snap": True,
+                    "message": f"В этой локации нет рыбы редкости {target_rarity} в текущий сезон — срыв.",
+                    "location": location
+                }
             caught_fish = random.choice(legendary_fish)
         else:
             # ============ МЕХАНИКА НАЖИВКИ: 90% на нужную наживку, 10% срыв ============
@@ -437,21 +442,12 @@ class FishingGame:
         roll = random.randint(0, 1000)
         logger.info(f"   🎲 Guaranteed roll: {roll}/1000")
 
-        # Define missing variables to resolve unresolved references
-        fish_price: int = 0  # Default value, update as needed based on logic
-        rod_broken: bool = False  # Default value, update based on rod durability logic
-        current_dur: int = player.get('current_rod_durability', 0)  # Example: fetch from player data
-        max_dur: int = player.get('max_rod_durability', 100)  # Example: fetch from player data
-        temp_rod_result: Dict[str, Any] = {"broken": False}  # Default value, update as needed
-
         if roll <= 400:
-            # Trash
+            # Trash branch for guaranteed cast
             logger.info("   📊 Result: TRASH (roll in range 0-400)")
             trash = db.get_random_trash(location)
             if trash:
                 logger.info(f"   🗑️ Caught trash: {trash['name']}")
-
-                # Применяем урон прочности удочки
                 damage = self.get_durability_damage("trash", is_guaranteed=True)
                 db.reduce_rod_durability(user_id, player['current_rod'], damage, chat_id)
 
@@ -488,16 +484,17 @@ class FishingGame:
                     "level_info": level_info,
                     "temp_rod_broken": temp_rod_result.get("broken", False)
                 }
-        
+
         elif roll <= 700:
             target_rarity = "Обычная"
-        elif roll <= 950:
+        elif roll <= 980:
             target_rarity = "Редкая"
         else:
             target_rarity = "Легендарная"
 
         logger.info(f"   🎯 Rarity: {target_rarity} (roll: {roll})")
 
+        # Гарантированный улов: учитывать только сезон, игнорировать наживку.
         fish_list = db.get_fish_by_location(location, self.current_season, min_level=player.get('level', 0))
         fish_list = self._normalize_fish_list(fish_list)
         if not fish_list:
@@ -509,8 +506,10 @@ class FishingGame:
                 "location": location
             }
 
+        # Ищем рыбу нужной редкости; если нет — гарантия выдаёт любую рыбу сезона (пользователь всегда получает что-то)
         target_fish = [f for f in fish_list if f['rarity'] == target_rarity]
         if not target_fish:
+            logger.info(f"   ⚠️ No fish of rarity {target_rarity} available in season {self.current_season} for location {location} - falling back to any fish this season (guaranteed)")
             target_fish = fish_list
 
         caught_fish = random.choice(target_fish)
@@ -519,8 +518,33 @@ class FishingGame:
         length = round(random.uniform(caught_fish['min_length'], caught_fish['max_length']), 1)
         logger.info(f"   📏 Fish stats: weight={weight}kg, length={length}cm")
 
+        # Применяем урон прочности для гарантированного улова
+        damage = self.get_durability_damage(caught_fish['rarity'], is_guaranteed=True)
+        db.reduce_rod_durability(user_id, player['current_rod'], damage, chat_id)
+
+        # Проверяем прочность после урона
+        player_rod = db.get_player_rod(user_id, player['current_rod'], chat_id)
+        current_dur = player_rod.get('current_durability', 0) if player_rod else 0
+        max_dur = player_rod.get('max_durability', 100) if player_rod else 100
+        rod_broken = current_dur <= 0
+
         db.add_caught_fish(user_id, chat_id, caught_fish['name'], weight, location, length)
-        db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
+
+        xp_earned = db.calculate_item_xp({
+            'rarity': caught_fish.get('rarity', 'Обычная'),
+            'weight': weight,
+            'min_weight': caught_fish.get('min_weight', 0),
+            'max_weight': caught_fish.get('max_weight', 0),
+            'is_trash': False,
+        })
+        level_info = db.add_player_xp(user_id, chat_id, xp_earned)
+
+        fish_price = caught_fish.get('price', 0)
+        db.update_player(user_id, chat_id,
+                         coins=player['coins'] + fish_price,
+                         last_fish_time=datetime.now().isoformat())
+
+        temp_rod_result = self._consume_temp_rod_use(user_id, chat_id, player['current_rod'])
 
         return {
             "success": True,

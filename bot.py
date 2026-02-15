@@ -3565,78 +3565,31 @@ class FishBot:
         """Обработка успешной оплаты через Telegram Stars"""
         payment = update.message.successful_payment
         user_id = update.effective_user.id
-        # By default the payment update appears in the user's private chat
-        payment_chat_id = update.effective_chat.id
+        chat_id = update.effective_chat.id
 
         telegram_payment_charge_id = getattr(payment, "telegram_payment_charge_id", None)
         total_amount = getattr(payment, "total_amount", 0)
 
-        # Determine target chat for this transaction: prefer group_chat_id from active_invoices
-        target_chat_id = None
-        target_chat_title = None
-        try:
-            inv = self.active_invoices.get(user_id)
-            if inv and inv.get('group_chat_id'):
-                target_chat_id = inv.get('group_chat_id')
-        except Exception:
-            target_chat_id = None
-
-        # Fallback: try parse invoice payload which may contain the originating chat_id
-        if not target_chat_id:
-            payload = getattr(payment, 'invoice_payload', '') or ''
-            if payload and payload.startswith('guaranteed_'):
-                # payload format: guaranteed_<location>_<chat_id>_<timestamp>
-                parts = payload.split('_')
-                if len(parts) >= 4:
-                    try:
-                        possible_chat_id = int(parts[-2])
-                        target_chat_id = possible_chat_id
-                    except Exception:
-                        pass
-
-        # If still not found, fall back to the chat where the payment message appeared
-        if not target_chat_id:
-            target_chat_id = payment_chat_id
-
-        # Try to resolve chat title for the target chat (prefer stored title if available)
-        try:
-            # If the target chat is different from the private chat, query Telegram for its title
-            if target_chat_id and target_chat_id != payment_chat_id:
-                try:
-                    chat_obj = await context.bot.get_chat(target_chat_id)
-                    if getattr(chat_obj, 'title', None):
-                        target_chat_title = chat_obj.title
-                    elif getattr(chat_obj, 'username', None):
-                        target_chat_title = f"@{chat_obj.username}"
-                    else:
-                        parts = []
-                        if getattr(chat_obj, 'first_name', None):
-                            parts.append(chat_obj.first_name)
-                        if getattr(chat_obj, 'last_name', None):
-                            parts.append(chat_obj.last_name)
-                        if parts:
-                            target_chat_title = ' '.join(parts)
-                except Exception:
-                    target_chat_title = None
-            else:
-                # payment happened in private chat — keep title as None (DB may store username elsewhere)
-                target_chat_title = None
-        except Exception:
-            target_chat_title = None
-
         # Сохраняем транзакцию
         if telegram_payment_charge_id:
+            # try to include chat metadata when recording the transaction
+            chat_title = None
             try:
+                chat_title = update.effective_chat.title
+            except Exception:
+                chat_title = None
+            try:
+                # If DB supports chat_id/chat_title columns, add them via migration-aware method
                 db.add_star_transaction(
                     user_id=user_id,
                     telegram_payment_charge_id=telegram_payment_charge_id,
                     total_amount=total_amount,
                     refund_status="none",
-                    chat_id=target_chat_id,
-                    chat_title=target_chat_title,
+                    chat_id=chat_id,
+                    chat_title=chat_title,
                 )
                 # update chat-level aggregate (this will also save chat_title in chat_configs)
-                db.increment_chat_stars(target_chat_id, total_amount, chat_title=target_chat_title)
+                db.increment_chat_stars(chat_id, total_amount, chat_title=chat_title)
             except Exception as e:
                 logger.warning("Failed to record star transaction or increment chat stars: %s", e)
             # If DB has explicit star_transactions chat columns we will keep them in migration
@@ -3648,7 +3601,6 @@ class FishBot:
         
         # Извлекаем локацию и chat_id из payload (если есть) или используем текущую
         payload = payment.invoice_payload
-        # Process payload and perform actions (inner blocks handle errors)
         if payload and payload.startswith("repair_rod_"):
             # Обработка восстановления удочки
             rod_name = payload.replace("repair_rod_", "")
@@ -3661,7 +3613,7 @@ class FishBot:
                     logger.warning(f"Could not send temp rod repair rejection to {user_id}: {e}")
                 return
             db.repair_rod(user_id, rod_name, update.effective_chat.id)
-
+            
             # Отправляем подтверждение в ЛС
             try:
                 await update.message.reply_text(
@@ -3670,7 +3622,6 @@ class FishBot:
             except Exception as e:
                 logger.warning(f"Could not send repair confirmation to {user_id}: {e}")
             return
-
         elif payload and payload.startswith("guaranteed_"):
             parts = payload.replace("guaranteed_", "").rsplit("_", 2)
             if len(parts) >= 3:
@@ -3684,31 +3635,31 @@ class FishBot:
                 group_chat_id = update.effective_chat.id
         else:
             # Получаем текущую локацию игрока
-            player = db.get_player(user_id, payment_chat_id)
+            player = db.get_player(user_id, chat_id)
             location = player['current_location']
             group_chat_id = update.effective_chat.id
+        
+        # Получаем и сохраняем информацию о сообщении с кнопкой ДО удаления из active_invoices
+        group_message_id = None
+        if user_id in self.active_invoices:
+            group_message_id = self.active_invoices[user_id].get('group_message_id')
+            # Теперь удаляем инвойс из активных
+            del self.active_invoices[user_id]
+        
+        # Выполняем гарантированный улов (все проверки уже пройдены в precheckout)
+        try:
+            result = game.fish(user_id, group_chat_id, location, guaranteed=True)
+        except Exception as e:
+            logger.error(f"Critical error in guaranteed catch for user {user_id}: {e}", exc_info=True)
+            message = f"❌ Произошла критическая ошибка при выполнении улова: {str(e)}. Пожалуйста, обратитесь в поддержку."
+            await self._safe_send_message(
+                chat_id=update.effective_chat.id,
+                text=message
+            )
 
-            # Получаем и сохраняем информацию о сообщении с кнопкой ДО удаления из active_invoices
-            group_message_id = None
-            if user_id in self.active_invoices:
-                group_message_id = self.active_invoices[user_id].get('group_message_id')
-                # Теперь удаляем инвойс из активных
-                del self.active_invoices[user_id]
-
-            # Выполняем гарантированный улов (все проверки уже пройдены в precheckout)
-            try:
-                result = game.fish(user_id, group_chat_id, location, guaranteed=True)
-            except Exception as e:
-                logger.error(f"Critical error in guaranteed catch for user {user_id}: {e}", exc_info=True)
-                message = f"❌ Произошла критическая ошибка при выполнении улова: {str(e)}. Пожалуйста, обратитесь в поддержку."
-                await self._safe_send_message(
-                    chat_id=update.effective_chat.id,
-                    text=message
-                )
-
-                # Возвращаем звезды, если оплата прошла, но улов не был обработан
-                await self.refund_star_payment(user_id, telegram_payment_charge_id)
-                return
+            # Возвращаем звезды, если оплата прошла, но улов не был обработан
+            await self.refund_star_payment(user_id, telegram_payment_charge_id)
+            return
         
         # If result indicates trash (even when success==False in game logic), handle it here
         if result.get('is_trash'):
@@ -3752,7 +3703,7 @@ class FishBot:
         weight = result['weight']
         length = result['length']
 
-        player = db.get_player(user_id, payment_chat_id)
+        player = db.get_player(user_id, chat_id)
         logger.info(
             "Catch: user=%s (%s) fish=%s location=%s bait=%s weight=%.2fkg length=%.1fcm guaranteed=True",
             update.effective_user.id,
@@ -3798,16 +3749,10 @@ class FishBot:
         # Message(s) already enqueued above for fish case
 
         if result.get('temp_rod_broken'):
-            try:
-                await self._safe_send_message(chat_id=group_chat_id, text=(
-                    "💥 Временная удочка сломалась после удачного улова.\n"
-                    "Теперь активна бамбуковая. Купить новую можно в магазине."
-                ))
-            except Exception as e:
-                logger.warning("Failed to notify about temp rod broken for user %s: %s", user_id, e)
-
-        # Outer exception handling removed to avoid indentation/syntax issues;
-        # inner try/except blocks will handle and log errors per-action.
+            await self._safe_send_message(chat_id=group_chat_id, text=(
+                "💥 Временная удочка сломалась после удачного улова.\n"
+                "Теперь активна бамбуковая. Купить новую можно в магазине."
+            ))
 
     async def refund_star_payment(self, user_id: int, telegram_payment_charge_id: str) -> bool:
         """Возврат Telegram Stars пользователю"""
@@ -4147,9 +4092,7 @@ def main():
         try:
             # Ensure DB table exists synchronously, then schedule the async worker
             notifications.init_notifications_table()
-            # Schedule the notifications worker to start once the event loop is running
-            loop = asyncio.get_event_loop()
-            loop.call_soon_threadsafe(lambda: asyncio.create_task(notifications.start_worker(application)))
+            application.create_task(notifications.start_worker(application))
         except Exception as e:
             logger.exception("post_init: failed to start notifications worker: %s", e)
 
@@ -4281,96 +4224,48 @@ def main():
             await update.message.reply_text("Эту команду можно запускать только в личных сообщениях боту.")
             return
 
-        # Aggregate star totals from `star_transactions` for all time, grouped by chat_id.
         try:
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = None
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT chat_id, COALESCE(chat_title, '') as chat_title, SUM(total_amount) as total
-                FROM star_transactions
-                WHERE chat_id IS NOT NULL
-                GROUP BY chat_id
-                ORDER BY total DESC
-            """)
-            rows = cur.fetchall()
-            conn.close()
+            chats = db.get_all_chat_stars()
         except Exception as e:
-            logger.exception("chatstar: DB error reading star_transactions: %s", e)
+            logger.exception("chatstar: DB error: %s", e)
             await update.message.reply_text("Ошибка доступа к БД.")
             return
 
-        if not rows:
+        if not chats:
             await update.message.reply_text("Нет данных по чатам.")
             return
 
-        lines = []
-        total = 0
-        # For each chat_id, resolve title (prefer stored title), include only non-private chats
-        for chat_id, stored_title, total_amount in rows:
-            # skip null/empty chat_id
-            if chat_id is None:
-                continue
+        total = sum(int(c.get('stars_total', 0)) for c in chats)
+        lines = [f"Всего звёзд: {total}", ""]
+        for c in chats:
+            title = c.get('chat_title') or ''
+            if not title:
+                # try fetching title from Telegram and update DB
+                try:
+                    chat_id = c.get('chat_id')
+                    if chat_id:
+                        chat_obj = await self.application.bot.get_chat(chat_id)
+                        fetched_title = getattr(chat_obj, 'title', None) or getattr(chat_obj, 'username', None) or (getattr(chat_obj, 'first_name', None) or '')
+                        if fetched_title:
+                            title = fetched_title
+                            try:
+                                db.update_chat_title(chat_id, title)
+                            except Exception:
+                                pass
+                except Exception:
+                    title = f"chat:{c.get('chat_id')}"
+            if not title:
+                title = f"chat:{c.get('chat_id')}"
+            stars = c.get('stars_total', 0)
+            lines.append(f"{title} — {stars}")
 
-            resolved_title = stored_title or ''
-            is_private = False
-            # If we don't have a title or want to validate it's a group, query Telegram
-            try:
-                chat_obj = await context.bot.get_chat(chat_id)
-                chat_type = getattr(chat_obj, 'type', None)
-                if chat_type == 'private':
-                    is_private = True
-                # prefer group/channel title
-                if getattr(chat_obj, 'title', None):
-                    resolved_title = chat_obj.title
-                elif getattr(chat_obj, 'username', None):
-                    # For channels/groups with usernames, show the title if available; username isn't desired
-                    if not resolved_title:
-                        resolved_title = f"@{chat_obj.username}"
-                else:
-                    # personal name fallback
-                    parts = []
-                    if getattr(chat_obj, 'first_name', None):
-                        parts.append(chat_obj.first_name)
-                    if getattr(chat_obj, 'last_name', None):
-                        parts.append(chat_obj.last_name)
-                    if parts and not resolved_title:
-                        resolved_title = ' '.join(parts)
-                # update DB stored title for future
-                if resolved_title:
-                    try:
-                        db.update_chat_title(chat_id, resolved_title)
-                    except Exception:
-                        logger.debug('chatstar: cannot update chat title for %s', chat_id)
-            except Exception:
-                # can't resolve via API; leave stored_title as-is
-                pass
-
-            if is_private:
-                # skip personal chats — only groups/channels desired
-                continue
-
-            display_title = resolved_title or f"chat:{chat_id}"
-            lines.append((display_title, int(total_amount or 0), chat_id))
-            total += int(total_amount or 0)
-
-        if not lines:
-            await update.message.reply_text("Нет групповых чатов с платежами.")
-            return
-
-        # sort by total desc
-        lines.sort(key=lambda x: x[1], reverse=True)
-
-        out_lines = [f"Всего звёзд: {total}", ""]
-        for title, amt, cid in lines:
-            out_lines.append(f"{title} — {amt}")
-
-        text = "\n".join(out_lines)
+        # Send as multiple messages if too long
+        text = "\n".join(lines)
         if len(text) > 3900:
             # chunk by lines
             chunk = []
             cur_len = 0
-            for ln in out_lines:
+            for ln in lines:
                 if cur_len + len(ln) + 1 > 3900:
                     await bot_instance._safe_send_message(chat_id=owner_id, text="\n".join(chunk))
                     chunk = [ln]
@@ -4382,8 +4277,6 @@ def main():
                 await bot_instance._safe_send_message(chat_id=owner_id, text="\n".join(chunk))
         else:
             await bot_instance._safe_send_message(chat_id=owner_id, text=text)
-
-        # (duplicate chunking removed)
 
     async def grant_net_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         owner_id = 793216884

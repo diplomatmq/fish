@@ -1856,8 +1856,11 @@ class Database:
             if suitable_baits == "Все":
                 return True
             
-            suitable_list = [b.strip() for b in suitable_baits.split(',')]
-            return bait_name in suitable_list
+            # Сравниваем без учёта регистра и пробелов
+            suitable_list = [b.strip().lower() for b in suitable_baits.split(',') if b.strip()]
+            if not bait_name:
+                return False
+            return bait_name.strip().lower() in suitable_list
 
     def add_star_transaction(self, user_id: int, telegram_payment_charge_id: str, total_amount: int, refund_status: str = "none", chat_id: Optional[int] = None, chat_title: Optional[str] = None) -> bool:
         """Добавить запись о транзакции Telegram Stars"""
@@ -2614,4 +2617,3 @@ class Database:
 
 # Экземпляр базы данных для импорта в других модулях
 db = Database()
-
