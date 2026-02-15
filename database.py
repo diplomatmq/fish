@@ -1648,17 +1648,16 @@ class Database:
         with self._connect() as conn:
             cursor = conn.cursor()
 
-            where_clauses = []
+            where_clauses: List[str] = []
             params: List = []
 
-            if chat_id is not None:
-                where_clauses.append("cf.chat_id = ?")
-                params.append(chat_id)
-            else:
-                join_clause = "LEFT JOIN players p ON p.user_id = cf.user_id"
+            # Always join players to get username
+            join_clause = "LEFT JOIN players p ON p.user_id = cf.user_id"
 
+            # If chat_id provided, filter strictly by integer chat_id stored in caught_fish
             if chat_id is not None:
-                join_clause = "LEFT JOIN players p ON p.user_id = cf.user_id"
+                where_clauses.append("CAST(cf.chat_id AS INTEGER) = ?")
+                params.append(int(chat_id))
 
             if since is not None:
                 where_clauses.append("datetime(cf.caught_at) >= datetime(?)")
