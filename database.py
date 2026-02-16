@@ -583,10 +583,19 @@ class Database:
                     ON CONFLICT (user_id, chat_id) DO NOTHING
                 ''')
 
-                # Drop old table and rename new one
-                cursor.execute('DROP TABLE players')
-                cursor.execute('ALTER TABLE players_new RENAME TO players')
-                conn.commit()
+                # Drop old table and rename new one. On Postgres this may fail if
+                # other tables have foreign keys referencing `players`.
+                try:
+                    cursor.execute('DROP TABLE players')
+                    cursor.execute('ALTER TABLE players_new RENAME TO players')
+                    conn.commit()
+                except Exception as e:
+                    logger.warning("Could not replace players table (%s). Skipping composite-PK migration.", e)
+                    try:
+                        cursor.execute('DROP TABLE IF EXISTS players_new')
+                        conn.commit()
+                    except Exception:
+                        pass
 
             # refresh columns list after potential schema change
             columns = get_columns('players')
