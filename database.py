@@ -635,6 +635,36 @@ class Database:
             ensure_column('user_ref_links', 'chat_invite_link', 'TEXT')
             ensure_column('caught_fish', 'chat_id', 'INTEGER')
 
+            # Ensure integer PK columns have a sequence/default on Postgres (e.g., rods.id)
+            def ensure_serial_pk(table: str, id_col: str = 'id'):
+                # check column_default in information_schema
+                cursor.execute(
+                    "SELECT column_default FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
+                    (table, id_col),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return
+                col_default = row[0]
+                if col_default:
+                    return
+                seq_name = f"{table}_{id_col}_seq"
+                try:
+                    cursor.execute(f"CREATE SEQUENCE IF NOT EXISTS {seq_name}")
+                    cursor.execute(f"ALTER TABLE {table} ALTER COLUMN {id_col} SET DEFAULT nextval('{seq_name}')")
+                    # set sequence to max(id) or 1
+                    cursor.execute(f"SELECT COALESCE(MAX({id_col}), 1) FROM {table}")
+                    max_id = cursor.fetchone()[0] or 1
+                    cursor.execute(f"SELECT setval('{seq_name}', %s)", (max_id,))
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+
+            ensure_serial_pk('rods', 'id')
+
             # Populate chat_id in player_rods and player_nets and caught_fish
             cursor.execute('''
                 UPDATE player_rods
