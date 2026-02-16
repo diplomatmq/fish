@@ -743,7 +743,28 @@ class Database:
                 ("Озеро", 200, 0, 15),
                 ("Море", 300, 0, 20),
             ]
-            
+
+            # Ensure `locations.id` has a sequence/default on Postgres so inserts without id work
+            try:
+                cursor.execute(
+                    "SELECT column_default FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
+                    ('locations', 'id'),
+                )
+                row = cursor.fetchone()
+                if row and not row[0]:
+                    seq_name = 'locations_id_seq'
+                    cursor.execute(f"CREATE SEQUENCE IF NOT EXISTS {seq_name}")
+                    cursor.execute(f"ALTER TABLE locations ALTER COLUMN id SET DEFAULT nextval('{seq_name}')")
+                    cursor.execute("SELECT COALESCE(MAX(id), 1) FROM locations")
+                    max_id = cursor.fetchone()[0] or 1
+                    cursor.execute("SELECT setval(%s, %s)", (seq_name, max_id))
+                    conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
             cursor.executemany('''
                 INSERT OR IGNORE INTO locations (name, fish_population, current_players, max_players)
                 VALUES (?, ?, ?, ?)
