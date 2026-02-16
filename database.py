@@ -1,10 +1,120 @@
+import os
 import sqlite3
 import logging
 import random
 from typing import Any, Dict, List, Optional, Union
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
+
 from config import DB_PATH
+
+# Optional Postgres support
+try:
+    import psycopg2
+except Exception:
+    psycopg2 = None
+
+class PostgresConnWrapper:
+    """A thin wrapper exposing a sqlite-like connection API for psycopg2.
+    It provides execute(), cursor(), commit(), and context-manager support.
+    """
+    def __init__(self, dsn: str):
+        if not psycopg2:
+            raise RuntimeError('psycopg2 is required for Postgres support')
+        # accept full DATABASE_URL or components
+        self._conn = psycopg2.connect(dsn)
+
+    def _translate_sql(self, sql: str) -> str:
+        s = sql
+        # remove sqlite-specific PRAGMA statements
+        if s.strip().upper().startswith('PRAGMA'):
+            return ''
+        # translate INSERT OR IGNORE -> INSERT ... ON CONFLICT DO NOTHING
+        if 'INSERT OR IGNORE' in s.upper():
+            # simple replacement: remove OR IGNORE and append ON CONFLICT DO NOTHING
+            # append only if not already present
+            s = s.replace('INSERT OR IGNORE', 'INSERT')
+            if 'ON CONFLICT' not in s.upper():
+                s = s.rstrip().rstrip(';') + ' ON CONFLICT DO NOTHING;'
+        return s
+
+    def execute(self, sql: str, params=None):
+        sql = sql or ''
+        # Handle PRAGMA table_info(...) emulation
+        if sql.strip().upper().startswith('PRAGMA TABLE_INFO'):
+            # extract table name
+            import re
+            m = re.search(r"PRAGMA\s+table_info\(([^)]+)\)", sql, re.IGNORECASE)
+            table = m.group(1).strip(' \"') if m else None
+            cur = self._conn.cursor()
+            if table:
+                cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name=%s ORDER BY ordinal_position", (table,))
+                cols = cur.fetchall()
+                # emulate sqlite pragma rows: (cid, name, type, notnull, dflt_value, pk)
+                rows = []
+                for i, (colname,) in enumerate(cols):
+                    rows.append((i, colname, None, None, None, 0))
+                return FakeCursor(rows)
+            return FakeCursor([])
+
+        out_sql = self._translate_sql(sql)
+        if not out_sql:
+            return FakeCursor([])
+
+        cur = self._conn.cursor()
+        if params:
+            cur.execute(out_sql, params)
+        else:
+            cur.execute(out_sql)
+        return cur
+
+    def cursor(self):
+        return self._conn.cursor()
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+        else:
+            try:
+                self._conn.commit()
+            except Exception:
+                pass
+        # do not close connection here to allow reuse by app lifecycle
+        return False
+
+
+class FakeCursor:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def __iter__(self):
+        return iter(self._rows)
+
 
 logger = logging.getLogger(__name__)
 
@@ -51,15 +161,22 @@ class Database:
         self.init_db()
 
     def _connect(self) -> sqlite3.Connection:
+        # If DATABASE_URL is set, use Postgres wrapper
+        db_url = os.getenv('DATABASE_URL')
+        if db_url:
+            # psycopg2 requires a URL or DSN; our wrapper accepts it
+            return PostgresConnWrapper(db_url)
+
         # Ensure DB_PATH is a string for sqlite
         path = str(DB_PATH)
         conn = sqlite3.connect(path, timeout=10)
 
         # Try to set WAL journal mode; if filesystem doesn't support WAL
         # (some network or managed volumes), fall back to DELETE mode.
+        # Try to set WAL journal mode; if filesystem doesn't support WAL
+        # (some network or managed volumes), fall back to DELETE mode.
         try:
             cur = conn.execute("PRAGMA journal_mode=WAL")
-            # Some SQLite builds return a row, some return nothing; ignore result
             try:
                 _ = cur.fetchone()
             except Exception:
@@ -68,7 +185,6 @@ class Database:
             try:
                 conn.execute("PRAGMA journal_mode=DELETE")
             except Exception:
-                # If even that fails, continue — connection may still work
                 pass
 
         # Set other pragmas, ignore failures to avoid crashing on unsupported FS

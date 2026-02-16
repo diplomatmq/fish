@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import logging
 import html
-import sqlite3
 import requests
 import random
 import asyncio
@@ -281,7 +280,7 @@ class FishBot:
     async def auto_recover_rods(self):
         """Автоматически восстанавливает прочность удочек игроков каждые 10 минут"""
         try:
-            with sqlite3.connect(DB_PATH) as conn:
+            with db._connect() as conn:
                 cursor = conn.cursor()
                 # Получаем все удочки, у которых начато восстановление
                 cursor.execute('''
@@ -4157,9 +4156,8 @@ def main():
 
         out_lines = []
         try:
-            import sqlite3
-            path = os.environ.get('FISHBOT_DB_PATH', DB_PATH)
-            conn = sqlite3.connect(path)
+            # Use db connection wrapper (works with sqlite or Postgres depending on DATABASE_URL)
+            conn = db._connect()
             cur = conn.cursor()
             # Basic counts
             for q, label in [
@@ -4314,14 +4312,18 @@ def main():
         if getattr(update.effective_user, 'id', None) != owner_id:
             await update.message.reply_text("Нет доступа.")
             return
-        try:
-            import sqlite3, os
-            path = os.environ.get('FISHBOT_DB_PATH', DB_PATH)
-            conn = sqlite3.connect(path)
-            cur = conn.cursor()
-            cur.execute('DROP TRIGGER IF EXISTS caught_fish_fix_chatid_after_insert')
-            conn.commit()
-            conn.close()
+            try:
+                conn = db._connect()
+                cur = conn.cursor()
+                cur.execute('DROP TRIGGER IF EXISTS caught_fish_fix_chatid_after_insert')
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             await update.message.reply_text('Trigger dropped (if existed). Please restart the bot service.')
         except Exception as e:
             await update.message.reply_text('Failed to drop trigger: ' + str(e))
