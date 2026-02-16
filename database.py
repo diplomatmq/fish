@@ -591,11 +591,21 @@ class Database:
                     conn.commit()
                 except Exception as e:
                     logger.warning("Could not replace players table (%s). Skipping composite-PK migration.", e)
+                    # The failed DROP may leave the current transaction aborted in Postgres;
+                    # rollback to clear the error state so subsequent commands can run.
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    # Try to drop the temporary table if it exists, in a fresh transaction.
                     try:
                         cursor.execute('DROP TABLE IF EXISTS players_new')
                         conn.commit()
                     except Exception:
-                        pass
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
 
             # refresh columns list after potential schema change
             columns = get_columns('players')
