@@ -791,15 +791,15 @@ class Database:
                     )
                     row = cursor.fetchone()
                     if row and row[0] != 'bigint':
-                            try:
-                                # Use a safe USING expression that converts only numeric text to bigint,
-                                # setting non-numeric values to NULL to avoid cast errors.
-                                safe_using = (
-                                    "USING (CASE WHEN COALESCE(" + column_name + "::text, '') ~ '^[0-9]+$' "
-                                    "THEN (" + column_name + "::text)::bigint ELSE NULL END)"
-                                )
-                                cursor.execute(f'ALTER TABLE {table_name} ALTER COLUMN {column_name} TYPE BIGINT {safe_using}')
-                                conn.commit()
+                        try:
+                            # Use a safe USING expression that converts only numeric text to bigint,
+                            # setting non-numeric values to NULL to avoid cast errors.
+                            safe_using = (
+                                "USING (CASE WHEN COALESCE(" + column_name + "::text, '') ~ '^[0-9]+$' "
+                                "THEN (" + column_name + "::text)::bigint ELSE NULL END)"
+                            )
+                            cursor.execute(f'ALTER TABLE {table_name} ALTER COLUMN {column_name} TYPE BIGINT {safe_using}')
+                            conn.commit()
                         except Exception:
                             try:
                                 conn.rollback()
