@@ -4084,21 +4084,7 @@ def main():
     # Создаем экземпляр бота
     bot_instance = FishBot()
 
-    # Run DB fixer at startup to normalize chat_id and ensure trigger exists
-    try:
-        # Import local script functions
-        from tools.fix_caught_fish_chatid import backup_db, run_fix
-        try:
-            print("🔧 Running DB fixer: creating backup and normalizing caught_fish.chat_id...")
-            backup_db(DB_PATH)
-            run_fix(DB_PATH)
-            print("🔧 DB fixer completed.")
-        except Exception as e:
-            print("⚠️ DB fixer failed:", e)
-            logger.exception("DB fixer failed: %s", e)
-    except Exception:
-        # If import fails, skip silently (tools may not exist in some deployments)
-        logger.debug("DB fixer not available or failed to import tools.fix_caught_fish_chatid")
+    # NOTE: DB fixer run removed. Manual fixes should be performed with tools/fix_caught_fish_chatid.py
     
     # Создаем приложение
     defaults = Defaults(parse_mode="HTML")
@@ -4226,6 +4212,51 @@ def main():
             await update.message.reply_text(f"Backup created: {dst}")
         except Exception as e:
             await update.message.reply_text("Backup failed: " + str(e))
+
+    async def restore_backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Owner-only: restore the most recent backup found in backups/ to DB_PATH."""
+        owner_id = 793216884
+        if getattr(update.effective_user, 'id', None) != owner_id:
+            await update.message.reply_text("Нет доступа.")
+            return
+        try:
+            import shutil, os
+            src = os.environ.get('FISHBOT_DB_PATH', DB_PATH)
+            backups_dir = os.path.join(os.path.dirname(src), 'backups')
+            if not os.path.isdir(backups_dir):
+                await update.message.reply_text(f"Backups directory not found: {backups_dir}")
+                return
+            files = sorted([os.path.join(backups_dir, f) for f in os.listdir(backups_dir)], key=lambda p: os.path.getmtime(p), reverse=True)
+            if not files:
+                await update.message.reply_text("No backup files found in backups directory.")
+                return
+            latest = files[0]
+            # Make a safety copy of current DB
+            current = src
+            safe_copy = current + ".pre_restore"
+            shutil.copy2(current, safe_copy)
+            shutil.copy2(latest, current)
+            await update.message.reply_text(f"Restored DB from {os.path.basename(latest)}. Saved previous DB as {os.path.basename(safe_copy)}.\nPlease restart the bot service.")
+        except Exception as e:
+            await update.message.reply_text("Restore failed: " + str(e))
+
+    async def drop_trigger_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Owner-only: drop the caught_fish trigger if present."""
+        owner_id = 793216884
+        if getattr(update.effective_user, 'id', None) != owner_id:
+            await update.message.reply_text("Нет доступа.")
+            return
+        try:
+            import sqlite3, os
+            path = os.environ.get('FISHBOT_DB_PATH', DB_PATH)
+            conn = sqlite3.connect(path)
+            cur = conn.cursor()
+            cur.execute('DROP TRIGGER IF EXISTS caught_fish_fix_chatid_after_insert')
+            conn.commit()
+            conn.close()
+            await update.message.reply_text('Trigger dropped (if existed). Please restart the bot service.')
+        except Exception as e:
+            await update.message.reply_text('Failed to drop trigger: ' + str(e))
 
     async def chatstar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Owner-only: return list of chats and stars_total. Use in private chat."""
@@ -4396,6 +4427,8 @@ def main():
     application.add_handler(CommandHandler("start", bot_instance.start))
     application.add_handler(CommandHandler("dbstats", dbstats_command))
     application.add_handler(CommandHandler("backupdb", backupdb_command))
+    application.add_handler(CommandHandler("restore_backup", restore_backup_command))
+    application.add_handler(CommandHandler("drop_trigger", drop_trigger_command))
     application.add_handler(CommandHandler("grant_net", grant_net_command))
     application.add_handler(CommandHandler("grant_rod", grant_rod_command))
     application.add_handler(CommandHandler("chatstar", chatstar_command))
