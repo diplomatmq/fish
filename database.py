@@ -1406,11 +1406,11 @@ class Database:
         """Получить всю пойманную рыбу пользователя"""
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE caught_fish
-                SET chat_id = ?
-                WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1)
-            ''', (chat_id, user_id))
+            # Do NOT mutate DB when reading caught_fish (was assigning missing chat_id to current chat)
+            # Previously this code updated rows with NULL/invalid chat_id to the current chat_id here,
+            # which caused old catches to be retroactively reassigned when a user viewed `/stats`.
+            # Keep reads side-effect free; use tools/fix_caught_fish_chatid.py or admin commands
+            # to perform any explicit normalization instead.
             cursor.execute('''
                 SELECT cf.*, 
                        COALESCE(f.name, t.name) AS name,
