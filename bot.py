@@ -4312,18 +4312,18 @@ def main():
         if getattr(update.effective_user, 'id', None) != owner_id:
             await update.message.reply_text("Нет доступа.")
             return
+        try:
+            conn = db._connect()
+            cur = conn.cursor()
+            cur.execute('DROP TRIGGER IF EXISTS caught_fish_fix_chatid_after_insert')
             try:
-                conn = db._connect()
-                cur = conn.cursor()
-                cur.execute('DROP TRIGGER IF EXISTS caught_fish_fix_chatid_after_insert')
-                try:
-                    conn.commit()
-                except Exception:
-                    pass
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+                conn.commit()
+            except Exception:
+                pass
+            try:
+                conn.close()
+            except Exception:
+                pass
             await update.message.reply_text('Trigger dropped (if existed). Please restart the bot service.')
         except Exception as e:
             await update.message.reply_text('Failed to drop trigger: ' + str(e))
