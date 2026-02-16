@@ -651,11 +651,14 @@ class Database:
                 seq_name = f"{table}_{id_col}_seq"
                 try:
                     cursor.execute(f"CREATE SEQUENCE IF NOT EXISTS {seq_name}")
+                    # ensure sequence is owned by the table column
+                    cursor.execute(f"ALTER SEQUENCE {seq_name} OWNED BY {table}.{id_col}")
                     cursor.execute(f"ALTER TABLE {table} ALTER COLUMN {id_col} SET DEFAULT nextval('{seq_name}')")
-                    # set sequence to max(id) or 1
-                    cursor.execute(f"SELECT COALESCE(MAX({id_col}), 1) FROM {table}")
-                    max_id = cursor.fetchone()[0] or 1
-                    cursor.execute(f"SELECT setval('{seq_name}', %s)", (max_id,))
+                    # set sequence to max(id) or 1 and mark as called
+                    cursor.execute(f"SELECT COALESCE(MAX({id_col}), 0) FROM {table}")
+                    max_id = cursor.fetchone()[0] or 0
+                    # setval(..., true) makes next nextval = max_id+1
+                    cursor.execute(f"SELECT setval(%s, %s, true)", (seq_name, max_id))
                     conn.commit()
                 except Exception:
                     try:
