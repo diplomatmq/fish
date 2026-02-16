@@ -76,7 +76,45 @@ class PostgresConnWrapper:
         return cur
 
     def cursor(self):
-        return self._conn.cursor()
+        parent = self
+
+        class _CursorWrapper:
+            def __init__(self):
+                self._last = None
+
+            def execute(self, sql, params=None):
+                # Delegate to the parent.execute so translations and PRAGMA emulation apply
+                self._last = parent.execute(sql, params)
+
+            def executemany(self, sql, seq_of_params):
+                # executemany isn't used heavily; emulate by executing in a loop so translations apply
+                for params in seq_of_params:
+                    parent.execute(sql, params)
+
+            def fetchall(self):
+                return self._last.fetchall() if self._last is not None else []
+
+            def fetchone(self):
+                return self._last.fetchone() if self._last is not None else None
+
+            @property
+            def description(self):
+                try:
+                    return getattr(self._last, 'description', None)
+                except Exception:
+                    return None
+
+            def __iter__(self):
+                return iter(self._last) if self._last is not None else iter(())
+
+            def close(self):
+                try:
+                    if hasattr(self._last, 'close'):
+                        self._last.close()
+                except Exception:
+                    pass
+
+        return _CursorWrapper()
 
     def commit(self):
         self._conn.commit()
