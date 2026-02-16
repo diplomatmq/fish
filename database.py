@@ -68,6 +68,16 @@ class PostgresConnWrapper:
             if conflict_cols:
                 updates = ', '.join([f"{col} = EXCLUDED.{col}" for col in cols if col])
                 s = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({vals}) ON CONFLICT ({conflict_cols}) DO UPDATE SET {updates};"
+        # psycopg2 uses Python %-format-style param interpolation; stray '%' in SQL
+        # (e.g. LIKE '%Все%') will be treated as format specifiers and cause errors.
+        # Preserve '%s' placeholders, escape other '%' by doubling them.
+        if '%s' in s:
+            s = s.replace('%s', '__PG_PLACEHOLDER__')
+            s = s.replace('%', '%%')
+            s = s.replace('__PG_PLACEHOLDER__', '%s')
+        else:
+            s = s.replace('%', '%%')
+
         return s
 
     def execute(self, sql: str, params=None):
@@ -121,14 +131,32 @@ class PostgresConnWrapper:
             def __init__(self):
                 self._last = None
 
+            @property
+            def rowcount(self):
+                try:
+                    return getattr(self._last, 'rowcount', -1)
+                except Exception:
+                    return -1
+
+            @property
+            def lastrowid(self):
+                try:
+                    return getattr(self._last, 'lastrowid', None)
+                except Exception:
+                    return None
+
             def execute(self, sql, params=None):
                 # Delegate to the parent.execute so translations and PRAGMA emulation apply
                 self._last = parent.execute(sql, params)
+                return self._last
 
             def executemany(self, sql, seq_of_params):
                 # executemany isn't used heavily; emulate by executing in a loop so translations apply
+                last = None
                 for params in seq_of_params:
-                    parent.execute(sql, params)
+                    last = parent.execute(sql, params)
+                self._last = last
+                return last
 
             def fetchall(self):
                 try:
@@ -203,6 +231,17 @@ class FakeCursor:
 
     def __iter__(self):
         return iter(self._rows)
+    
+    @property
+    def rowcount(self):
+        try:
+            return len(self._rows)
+        except Exception:
+            return -1
+
+    @property
+    def description(self):
+        return None
 
 
 logger = logging.getLogger(__name__)
