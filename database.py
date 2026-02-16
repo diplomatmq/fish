@@ -829,7 +829,15 @@ class Database:
                 (name, max(1, int(round(price * bait_price_factor))), bonus, suitable)
                 for name, price, bonus, suitable in base_baits_data
             ]
-            
+            # Ensure `baits.id` has a sequence/default on Postgres so inserts without id work
+            try:
+                ensure_serial_pk('baits', 'id')
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
             cursor.executemany('''
                 INSERT OR REPLACE INTO baits (name, price, fish_bonus, suitable_for)
                 VALUES (?, ?, ?, ?)
