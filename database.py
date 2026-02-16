@@ -786,13 +786,17 @@ class Database:
                         'INSERT INTO weather (location, condition, temperature) VALUES (%s, %s, %s)',
                         (loc_name, condition, temp),
                     )
-                
-                if not cursor.fetchone():
-                    # Добавляем глобальную базовую сеть (chat_id = -1)
-                    cursor.execute('''
-                        INSERT OR IGNORE INTO player_nets (user_id, net_name, uses_left, chat_id)
-                        VALUES (?, 'Базовая сеть', -1, -1)
-                    ''', (user_id,))
+                # Ensure a global base net exists (user_id = -1, chat_id = -1)
+                try:
+                    cursor.execute(
+                        "INSERT INTO player_nets (user_id, net_name, uses_left, chat_id) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id, net_name) DO NOTHING",
+                        (-1, 'Базовая сеть', -1, -1),
+                    )
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
             
             conn.commit()
     
