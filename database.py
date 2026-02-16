@@ -27,6 +27,12 @@ class PostgresConnWrapper:
 
     def _translate_sql(self, sql: str) -> str:
         s = sql
+        # normalize whitespace for pattern matching
+        import re
+        # Replace SQLite AUTOINCREMENT with Postgres serial primary key
+        s = re.sub(r"INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT", 'SERIAL PRIMARY KEY', s, flags=re.IGNORECASE)
+        # Also handle bare AUTOINCREMENT token
+        s = re.sub(r"AUTOINCREMENT", '', s, flags=re.IGNORECASE)
         # remove sqlite-specific PRAGMA statements
         if s.strip().upper().startswith('PRAGMA'):
             return ''
