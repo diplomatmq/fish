@@ -1,5 +1,4 @@
 import os
-import sqlite3
 import logging
 import random
 from typing import Any, Dict, List, Optional, Union
@@ -33,6 +32,10 @@ class PostgresConnWrapper:
         s = re.sub(r"INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT", 'SERIAL PRIMARY KEY', s, flags=re.IGNORECASE)
         # Also handle bare AUTOINCREMENT token
         s = re.sub(r"AUTOINCREMENT", '', s, flags=re.IGNORECASE)
+        # Convert sqlite '?' placeholders to psycopg2 '%s'
+        s = s.replace('?', '%s')
+        # Replace sqlite datetime(...) with inner expression (Postgres uses native timestamp types)
+        s = re.sub(r"datetime\s*\(([^)]+)\)", r"\1", s, flags=re.IGNORECASE)
         # remove sqlite-specific PRAGMA statements
         if s.strip().upper().startswith('PRAGMA'):
             return ''
@@ -43,6 +46,28 @@ class PostgresConnWrapper:
             s = s.replace('INSERT OR IGNORE', 'INSERT')
             if 'ON CONFLICT' not in s.upper():
                 s = s.rstrip().rstrip(';') + ' ON CONFLICT DO NOTHING;'
+
+        # translate INSERT OR REPLACE for common tables to Postgres upsert
+        import re
+        m = re.search(r"INSERT\s+OR\s+REPLACE\s+INTO\s+(\w+)\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)", s, re.IGNORECASE)
+        if m:
+            table = m.group(1)
+            cols = [c.strip() for c in m.group(2).split(',')]
+            vals = m.group(3)
+            # mapping of tables -> conflict target
+            conflict_map = {
+                'baits': 'name',
+                'fish': 'name',
+                'player_baits': 'user_id, bait_name',
+                'player_nets': 'user_id, net_name',
+                'player_rods': 'user_id, rod_name',
+                'chat_configs': 'chat_id',
+                'user_ref_links': 'user_id',
+            }
+            conflict_cols = conflict_map.get(table.lower())
+            if conflict_cols:
+                updates = ', '.join([f"{col} = EXCLUDED.{col}" for col in cols if col])
+                s = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({vals}) ON CONFLICT ({conflict_cols}) DO UPDATE SET {updates};"
         return s
 
     def execute(self, sql: str, params=None):
@@ -75,10 +100,18 @@ class PostgresConnWrapper:
             return FakeCursor([])
 
         cur = self._conn.cursor()
-        if params:
-            cur.execute(out_sql, params)
-        else:
-            cur.execute(out_sql)
+        # psycopg2 expects a sequence/tuple for parameters
+        try:
+            if params is not None:
+                # convert list->tuple for psycopg2
+                if isinstance(params, list):
+                    params = tuple(params)
+                cur.execute(out_sql, params)
+            else:
+                cur.execute(out_sql)
+        except Exception:
+            # re-raise so caller sees DB errors
+            raise
         return cur
 
     def cursor(self):
@@ -210,44 +243,12 @@ class Database:
     def __init__(self):
         self.init_db()
 
-    def _connect(self) -> sqlite3.Connection:
-        # If DATABASE_URL is set, use Postgres wrapper
+    def _connect(self):
+        # Postgres-only: require DATABASE_URL in environment
         db_url = os.getenv('DATABASE_URL')
-        if db_url:
-            # psycopg2 requires a URL or DSN; our wrapper accepts it
-            return PostgresConnWrapper(db_url)
-
-        # Ensure DB_PATH is a string for sqlite
-        path = str(DB_PATH)
-        conn = sqlite3.connect(path, timeout=10)
-
-        # Try to set WAL journal mode; if filesystem doesn't support WAL
-        # (some network or managed volumes), fall back to DELETE mode.
-        # Try to set WAL journal mode; if filesystem doesn't support WAL
-        # (some network or managed volumes), fall back to DELETE mode.
-        try:
-            cur = conn.execute("PRAGMA journal_mode=WAL")
-            try:
-                _ = cur.fetchone()
-            except Exception:
-                pass
-        except Exception:
-            try:
-                conn.execute("PRAGMA journal_mode=DELETE")
-            except Exception:
-                pass
-
-        # Set other pragmas, ignore failures to avoid crashing on unsupported FS
-        try:
-            conn.execute("PRAGMA synchronous=NORMAL")
-        except Exception:
-            pass
-        try:
-            conn.execute("PRAGMA busy_timeout=5000")
-        except Exception:
-            pass
-
-        return conn
+        if not db_url:
+            raise RuntimeError('DATABASE_URL must be set to use Postgres')
+        return PostgresConnWrapper(db_url)
 
     def _get_temp_rod_uses(self, rod_name: str) -> Optional[int]:
         rod_range = TEMP_ROD_RANGES.get(rod_name)
@@ -1368,7 +1369,7 @@ class Database:
                 float(length or 0),
                 location
             )
-        except sqlite3.Error as exc:
+        except Exception as exc:
             logger.error(
                 "Caught fish save failed: user=%s chat_id=%s fish=%s weight=%s length=%s location=%s error=%s",
                 user_id,
@@ -2312,7 +2313,7 @@ class Database:
             # Проверяем, существует ли запись для этой удочки
             cursor.execute('''
                 SELECT current_durability FROM player_rods 
-                WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND rod_name = ?
+                WHERE user_id = %s AND (chat_id IS NULL OR chat_id < 1) AND rod_name = %s
             ''', (user_id, rod_name))
             
             result = cursor.fetchone()
@@ -2323,8 +2324,8 @@ class Database:
             # Уменьшаем прочность
             cursor.execute('''
                 UPDATE player_rods 
-                SET current_durability = MAX(0, current_durability - ?)
-                WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND rod_name = ?
+                SET current_durability = GREATEST(0, current_durability - %s)
+                WHERE user_id = %s AND (chat_id IS NULL OR chat_id < 1) AND rod_name = %s
             ''', (damage, user_id, rod_name))
             conn.commit()
             
@@ -2355,7 +2356,7 @@ class Database:
             cursor.execute('''
                 UPDATE player_rods 
                 SET recovery_start_time = CURRENT_TIMESTAMP
-                WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND rod_name = ?
+                WHERE user_id = %s AND (chat_id IS NULL OR chat_id < 1) AND rod_name = %s
             ''', (user_id, rod_name))
             conn.commit()
 
@@ -2369,8 +2370,8 @@ class Database:
             if rod:
                 cursor.execute('''
                     UPDATE player_rods 
-                    SET current_durability = MIN(?, current_durability + ?)
-                    WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND rod_name = ?
+                    SET current_durability = LEAST(%s, current_durability + %s)
+                    WHERE user_id = %s AND (chat_id IS NULL OR chat_id < 1) AND rod_name = %s
                 ''', (rod['max_durability'], recovery_amount, user_id, rod_name))
                 conn.commit()
 
@@ -2769,14 +2770,15 @@ class Database:
     def get_user_registered_chats(self, user_id: int) -> List[Dict[str, Any]]:
         """Получить все чаты, зарегистрированные этим юзером"""
         with self._connect() as conn:
-            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT chat_id, admin_ref_link, chat_invite_link
                 FROM chat_configs 
-                WHERE admin_user_id = ? AND is_configured = 1
+                WHERE admin_user_id = %s AND is_configured = 1
             ''', (user_id,))
-            return [dict(row) for row in cursor.fetchall()]
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description] if cursor.description else []
+            return [dict(zip(cols, row)) for row in rows]
 
 
 # Экземпляр базы данных для импорта в других модулях
