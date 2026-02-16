@@ -4083,6 +4083,22 @@ def main():
     
     # Создаем экземпляр бота
     bot_instance = FishBot()
+
+    # Run DB fixer at startup to normalize chat_id and ensure trigger exists
+    try:
+        # Import local script functions
+        from tools.fix_caught_fish_chatid import backup_db, run_fix
+        try:
+            print("🔧 Running DB fixer: creating backup and normalizing caught_fish.chat_id...")
+            backup_db(DB_PATH)
+            run_fix(DB_PATH)
+            print("🔧 DB fixer completed.")
+        except Exception as e:
+            print("⚠️ DB fixer failed:", e)
+            logger.exception("DB fixer failed: %s", e)
+    except Exception:
+        # If import fails, skip silently (tools may not exist in some deployments)
+        logger.debug("DB fixer not available or failed to import tools.fix_caught_fish_chatid")
     
     # Создаем приложение
     defaults = Defaults(parse_mode="HTML")
