@@ -735,6 +735,49 @@ class Database:
             ensure_column('caught_fish', 'chat_id', 'INTEGER')
 
             # Ensure integer PK columns have a sequence/default on Postgres (e.g., rods.id)
+            # Also ensure user/chat identifier columns are 64-bit on Postgres to avoid integer out of range
+            def ensure_bigint_column(table_name: str, column_name: str):
+                try:
+                    cursor.execute(
+                        "SELECT data_type FROM information_schema.columns WHERE table_name = %s AND column_name = %s AND table_schema = 'public'",
+                        (table_name, column_name)
+                    )
+                    row = cursor.fetchone()
+                    if row and row[0] != 'bigint':
+                        try:
+                            cursor.execute(f'ALTER TABLE {table_name} ALTER COLUMN {column_name} TYPE BIGINT USING {column_name}::bigint')
+                            conn.commit()
+                        except Exception:
+                            try:
+                                conn.rollback()
+                            except Exception:
+                                pass
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+
+            # Convert known user/chat id columns to BIGINT to support large Telegram IDs
+            bigint_targets = [
+                ('players', 'user_id'),
+                ('players', 'chat_id'),
+                ('player_rods', 'user_id'),
+                ('player_rods', 'chat_id'),
+                ('player_baits', 'user_id'),
+                ('caught_fish', 'user_id'),
+                ('caught_fish', 'chat_id'),
+                ('player_nets', 'user_id'),
+                ('player_nets', 'chat_id'),
+                ('star_transactions', 'user_id'),
+                ('star_transactions', 'chat_id'),
+                ('chat_configs', 'chat_id'),
+                ('chat_configs', 'admin_user_id'),
+                ('user_ref_links', 'user_id')
+            ]
+            for tbl, col in bigint_targets:
+                ensure_bigint_column(tbl, col)
+
             # Use module-level helper `ensure_serial_pk(conn, table, id_col)`
             try:
                 ensure_serial_pk(conn, 'rods', 'id')

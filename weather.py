@@ -122,16 +122,27 @@ class WeatherSystem:
         return WeatherSystem.WEATHER_CONDITIONS.get(weather_condition, {}).get('bonus', 0)
     
     @staticmethod
-    def should_update_weather(last_update: str) -> bool:
+    def should_update_weather(last_update) -> bool:
         """Проверить, нужна ли обновление погоды.
 
         Важно: интервал обновления должен быть детерминированным,
         чтобы разные команды в один момент времени не видели разную погоду.
         """
+        # Accept either a string timestamp (ISO) or a datetime object (Postgres may return TIMESTAMP)
         if not last_update:
             return True
-        
-        last_time = datetime.fromisoformat(last_update)
+
+        if isinstance(last_update, datetime):
+            last_time = last_update
+        else:
+            # if it's bytes or other, try to decode/convert to str first
+            if isinstance(last_update, (bytes, bytearray)):
+                try:
+                    last_update = last_update.decode()
+                except Exception:
+                    pass
+
+            last_time = datetime.fromisoformat(str(last_update))
         # Обновляем раз в ~3 часа (несколько раз в день)
         update_interval = 180  # в минутах
         time_diff = (datetime.now() - last_time).total_seconds() / 60
