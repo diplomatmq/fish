@@ -47,6 +47,12 @@ class PostgresConnWrapper:
 
     def execute(self, sql: str, params=None):
         sql = sql or ''
+        # Short-circuit sqlite-specific sqlite_master queries which don't exist in Postgres
+        try:
+            if 'sqlite_master' in sql.lower():
+                return FakeCursor([])
+        except Exception:
+            pass
         # Handle PRAGMA table_info(...) emulation
         if sql.strip().upper().startswith('PRAGMA TABLE_INFO'):
             # extract table name
