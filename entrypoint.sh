@@ -86,7 +86,49 @@ if [ ! -f "$TARGET_DIR" ]; then
   fi
 fi
 
-# Final validation: if a non-empty, valid DB exists, we're good.
+# Restore from latest backup in $TARGET_PATH/backups if appropriate
+BACKUPS_DIR="$TARGET_PATH/backups"
+
+# Helper to pick newest backup file matching fishbot.db* (returns path or empty)
+latest_backup() {
+  [ -d "$BACKUPS_DIR" ] || return 1
+  # find files starting with fishbot.db in backups dir, sort by mtime descending
+  ls -1t "$BACKUPS_DIR"/fishbot.db* 2>/dev/null | head -n1 || return 1
+}
+
+restore_if_needed() {
+  lb=$(latest_backup) || return 0
+  if [ -z "$lb" ]; then
+    return 0
+  fi
+  echo "Found latest backup: $lb"
+
+  # If target DB missing -> restore. If force restore requested -> restore.
+  if [ ! -f "$TARGET_DIR" ] || [ "$RESTORE_FROM_BACKUP" = "1" ]; then
+    echo "Restoring backup $lb -> $TARGET_DIR"
+    tmp_dest="${TARGET_DIR}.tmp"
+    cp "$lb" "$tmp_dest" && mv -f "$tmp_dest" "$TARGET_DIR"
+    chmod 0644 "$TARGET_DIR" || true
+    echo "Restored latest backup to $TARGET_DIR"
+    return 0
+  fi
+
+  # If both exist, compare modification times and restore if backup is newer
+  backup_mtime=$(stat -c %Y "$lb" 2>/dev/null || stat -f %m "$lb" 2>/dev/null || echo 0)
+  target_mtime=$(stat -c %Y "$TARGET_DIR" 2>/dev/null || stat -f %m "$TARGET_DIR" 2>/dev/null || echo 0)
+  if [ "$backup_mtime" -gt "$target_mtime" ]; then
+    echo "Backup is newer than current DB; restoring $lb -> $TARGET_DIR"
+    tmp_dest="${TARGET_DIR}.tmp"
+    cp "$lb" "$tmp_dest" && mv -f "$tmp_dest" "$TARGET_DIR"
+    chmod 0644 "$TARGET_DIR" || true
+    echo "Restored newer backup to $TARGET_DIR"
+  else
+    echo "Current DB is newer or equal to latest backup; leaving as-is."
+  fi
+}
+
+restore_if_needed
+
 if is_sqlite "$TARGET_DIR"; then
   echo "Using SQLite DB at $TARGET_DIR"
 else
