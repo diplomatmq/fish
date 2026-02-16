@@ -16,6 +16,31 @@ is_sqlite() {
   head -c 16 "$1" 2>/dev/null | grep -q "SQLite format 3"
 }
 
+# Helper: run a thorough integrity check using Python or sqlite3 CLI
+integrity_ok() {
+  [ -f "$1" ] || return 1
+  if command -v python >/dev/null 2>&1; then
+    python - "$1" <<'PY'
+import sqlite3,sys
+f=sys.argv[1]
+try:
+    con=sqlite3.connect(f)
+    r=con.execute('PRAGMA integrity_check;').fetchone()
+    ok = r and r[0]=='ok'
+    sys.exit(0 if ok else 1)
+except Exception:
+    sys.exit(2)
+PY
+    return $?
+  fi
+  if command -v sqlite3 >/dev/null 2>&1; then
+    res=$(sqlite3 "$1" "PRAGMA integrity_check;" 2>/dev/null | head -n1)
+    [ "$res" = "ok" ] && return 0 || return 1
+  fi
+  # Cannot verify; assume OK so we don't accidentally overwrite
+  return 0
+}
+
 # Backup invalid/non-SQLite files instead of deleting them outright.
 backup_invalid() {
   local file="$1"
@@ -29,7 +54,12 @@ backup_invalid() {
 # If DB file exists and is valid, leave it as-is (do NOT overwrite).
 if [ -f "$TARGET_DIR" ]; then
   if is_sqlite "$TARGET_DIR"; then
-    echo "Found valid DB at $TARGET_DIR — leaving intact."
+    if integrity_ok "$TARGET_DIR"; then
+      echo "Found valid DB at $TARGET_DIR — leaving intact."
+    else
+      echo "Found SQLite DB at $TARGET_DIR but it failed PRAGMA integrity_check. Backing up and attempting recovery."
+      backup_invalid "$TARGET_DIR"
+    fi
   else
     echo "Found file at $TARGET_DIR but it's not a valid SQLite DB. Backing up and attempting recovery."
     backup_invalid "$TARGET_DIR"
