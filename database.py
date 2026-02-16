@@ -830,7 +830,7 @@ class Database:
             cursor.execute('''
                 UPDATE player_rods
                 SET chat_id = (
-                    SELECT MAX(chat_id::integer) FROM players p WHERE p.user_id = player_rods.user_id
+                    SELECT MAX(NULLIF(chat_id, '')::bigint) FROM players p WHERE p.user_id = player_rods.user_id
                 )
                 WHERE chat_id IS NULL OR chat_id < 1
             ''')
@@ -839,7 +839,7 @@ class Database:
             cursor.execute('''
                 UPDATE player_nets
                 SET chat_id = (
-                    SELECT MAX(chat_id::integer) FROM players p WHERE p.user_id = player_nets.user_id
+                    SELECT MAX(NULLIF(chat_id, '')::bigint) FROM players p WHERE p.user_id = player_nets.user_id
                 )
                 WHERE chat_id IS NULL OR chat_id < 1
             ''')
@@ -848,7 +848,7 @@ class Database:
             cursor.execute('''
                 UPDATE caught_fish
                 SET chat_id = (
-                    SELECT MAX(chat_id::integer) FROM players p WHERE p.user_id = caught_fish.user_id
+                    SELECT MAX(NULLIF(chat_id, '')::bigint) FROM players p WHERE p.user_id = caught_fish.user_id
                 )
                 WHERE chat_id IS NULL OR chat_id < 1
             ''')
