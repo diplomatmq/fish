@@ -116,9 +116,17 @@ class PostgresConnWrapper:
                 # convert list->tuple for psycopg2
                 if isinstance(params, list):
                     params = tuple(params)
-                cur.execute(out_sql, params)
+                try:
+                    cur.execute(out_sql, params)
+                except Exception:
+                    logger.exception("DB execute failed. SQL: %s PARAMS: %s", out_sql, params)
+                    raise
             else:
-                cur.execute(out_sql)
+                try:
+                    cur.execute(out_sql)
+                except Exception:
+                    logger.exception("DB execute failed. SQL: %s", out_sql)
+                    raise
         except Exception:
             # re-raise so caller sees DB errors
             raise
