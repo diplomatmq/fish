@@ -791,9 +791,15 @@ class Database:
                     )
                     row = cursor.fetchone()
                     if row and row[0] != 'bigint':
-                        try:
-                            cursor.execute(f'ALTER TABLE {table_name} ALTER COLUMN {column_name} TYPE BIGINT USING {column_name}::bigint')
-                            conn.commit()
+                            try:
+                                # Use a safe USING expression that converts only numeric text to bigint,
+                                # setting non-numeric values to NULL to avoid cast errors.
+                                safe_using = (
+                                    "USING (CASE WHEN COALESCE(" + column_name + "::text, '') ~ '^[0-9]+$' "
+                                    "THEN (" + column_name + "::text)::bigint ELSE NULL END)"
+                                )
+                                cursor.execute(f'ALTER TABLE {table_name} ALTER COLUMN {column_name} TYPE BIGINT {safe_using}')
+                                conn.commit()
                         except Exception:
                             try:
                                 conn.rollback()
@@ -838,7 +844,9 @@ class Database:
             cursor.execute('''
                 UPDATE player_rods
                 SET chat_id = (
-                    SELECT MAX(NULLIF(chat_id, '')::bigint) FROM players p WHERE p.user_id = player_rods.user_id
+                    SELECT MAX(
+                        CASE WHEN COALESCE(p.chat_id::text, '') ~ '^[0-9]+$' THEN (p.chat_id::text)::bigint ELSE NULL END
+                    ) FROM players p WHERE p.user_id = player_rods.user_id
                 )
                 WHERE chat_id IS NULL OR chat_id < 1
             ''')
@@ -847,7 +855,9 @@ class Database:
             cursor.execute('''
                 UPDATE player_nets
                 SET chat_id = (
-                    SELECT MAX(NULLIF(chat_id, '')::bigint) FROM players p WHERE p.user_id = player_nets.user_id
+                    SELECT MAX(
+                        CASE WHEN COALESCE(p.chat_id::text, '') ~ '^[0-9]+$' THEN (p.chat_id::text)::bigint ELSE NULL END
+                    ) FROM players p WHERE p.user_id = player_nets.user_id
                 )
                 WHERE chat_id IS NULL OR chat_id < 1
             ''')
@@ -856,7 +866,9 @@ class Database:
             cursor.execute('''
                 UPDATE caught_fish
                 SET chat_id = (
-                    SELECT MAX(NULLIF(chat_id, '')::bigint) FROM players p WHERE p.user_id = caught_fish.user_id
+                    SELECT MAX(
+                        CASE WHEN COALESCE(p.chat_id::text, '') ~ '^[0-9]+$' THEN (p.chat_id::text)::bigint ELSE NULL END
+                    ) FROM players p WHERE p.user_id = caught_fish.user_id
                 )
                 WHERE chat_id IS NULL OR chat_id < 1
             ''')
