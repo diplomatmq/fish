@@ -201,6 +201,44 @@ class FakeCursor:
 
 logger = logging.getLogger(__name__)
 
+
+def ensure_serial_pk(conn, table: str, id_col: str = 'id'):
+    """Ensure the integer primary key column has a Postgres sequence DEFAULT.
+    Safe to call multiple times; will create sequence if missing and set it to max(id).
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT column_default FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
+            (table, id_col),
+        )
+        row = cur.fetchone()
+        if not row:
+            return
+        col_default = row[0]
+        if col_default:
+            return
+        seq_name = f"{table}_{id_col}_seq"
+        cur.execute(f"CREATE SEQUENCE IF NOT EXISTS {seq_name}")
+        cur.execute(f"ALTER SEQUENCE {seq_name} OWNED BY {table}.{id_col}")
+        cur.execute(f"ALTER TABLE {table} ALTER COLUMN {id_col} SET DEFAULT nextval('{seq_name}')")
+        cur.execute(f"SELECT COALESCE(MAX({id_col}), 0) FROM {table}")
+        max_id = cur.fetchone()[0] or 0
+        cur.execute("SELECT setval(%s, %s, true)", (seq_name, max_id))
+        try:
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    except Exception:
+        logger.exception('ensure_serial_pk failed for %s.%s', table, id_col)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
 BAMBOO_ROD = "Бамбуковая удочка"
 TEMP_ROD_RANGES = {
     "Углепластиковая удочка": (30, 70),
@@ -636,37 +674,14 @@ class Database:
             ensure_column('caught_fish', 'chat_id', 'INTEGER')
 
             # Ensure integer PK columns have a sequence/default on Postgres (e.g., rods.id)
-            def ensure_serial_pk(table: str, id_col: str = 'id'):
-                # check column_default in information_schema
-                cursor.execute(
-                    "SELECT column_default FROM information_schema.columns WHERE table_name = %s AND column_name = %s",
-                    (table, id_col),
-                )
-                row = cursor.fetchone()
-                if not row:
-                    return
-                col_default = row[0]
-                if col_default:
-                    return
-                seq_name = f"{table}_{id_col}_seq"
+            # Use module-level helper `ensure_serial_pk(conn, table, id_col)`
+            try:
+                ensure_serial_pk(conn, 'rods', 'id')
+            except Exception:
                 try:
-                    cursor.execute(f"CREATE SEQUENCE IF NOT EXISTS {seq_name}")
-                    # ensure sequence is owned by the table column
-                    cursor.execute(f"ALTER SEQUENCE {seq_name} OWNED BY {table}.{id_col}")
-                    cursor.execute(f"ALTER TABLE {table} ALTER COLUMN {id_col} SET DEFAULT nextval('{seq_name}')")
-                    # set sequence to max(id) or 1 and mark as called
-                    cursor.execute(f"SELECT COALESCE(MAX({id_col}), 0) FROM {table}")
-                    max_id = cursor.fetchone()[0] or 0
-                    # setval(..., true) makes next nextval = max_id+1
-                    cursor.execute(f"SELECT setval(%s, %s, true)", (seq_name, max_id))
-                    conn.commit()
+                    conn.rollback()
                 except Exception:
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-
-            ensure_serial_pk('rods', 'id')
+                    pass
 
             # Populate chat_id in player_rods and player_nets and caught_fish
             cursor.execute('''
@@ -834,7 +849,7 @@ class Database:
             ]
             # Ensure `baits.id` has a sequence/default on Postgres so inserts without id work
             try:
-                ensure_serial_pk('baits', 'id')
+                ensure_serial_pk(conn, 'baits', 'id')
             except Exception:
                 try:
                     conn.rollback()
