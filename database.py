@@ -656,7 +656,7 @@ class Database:
                 conn.commit()
 
             if 'chat_id' not in columns:
-                cursor.execute('ALTER TABLE players ADD COLUMN chat_id INTEGER')
+                cursor.execute('ALTER TABLE players ADD COLUMN chat_id BIGINT')
                 conn.commit()
 
             # Ensure chat_configs has columns for tracking title and total stars
@@ -700,8 +700,8 @@ class Database:
                 # Need to recreate table with composite key
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS players_new (
-                        user_id INTEGER NOT NULL,
-                        chat_id INTEGER NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        chat_id BIGINT NOT NULL,
                         username TEXT NOT NULL,
                         coins INTEGER DEFAULT 100,
                         stars INTEGER DEFAULT 0,
