@@ -490,26 +490,31 @@ class Database:
         """Выполнение миграций для обновления схемы БД"""
         with self._connect() as conn:
             cursor = conn.cursor()
-            
-            # Проверяем наличие колонки chat_id в таблице players (для поддержки разных чатов)
-            cursor.execute("PRAGMA table_info(players)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
+
+            def get_columns(table_name: str):
+                cursor.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name = %s AND table_schema = 'public'",
+                    (table_name,)
+                )
+                return [r[0] for r in cursor.fetchall()]
+
+            # Проверяем наличие колонок в таблице players (Postgres-friendly)
+            columns = get_columns('players')
+
             if 'ref' not in columns:
                 cursor.execute('ALTER TABLE players ADD COLUMN ref INTEGER')
                 conn.commit()
-            
+
             if 'ref_link' not in columns:
                 cursor.execute('ALTER TABLE players ADD COLUMN ref_link TEXT')
                 conn.commit()
-            
+
             if 'chat_id' not in columns:
                 cursor.execute('ALTER TABLE players ADD COLUMN chat_id INTEGER')
                 conn.commit()
 
             # Ensure chat_configs has columns for tracking title and total stars
-            cursor.execute("PRAGMA table_info(chat_configs)")
-            chat_conf_cols = [c[1] for c in cursor.fetchall()]
+            chat_conf_cols = get_columns('chat_configs')
             if 'stars_total' not in chat_conf_cols:
                 try:
                     cursor.execute('ALTER TABLE chat_configs ADD COLUMN stars_total INTEGER DEFAULT 0')
@@ -530,12 +535,22 @@ class Database:
             if 'level' not in columns:
                 cursor.execute('ALTER TABLE players ADD COLUMN level INTEGER DEFAULT 0')
                 conn.commit()
-            
+
             # CRITICAL: Migrate players table to use composite primary key (user_id, chat_id)
-            # Check if the table still uses single user_id as PRIMARY KEY
-            cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='players'")
-            table_schema = cursor.fetchone()
-            if table_schema and 'user_id INTEGER PRIMARY KEY' in table_schema[0]:
+            cursor.execute(
+                """
+                SELECT kcu.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                  ON tc.constraint_name = kcu.constraint_name
+                  AND tc.table_schema = kcu.table_schema
+                WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = %s
+                """,
+                ('players',)
+            )
+            pk_cols = [r[0] for r in cursor.fetchall()]
+
+            if pk_cols == ['user_id']:
                 # Need to recreate table with composite key
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS players_new (
@@ -559,131 +574,71 @@ class Database:
                         PRIMARY KEY (user_id, chat_id)
                     )
                 ''')
-                
-                # Copy data from old table
+
+                # Copy data from old table, normalizing NULL chat_id to -1
                 cursor.execute('''
-                    INSERT OR IGNORE INTO players_new 
-                      SELECT user_id, COALESCE(chat_id, -1), username, coins, stars,
-                          COALESCE(xp, 0), COALESCE(level, 0),
-                           current_rod, current_bait, current_location, last_fish_time,
-                           is_banned, ban_until, created_at, ref, ref_link, last_net_use_time
+                    INSERT INTO players_new (user_id, chat_id, username, coins, stars, xp, level, current_rod, current_bait, current_location, last_fish_time, is_banned, ban_until, created_at, ref, ref_link, last_net_use_time)
+                    SELECT user_id, COALESCE(chat_id, -1), username, coins, stars, COALESCE(xp, 0), COALESCE(level, 0), current_rod, current_bait, current_location, last_fish_time, is_banned, ban_until, created_at, ref, ref_link, last_net_use_time
                     FROM players
+                    ON CONFLICT (user_id, chat_id) DO NOTHING
                 ''')
-                
+
                 # Drop old table and rename new one
                 cursor.execute('DROP TABLE players')
                 cursor.execute('ALTER TABLE players_new RENAME TO players')
                 conn.commit()
-            
+
+            # refresh columns list after potential schema change
+            columns = get_columns('players')
+
             if 'last_net_use_time' not in columns:
                 cursor.execute('ALTER TABLE players ADD COLUMN last_net_use_time TEXT')
                 conn.commit()
-            
-            # Проверяем наличие колонки sticker_id в таблице trash
-            cursor.execute("PRAGMA table_info(trash)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            if 'sticker_id' not in columns:
-                cursor.execute('ALTER TABLE trash ADD COLUMN sticker_id TEXT')
-                conn.commit()
-            
-            # Проверяем наличие колонки length в таблице caught_fish
-            cursor.execute("PRAGMA table_info(caught_fish)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            if 'length' not in columns:
-                cursor.execute('ALTER TABLE caught_fish ADD COLUMN length REAL DEFAULT 0')
-                conn.commit()
-            
-            if 'sold' not in columns:
-                cursor.execute('ALTER TABLE caught_fish ADD COLUMN sold INTEGER DEFAULT 0')
-                conn.commit()
-            
-            if 'sold_at' not in columns:
-                cursor.execute('ALTER TABLE caught_fish ADD COLUMN sold_at TIMESTAMP')
-                conn.commit()
 
-            # Добавляем required_level в fish
-            cursor.execute("PRAGMA table_info(fish)")
-            columns = [column[1] for column in cursor.fetchall()]
+            # Helper to add a column if missing
+            def ensure_column(table: str, col: str, col_def: str):
+                cols = get_columns(table)
+                if col not in cols:
+                    cursor.execute(f'ALTER TABLE {table} ADD COLUMN {col} {col_def}')
+                    conn.commit()
 
-            if 'required_level' not in columns:
-                cursor.execute('ALTER TABLE fish ADD COLUMN required_level INTEGER DEFAULT 0')
-                conn.commit()
+            ensure_column('trash', 'sticker_id', 'TEXT')
+            ensure_column('caught_fish', 'length', 'REAL DEFAULT 0')
+            ensure_column('caught_fish', 'sold', 'INTEGER DEFAULT 0')
+            ensure_column('caught_fish', 'sold_at', 'TIMESTAMP')
+            ensure_column('fish', 'required_level', 'INTEGER DEFAULT 0')
+            ensure_column('star_transactions', 'chat_id', 'INTEGER')
+            ensure_column('star_transactions', 'chat_title', 'TEXT')
+            ensure_column('player_rods', 'chat_id', 'INTEGER')
+            ensure_column('player_nets', 'chat_id', 'INTEGER')
+            ensure_column('chat_configs', 'admin_ref_link', 'TEXT')
+            ensure_column('chat_configs', 'chat_invite_link', 'TEXT')
+            ensure_column('user_ref_links', 'chat_invite_link', 'TEXT')
+            ensure_column('caught_fish', 'chat_id', 'INTEGER')
 
-            # Ensure star_transactions has chat_id and chat_title columns (migration for older DBs)
-            cursor.execute("PRAGMA table_info(star_transactions)")
-            st_cols = [c[1] for c in cursor.fetchall()]
-            if 'chat_id' not in st_cols:
-                cursor.execute('ALTER TABLE star_transactions ADD COLUMN chat_id INTEGER')
-                conn.commit()
-            if 'chat_title' not in st_cols:
-                cursor.execute("ALTER TABLE star_transactions ADD COLUMN chat_title TEXT")
-                conn.commit()
-            
-            # Добавляем chat_id в player_rods
-            cursor.execute("PRAGMA table_info(player_rods)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            if 'chat_id' not in columns:
-                cursor.execute('ALTER TABLE player_rods ADD COLUMN chat_id INTEGER')
-                conn.commit()
+            # Populate chat_id in player_rods and player_nets and caught_fish
             cursor.execute('''
                 UPDATE player_rods
                 SET chat_id = (
-                    SELECT MAX(chat_id) FROM players p WHERE p.user_id = player_rods.user_id
+                    SELECT MAX(chat_id::integer) FROM players p WHERE p.user_id = player_rods.user_id
                 )
                 WHERE chat_id IS NULL OR chat_id < 1
             ''')
             conn.commit()
-            
-            # Добавляем chat_id в player_nets
-            cursor.execute("PRAGMA table_info(player_nets)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            if 'chat_id' not in columns:
-                cursor.execute('ALTER TABLE player_nets ADD COLUMN chat_id INTEGER')
-                conn.commit()
+
             cursor.execute('''
                 UPDATE player_nets
                 SET chat_id = (
-                    SELECT MAX(chat_id) FROM players p WHERE p.user_id = player_nets.user_id
+                    SELECT MAX(chat_id::integer) FROM players p WHERE p.user_id = player_nets.user_id
                 )
                 WHERE chat_id IS NULL OR chat_id < 1
             ''')
             conn.commit()
-            
-            # Добавляем колонки в chat_configs для реф-ссылок
-            cursor.execute("PRAGMA table_info(chat_configs)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            if 'admin_ref_link' not in columns:
-                cursor.execute('ALTER TABLE chat_configs ADD COLUMN admin_ref_link TEXT')
-                conn.commit()
-            
-            if 'chat_invite_link' not in columns:
-                cursor.execute('ALTER TABLE chat_configs ADD COLUMN chat_invite_link TEXT')
-                conn.commit()
 
-            # Добавляем колонку chat_invite_link в user_ref_links
-            cursor.execute("PRAGMA table_info(user_ref_links)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            if 'chat_invite_link' not in columns:
-                cursor.execute('ALTER TABLE user_ref_links ADD COLUMN chat_invite_link TEXT')
-                conn.commit()
-            
-            # Добавляем chat_id в caught_fish
-            cursor.execute("PRAGMA table_info(caught_fish)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            if 'chat_id' not in columns:
-                cursor.execute('ALTER TABLE caught_fish ADD COLUMN chat_id INTEGER')
-                conn.commit()
             cursor.execute('''
                 UPDATE caught_fish
                 SET chat_id = (
-                    SELECT MAX(chat_id) FROM players p WHERE p.user_id = caught_fish.user_id
+                    SELECT MAX(chat_id::integer) FROM players p WHERE p.user_id = caught_fish.user_id
                 )
                 WHERE chat_id IS NULL OR chat_id < 1
             ''')
@@ -692,71 +647,17 @@ class Database:
             # Инициализация погоды для локаций
             cursor.execute('SELECT name FROM locations')
             locations = cursor.fetchall()
-            
+
             from weather import weather_system
             for location in locations:
                 loc_name = location[0]
-                cursor.execute('SELECT 1 FROM weather WHERE location = ?', (loc_name,))
+                cursor.execute('SELECT 1 FROM weather WHERE location = %s', (loc_name,))
                 if not cursor.fetchone():
                     condition, temp = weather_system.generate_weather(loc_name)
-                    cursor.execute('''
-                        INSERT INTO weather (location, condition, temperature)
-                        VALUES (?, ?, ?)
-                    ''', (loc_name, condition, temp))
-            
-            # Исправление прочности удочек (миграция для исправления перепутанных значений)
-            # Обновляем таблицу rods с правильными значениями прочности
-            rods_fix = [
-                ("Бамбуковая удочка", 100, 100),
-                ("Углепластиковая удочка", 150, 150),
-                ("Карбоновая удочка", 200, 200),
-                ("Золотая удочка", 300, 300),
-            ]
-            
-            for rod_name, durability, max_durability in rods_fix:
-                cursor.execute('''
-                    UPDATE rods 
-                    SET durability = ?, max_durability = ?
-                    WHERE name = ?
-                ''', (durability, max_durability, rod_name))
-
-            # Исправление максимального веса удочек
-            rods_weight_fix = [
-                ("Бамбуковая удочка", 30),
-                ("Углепластиковая удочка", 65),
-                ("Карбоновая удочка", 120),
-                ("Золотая удочка", 350),
-            ]
-
-            for rod_name, max_weight in rods_weight_fix:
-                cursor.execute('''
-                    UPDATE rods
-                    SET max_weight = ?
-                    WHERE name = ?
-                ''', (max_weight, rod_name))
-            
-            # Обновляем только бамбуковую удочку до полной прочности
-            cursor.execute('''
-                UPDATE player_rods 
-                SET current_durability = (
-                    SELECT max_durability FROM rods WHERE rods.name = player_rods.rod_name
-                ),
-                max_durability = (
-                    SELECT max_durability FROM rods WHERE rods.name = player_rods.rod_name
-                )
-                WHERE rod_name = 'Бамбуковая удочка'
-            ''')
-            
-            # Миграция: добавляем базовую сеть всем существующим игрокам
-            cursor.execute('SELECT user_id, chat_id FROM players')
-            existing_users = cursor.fetchall()
-            
-            for (user_id, chat_id) in existing_users:
-                # Проверяем, есть ли у игрока глобальная базовая сеть
-                cursor.execute('''
-                    SELECT 1 FROM player_nets 
-                    WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND net_name = 'Базовая сеть'
-                ''', (user_id,))
+                    cursor.execute(
+                        'INSERT INTO weather (location, condition, temperature) VALUES (%s, %s, %s)',
+                        (loc_name, condition, temp),
+                    )
                 
                 if not cursor.fetchone():
                     # Добавляем глобальную базовую сеть (chat_id = -1)
