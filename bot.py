@@ -4287,6 +4287,27 @@ def main():
         except Exception as e:
             await update.message.reply_text("Restore failed: " + str(e))
 
+    async def restart_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Owner-only: ask the container host to restart by exiting the process."""
+        owner_id = 793216884
+        if getattr(update.effective_user, 'id', None) != owner_id:
+            await update.message.reply_text("Нет доступа.")
+            return
+        try:
+            await update.message.reply_text("Перезапускаю процесс бота для применения изменений...")
+            # flush and exit immediately; container orchestrator should restart the service
+            import os, sys, threading
+            def _exit():
+                try:
+                    os._exit(0)
+                except Exception:
+                    sys.exit(0)
+            # run exit shortly after replying to ensure message is sent
+            t = threading.Timer(0.5, _exit)
+            t.start()
+        except Exception as e:
+            await update.message.reply_text(f"Не удалось перезапустить: {e}")
+
     async def drop_trigger_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Owner-only: drop the caught_fish trigger if present."""
         owner_id = 793216884
@@ -4304,6 +4325,53 @@ def main():
             await update.message.reply_text('Trigger dropped (if existed). Please restart the bot service.')
         except Exception as e:
             await update.message.reply_text('Failed to drop trigger: ' + str(e))
+
+    async def upload_backup_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Owner-only: save an uploaded backup file to the container backups directory.
+        Send the .db file as a document with caption 'upload_backup' (case-insensitive) to save it.
+        """
+        owner_id = 793216884
+        if getattr(update.effective_user, 'id', None) != owner_id:
+            return
+        try:
+            msg = update.message
+            doc = getattr(msg, 'document', None)
+            if not doc:
+                await update.message.reply_text("Пришлите файл базы данных как документ с подписью 'upload_backup'.")
+                return
+            import os, time
+            src_env = os.environ.get('FISHBOT_DB_PATH', DB_PATH)
+            backups_dir = os.path.join(os.path.dirname(src_env), 'backups')
+            os.makedirs(backups_dir, exist_ok=True)
+            filename = doc.file_name or f"uploaded_{int(time.time())}.db"
+            dest_path = os.path.join(backups_dir, filename)
+            file = await context.bot.get_file(doc.file_id)
+            await file.download_to_drive(dest_path)
+            await update.message.reply_text(f"Сохранено: {filename}")
+        except Exception as e:
+            await update.message.reply_text(f"Ошибка при сохранении файла: {e}")
+
+    async def list_backups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Owner-only: list files in backups directory."""
+        owner_id = 793216884
+        if getattr(update.effective_user, 'id', None) != owner_id:
+            await update.message.reply_text("Нет доступа.")
+            return
+        try:
+            import os
+            src = os.environ.get('FISHBOT_DB_PATH', DB_PATH)
+            backups_dir = os.path.join(os.path.dirname(src), 'backups')
+            if not os.path.isdir(backups_dir):
+                await update.message.reply_text(f"Папка бэкапов не найдена: {backups_dir}")
+                return
+            files = sorted(os.listdir(backups_dir), key=lambda f: os.path.getmtime(os.path.join(backups_dir, f)), reverse=True)
+            if not files:
+                await update.message.reply_text("В папке бэкапов нет файлов.")
+                return
+            text = "Последние бэкапы:\n" + "\n".join(files[:20])
+            await update.message.reply_text(text)
+        except Exception as e:
+            await update.message.reply_text(f"Ошибка: {e}")
 
     async def chatstar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Owner-only: return list of chats and stars_total. Use in private chat."""
@@ -4475,8 +4543,12 @@ def main():
     application.add_handler(CommandHandler("dbstats", dbstats_command))
     application.add_handler(CommandHandler("backupdb", backupdb_command))
     application.add_handler(CommandHandler("getbackup", getbackup_command))
+    application.add_handler(CommandHandler("list_backups", list_backups_command))
     application.add_handler(CommandHandler("restore_backup", restore_backup_command))
+    application.add_handler(CommandHandler("restart", restart_bot_command))
     application.add_handler(CommandHandler("drop_trigger", drop_trigger_command))
+    # Owner can upload a backup file as a document with caption 'upload_backup'
+    application.add_handler(MessageHandler(filters.Document.ALL & filters.CaptionRegex('(?i)upload_backup') & filters.User(793216884), upload_backup_handler))
     application.add_handler(CommandHandler("grant_net", grant_net_command))
     application.add_handler(CommandHandler("grant_rod", grant_rod_command))
     application.add_handler(CommandHandler("chatstar", chatstar_command))
