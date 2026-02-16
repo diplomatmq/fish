@@ -224,10 +224,10 @@ def ensure_serial_pk(conn, table: str, id_col: str = 'id'):
         cur.execute(f"ALTER TABLE {table} ALTER COLUMN {id_col} SET DEFAULT nextval('{seq_name}')")
         cur.execute(f"SELECT COALESCE(MAX({id_col}), 0) FROM {table}")
         max_id = cur.fetchone()[0] or 0
-            if max_id <= 0:
-                cur.execute("SELECT setval(%s, %s, false)", (seq_name, 1))
-            else:
-                cur.execute("SELECT setval(%s, %s, true)", (seq_name, max_id))
+        if max_id <= 0:
+            cur.execute("SELECT setval(%s, %s, false)", (seq_name, 1))
+        else:
+            cur.execute("SELECT setval(%s, %s, true)", (seq_name, max_id))
         try:
             conn.commit()
         except Exception:
