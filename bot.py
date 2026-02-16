@@ -4213,6 +4213,53 @@ def main():
         except Exception as e:
             await update.message.reply_text("Backup failed: " + str(e))
 
+    async def getbackup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Owner-only: send the most recent backup (or live DB) to owner in private chat as .gz"""
+        owner_id = 793216884
+        user_id = getattr(update.effective_user, 'id', None)
+        if user_id != owner_id:
+            await update.message.reply_text("Нет доступа.")
+            return
+
+        try:
+            import os, gzip, shutil
+            from pathlib import Path
+
+            src = os.environ.get('FISHBOT_DB_PATH', DB_PATH)
+            src_path = Path(src)
+            backups_dir = src_path.parent / 'backups'
+
+            candidate = None
+            if backups_dir.exists():
+                files = sorted(backups_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+                if files:
+                    candidate = files[0]
+            if not candidate:
+                candidate = src_path
+
+            if not candidate.exists():
+                await update.message.reply_text("Файл базы данных не найден.")
+                return
+
+            gz_path = candidate.with_suffix(candidate.suffix + '.gz')
+            # create gzipped copy
+            with open(candidate, 'rb') as f_in, gzip.open(gz_path, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+
+            # send in private chat
+            try:
+                await context.bot.send_document(chat_id=user_id, document=open(gz_path, 'rb'))
+                await update.message.reply_text(f"Отправил {gz_path.name} в личку.")
+            except Exception as e:
+                await update.message.reply_text(f"Ошибка при отправке: {e}")
+            finally:
+                try:
+                    gz_path.unlink()
+                except Exception:
+                    pass
+        except Exception as e:
+            await update.message.reply_text("Ошибка: " + str(e))
+
     async def restore_backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Owner-only: restore the most recent backup found in backups/ to DB_PATH."""
         owner_id = 793216884
@@ -4427,6 +4474,7 @@ def main():
     application.add_handler(CommandHandler("start", bot_instance.start))
     application.add_handler(CommandHandler("dbstats", dbstats_command))
     application.add_handler(CommandHandler("backupdb", backupdb_command))
+    application.add_handler(CommandHandler("getbackup", getbackup_command))
     application.add_handler(CommandHandler("restore_backup", restore_backup_command))
     application.add_handler(CommandHandler("drop_trigger", drop_trigger_command))
     application.add_handler(CommandHandler("grant_net", grant_net_command))
