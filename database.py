@@ -131,10 +131,16 @@ class PostgresConnWrapper:
                     parent.execute(sql, params)
 
             def fetchall(self):
-                return self._last.fetchall() if self._last is not None else []
+                try:
+                    return self._last.fetchall() if self._last is not None else []
+                except Exception:
+                    return []
 
             def fetchone(self):
-                return self._last.fetchone() if self._last is not None else None
+                try:
+                    return self._last.fetchone() if self._last is not None else None
+                except Exception:
+                    return None
 
             @property
             def description(self):
@@ -258,9 +264,10 @@ def ensure_all_serial_pks(conn):
               ON c.table_schema = tc.table_schema AND c.table_name = tc.table_name
             JOIN information_schema.key_column_usage k
               ON k.table_schema = c.table_schema AND k.table_name = c.table_name AND k.column_name = c.column_name AND k.constraint_name = tc.constraint_name
-            WHERE tc.constraint_type = 'PRIMARY KEY'
-              AND c.data_type IN ('integer','bigint','smallint')
-              AND (c.column_default IS NULL OR c.column_default NOT LIKE 'nextval(%')
+                        WHERE tc.constraint_type = 'PRIMARY KEY'
+                            AND c.table_schema = 'public'
+                            AND c.data_type IN ('integer','bigint','smallint')
+                            AND (c.column_default IS NULL OR c.column_default NOT LIKE 'nextval(%')
             """
         )
         rows = cur.fetchall()
