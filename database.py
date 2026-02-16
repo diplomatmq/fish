@@ -888,6 +888,18 @@ class Database:
                         'INSERT INTO weather (location, condition, temperature) VALUES (%s, %s, %s)',
                         (loc_name, condition, temp),
                     )
+                # Ensure a global players row exists (user_id = -1, chat_id = -1)
+                try:
+                    cursor.execute(
+                        "INSERT INTO players (user_id, chat_id, username, coins, stars, xp, level) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (user_id, chat_id) DO NOTHING",
+                        (-1, -1, 'GLOBAL', 0, 0, 0, 0),
+                    )
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+
                 # Ensure a global base net exists (user_id = -1, chat_id = -1)
                 try:
                     cursor.execute(
@@ -1986,7 +1998,7 @@ class Database:
 
             # If chat_id provided, filter strictly by integer chat_id stored in caught_fish
             if chat_id is not None:
-                where_clauses.append("CAST(cf.chat_id AS INTEGER) = ?")
+                where_clauses.append("CAST(cf.chat_id AS BIGINT) = ?")
                 params.append(int(chat_id))
 
             if since is not None:
