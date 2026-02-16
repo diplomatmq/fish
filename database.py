@@ -242,6 +242,47 @@ def ensure_serial_pk(conn, table: str, id_col: str = 'id'):
         except Exception:
             pass
 
+
+def ensure_all_serial_pks(conn):
+    """Ensure all integer primary-key columns have a Postgres sequence DEFAULT.
+    Finds PK columns of integer types without a nextval() default and installs
+    a sequence + DEFAULT for them. Safe to call multiple times.
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT c.table_name, c.column_name
+            FROM information_schema.columns c
+            JOIN information_schema.table_constraints tc
+              ON c.table_schema = tc.table_schema AND c.table_name = tc.table_name
+            JOIN information_schema.key_column_usage k
+              ON k.table_schema = c.table_schema AND k.table_name = c.table_name AND k.column_name = c.column_name AND k.constraint_name = tc.constraint_name
+            WHERE tc.constraint_type = 'PRIMARY KEY'
+              AND c.data_type IN ('integer','bigint','smallint')
+              AND (c.column_default IS NULL OR c.column_default NOT LIKE 'nextval(%')
+            """
+        )
+        rows = cur.fetchall()
+        for table, col in rows:
+            try:
+                ensure_serial_pk(conn, table, col)
+            except Exception:
+                logger.exception('failed to ensure serial for %s.%s', table, col)
+        try:
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    except Exception:
+        logger.exception('ensure_all_serial_pks failed')
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
 BAMBOO_ROD = "Бамбуковая удочка"
 TEMP_ROD_RANGES = {
     "Углепластиковая удочка": (30, 70),
@@ -521,6 +562,16 @@ class Database:
             
             conn.commit()
         
+        # Ensure integer PK columns have sequences/defaults (Postgres)
+        try:
+            ensure_all_serial_pks(conn)
+        except Exception:
+            logger.exception('ensure_all_serial_pks call failed during init_db')
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
         # Миграции - добавляем колонки если их нет
         self._run_migrations()
         
