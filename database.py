@@ -446,10 +446,9 @@ class Database:
                     admin_user_id INTEGER NOT NULL,
                     is_configured INTEGER DEFAULT 1,
                     admin_ref_link TEXT,
-                    chat_inv_link TEXT,
+                    chat_invite_link TEXT,
                     chat_title TEXT,
                     stars_total INTEGER DEFAULT 0,
-                    chat_inv_link TEXT,
                     configured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
