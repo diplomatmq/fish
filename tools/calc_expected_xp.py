@@ -96,6 +96,18 @@ if __name__ == '__main__':
     total_all_xp = sum(db.calculate_item_xp(it) for it in caught)
     print('Total expected XP from all caught items:', total_all_xp)
 
+    # Compute expected levels from XP
+    try:
+        expected_level_from_sold = db.get_level_from_xp(total_expected_xp)
+        sold_progress = db.get_level_progress(total_expected_xp)
+        expected_level_from_all = db.get_level_from_xp(total_all_xp)
+        all_progress = db.get_level_progress(total_all_xp)
+
+        print(f"\nExpected level (from sold XP): {expected_level_from_sold} - XP into level: {sold_progress.get('xp_into_level')} / {sold_progress.get('xp_needed')}")
+        print(f"Expected level (from all caught XP): {expected_level_from_all} - XP into level: {all_progress.get('xp_into_level')} / {all_progress.get('xp_needed')}")
+    except Exception as e:
+        print('Could not compute expected levels:', e)
+
     # Player stored XP
     player = db.get_player(USER_ID, CHAT_ID)
     if player:
@@ -103,6 +115,11 @@ if __name__ == '__main__':
         stored_level = int(player.get('level') or 0)
         print(f"\nPlayer stored XP: {stored_xp} (level: {stored_level})")
         print(f"Difference (expected_from_sold - stored): {total_expected_xp - stored_xp}")
+        try:
+            # Compare stored level with expected from sold XP
+            print(f"Level difference (expected_from_sold - stored_level): {expected_level_from_sold - stored_level}")
+        except Exception:
+            pass
     else:
         print('\nPlayer row not found with provided user_id/chat_id lookup.')
 
