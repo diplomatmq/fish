@@ -50,6 +50,11 @@ def main():
                 try:
                     cur.execute(stmt)
                 except Exception as e:
+                    # If row already exists (unique violation), skip and continue
+                    pgcode = getattr(e, 'pgcode', None)
+                    if pgcode == '23505':
+                        print(f"WARNING duplicate on statement #{i}: {e}")
+                        continue
                     print(f"ERROR on statement #{i}: {e}")
                     print("Failed SQL (truncated):", stmt[:1000])
                     conn.close()
