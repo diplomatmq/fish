@@ -2843,15 +2843,24 @@ class Database:
         if not player or not player['last_net_use_time']:
             return 0
         
-        from datetime import datetime, timedelta
-        last_use = datetime.fromisoformat(player['last_net_use_time'])
+        # Use timezone-aware UTC datetimes to avoid comparing naive and aware datetimes
+        from datetime import datetime, timedelta, timezone
+        try:
+            last_use = datetime.fromisoformat(player['last_net_use_time'])
+        except Exception:
+            return 0
+
+        # Treat stored naive timestamps as UTC
+        if last_use.tzinfo is None:
+            last_use = last_use.replace(tzinfo=timezone.utc)
+
         cooldown_hours = net['cooldown_hours']  # Используем кулдаун ЭТОЙ сети
         cooldown_end = last_use + timedelta(hours=cooldown_hours)
-        
-        now = datetime.now()
+
+        now = datetime.now(timezone.utc)
         if now >= cooldown_end:
             return 0
-        
+
         remaining = (cooldown_end - now).total_seconds()
         return int(remaining)
     
