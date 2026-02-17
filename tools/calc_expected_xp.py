@@ -9,12 +9,6 @@ It uses the project's `database.db` instance and calculation helpers.
 """
 from typing import List
 import pprint
-
-# Change this ID to the target user
-USER_ID = 6116470416
-# chat_id used for lookups; set -1 to match global rows (code treats <1 as global)
-from typing import List
-import pprint
 import os
 import sys
 from pathlib import Path
