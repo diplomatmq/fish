@@ -3605,7 +3605,9 @@ class FishBot:
             # try to include chat metadata when recording the transaction
             chat_title = None
             try:
-                chat_title = update.effective_chat.title
+                # Prefer group chat title from the original invoice when available
+                invoice_info = original_invoice or {}
+                chat_title = invoice_info.get('group_chat_title') or (update.effective_chat.title if update.effective_chat and hasattr(update.effective_chat, 'title') else None)
             except Exception:
                 chat_title = None
 
@@ -3956,22 +3958,30 @@ class FishBot:
             return
         
         # Сохраняем информацию о сообщении с кнопкой для последующей отправки стикера в ответ
+        try:
+            group_chat_title = update.effective_chat.title if update.effective_chat and hasattr(update.effective_chat, 'title') else None
+        except Exception:
+            group_chat_title = None
+
         self.active_invoices[user_id] = {
             'group_chat_id': chat_id,
+            'group_chat_title': group_chat_title,
             'group_message_id': query.message.message_id,  # Сообщение с кнопкой в группе
             'location': location,
             'payload': invoice_payload,
             'created_at': datetime.now().isoformat()
         }
         try:
-            chat_title = update.effective_chat.title if update.effective_chat and hasattr(update.effective_chat, 'title') else None
+            # Use stored group title if available
+            stored = self.active_invoices.get(user_id) or {}
+            chat_title_for_log = stored.get('group_chat_title') or (update.effective_chat.title if update.effective_chat and hasattr(update.effective_chat, 'title') else None)
         except Exception:
-            chat_title = None
+            chat_title_for_log = None
         try:
             occ = db.get_chat_occurrences(chat_id)
         except Exception:
             occ = 0
-        logger.info(f"Saved invoice info for user {user_id}: group_chat_id={chat_id}, chat_title={chat_title} - встретился_{occ}, group_message_id={query.message.message_id}")
+        logger.info(f"Saved invoice info for user {user_id}: group_chat_id={chat_id}, chat_title={chat_title_for_log} - встретился_{occ}, group_message_id={query.message.message_id}")
 
         await self.schedule_timeout(
             chat_id,
