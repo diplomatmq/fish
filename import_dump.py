@@ -57,8 +57,60 @@ def main():
                     print(f"WARNING duplicate on statement #{i}: {e}")
                     continue
                 if pgcode == '23503':
-                    # foreign key violation - defer and retry later
+                    # foreign key violation - try to create placeholder in players, then retry
                     print(f"DEFERRED FK on statement #{i}: {e}")
+                    try:
+                        # try to extract user_id from INSERT statement
+                        m = re.search(r"INSERT\s+INTO\s+\"?([^\(\s\"]+)\"?\s*\(([^)]+)\)\s*VALUES\s*\((.+)\)", stmt, re.IGNORECASE | re.DOTALL)
+                        if m:
+                            cols = [c.strip().strip('"') for c in m.group(2).split(',')]
+                            vals_raw = m.group(3).strip()
+                            # split top-level commas in values (ignore commas inside single quotes)
+                            vals = []
+                            cur_val = []
+                            in_sq = False
+                            i_ch = 0
+                            while i_ch < len(vals_raw):
+                                ch = vals_raw[i_ch]
+                                if ch == "'":
+                                    # handle escaped single quotes by skipping next if doubled
+                                    if in_sq and i_ch + 1 < len(vals_raw) and vals_raw[i_ch+1] == "'":
+                                        cur_val.append("''")
+                                        i_ch += 2
+                                        continue
+                                    in_sq = not in_sq
+                                    cur_val.append(ch)
+                                elif ch == ',' and not in_sq:
+                                    vals.append(''.join(cur_val).strip())
+                                    cur_val = []
+                                else:
+                                    cur_val.append(ch)
+                                i_ch += 1
+                            if cur_val:
+                                vals.append(''.join(cur_val).strip())
+                            if 'user_id' in cols:
+                                idx = cols.index('user_id')
+                                raw_val = vals[idx]
+                                # strip quotes
+                                uid = raw_val.strip().strip("'")
+                                try:
+                                    uid_int = int(uid)
+                                    # insert placeholder player
+                                    try:
+                                        cur.execute("INSERT INTO players (user_id, chat_id, username, created_at) VALUES (%s, %s, %s, now()) ON CONFLICT DO NOTHING", (uid_int, -1, f"imported_{uid_int}"))
+                                        # try original statement again
+                                        try:
+                                            cur.execute(stmt)
+                                            continue
+                                        except Exception:
+                                            pass
+                                    except Exception:
+                                        pass
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                    # if still failing, defer and retry later
                     retry_queue.append((i, stmt))
                     continue
                 print(f"ERROR on statement #{i}: {e}")
