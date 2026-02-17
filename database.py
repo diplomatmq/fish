@@ -2796,16 +2796,33 @@ class Database:
                 WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND rod_name = ?
             ''', (user_id, rod_name))
             if cursor.fetchone():
+                # If this is a temporary rod (uses range), initialize uses accordingly
+                uses = self._get_temp_rod_uses(rod_name)
+                if uses is None:
+                    max_dur = rod.get('max_durability', rod.get('durability', 0))
+                    current = max_dur
+                else:
+                    max_dur = uses
+                    current = uses
+
                 cursor.execute('''
                     UPDATE player_rods
                     SET current_durability = ?, max_durability = ?
                     WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND rod_name = ?
-                ''', (rod.get('max_durability', rod.get('durability', 0)), rod.get('max_durability', rod.get('durability', 0)), user_id, rod_name))
+                ''', (current, max_dur, user_id, rod_name))
             else:
+                uses = self._get_temp_rod_uses(rod_name)
+                if uses is None:
+                    max_dur = rod.get('max_durability', rod.get('durability', 0))
+                    current = max_dur
+                else:
+                    max_dur = uses
+                    current = uses
+
                 cursor.execute('''
                     INSERT OR REPLACE INTO player_rods (user_id, rod_name, current_durability, max_durability, chat_id)
                     VALUES (?, ?, ?, ?, -1)
-                ''', (user_id, rod_name, rod.get('max_durability', rod.get('durability', 0)), rod.get('max_durability', rod.get('durability', 0))))
+                ''', (user_id, rod_name, current, max_dur))
             conn.commit()
             return True
     
