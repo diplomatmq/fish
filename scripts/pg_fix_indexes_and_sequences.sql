@@ -33,9 +33,16 @@ BEGIN
       IF maxval IS NULL THEN
         maxval := 0;
       END IF;
-      -- set last_value = maxval so nextval() will return maxval+1
-      EXECUTE format('SELECT setval(%L, %s, true)', seqname, maxval);
-      RAISE NOTICE 'Adjusted sequence % for %.% to %', seqname, r.table_name, r.column_name, maxval;
+      -- If there are no rows (maxval = 0) set sequence to 1 and mark NOT called
+      -- so nextval() will return 1. Otherwise set to maxval and mark called
+      -- so nextval() will return maxval+1.
+      IF maxval <= 0 THEN
+        EXECUTE format('SELECT setval(%L, %s, false)', seqname, 1);
+        RAISE NOTICE 'Adjusted sequence % for %.% to % (no rows, nextval will return 1)', seqname, r.table_name, r.column_name, 1;
+      ELSE
+        EXECUTE format('SELECT setval(%L, %s, true)', seqname, maxval);
+        RAISE NOTICE 'Adjusted sequence % for %.% to %', seqname, r.table_name, r.column_name, maxval;
+      END IF;
     END IF;
   END LOOP;
 END$$;
