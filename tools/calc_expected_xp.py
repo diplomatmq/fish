@@ -13,11 +13,47 @@ import pprint
 # Change this ID to the target user
 USER_ID = 7855666356
 # chat_id used for lookups; set -1 to match global rows (code treats <1 as global)
+from typing import List
+import pprint
+import os
+import sys
+from pathlib import Path
+
+# Change this ID to the target user
+USER_ID = 7855666356
+# chat_id used for lookups; set -1 to match global rows (code treats <1 as global)
 CHAT_ID = -1
 
+
+def ensure_project_on_path():
+    """Add project root to sys.path so imports like `from database import db` work.
+
+    This script is intended to be run from the project root or from the container
+    where the bot runs. If run elsewhere, attempt to locate the repo by walking
+    up until we find `bot.py` or `database.py`.
+    """
+    cwd = Path.cwd()
+    for p in [cwd] + list(cwd.parents):
+        if (p / 'bot.py').exists() or (p / 'database.py').exists():
+            sys.path.insert(0, str(p))
+            return
+    # fallback: insert script's parent/.. (assume tools/ inside project)
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+
 if __name__ == '__main__':
+    ensure_project_on_path()
+
+    # Ensure DATABASE_URL is present for Postgres usage (matches bot behavior)
+    if not os.getenv('DATABASE_URL') and not os.getenv('FISHBOT_DB_PATH'):
+        print("Warning: neither DATABASE_URL nor FISHBOT_DB_PATH set. The bot uses Postgres on server; set DATABASE_URL to connect.")
+
     # Import here to allow running as standalone script from project root
-    from database import db
+    try:
+        from database import db
+    except Exception as e:
+        print('Failed to import project `database` module:', e)
+        raise
 
     pp = pprint.PrettyPrinter(indent=2)
 
