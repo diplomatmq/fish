@@ -2358,21 +2358,23 @@ class Database:
         """Return list of chats with their title and total stars."""
         with self._connect() as conn:
             cursor = conn.cursor()
-            # Also include how many times this chat_id appears in star_transactions (occurrences)
+            # Compute stars_total and occurrences from star_transactions excluding refunded entries
             cursor.execute('''
                 SELECT
                     c.chat_id,
                     COALESCE(c.chat_title, '') AS chat_title,
-                    COALESCE(c.stars_total, 0) AS stars_total,
-                    COALESCE(t.occurrences, 0) AS occurrences
+                    COALESCE(s.stars_total, 0) AS stars_total,
+                    COALESCE(s.occurrences, 0) AS occurrences
                 FROM chat_configs c
                 LEFT JOIN (
-                    SELECT chat_id, COUNT(*) AS occurrences
+                    SELECT chat_id,
+                           COALESCE(SUM(total_amount), 0) AS stars_total,
+                           COUNT(*) AS occurrences
                     FROM star_transactions
-                    WHERE chat_id IS NOT NULL
+                    WHERE chat_id IS NOT NULL AND COALESCE(refund_status, 'none') = 'none'
                     GROUP BY chat_id
-                ) t ON t.chat_id = c.chat_id
-                ORDER BY c.stars_total DESC
+                ) s ON s.chat_id = c.chat_id
+                ORDER BY s.stars_total DESC
             ''')
             rows = cursor.fetchall()
             cols = [d[0] for d in cursor.description]
