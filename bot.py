@@ -1301,7 +1301,7 @@ class FishBot:
             logger.info("Net roll: %s (0-35 trash, 36-70 common, 71-94 rare, 95-100 legendary)", roll)
 
             if 0 <= roll <= 35:
-                # Trash
+                # Trash (fallback to fish if no trash available)
                 if available_trash:
                     trash = random.choice(available_trash)
                     db.add_caught_fish(user_id, chat_id, trash['name'], trash['weight'], location, 0)
@@ -1322,7 +1322,8 @@ class FishBot:
                     })
                     total_value += trash['price']
                 else:
-                    logger.info("Net: roll trash but no trash available at location %s", location)
+                    # No trash available — log and skip this catch (shouldn't happen because trash exists in every location)
+                    logger.info("Net: roll trash but no trash available at location %s; skipping catch", location)
             else:
                 # Determine target rarity string
                 if 36 <= roll <= 70:
