@@ -11,7 +11,7 @@ from typing import List
 import pprint
 
 # Change this ID to the target user
-USER_ID = 797547897
+USER_ID = 1845760968
 # chat_id used for lookups; set -1 to match global rows (code treats <1 as global)
 from typing import List
 import pprint
@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 # Change this ID to the target user
-USER_ID = 797547897
+USER_ID = 1845760968
 # chat_id used for lookups:
 # - set to -1 to match global rows (code treats <1 as global)
 # - set to None or 'ANY' to include caught_fish from all chats for the user
