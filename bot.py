@@ -449,7 +449,11 @@ class FishBot:
 
             # Keep only group/channel chats (chat ids are negative for groups/channels),
             # this excludes private chats where chat_id == user_id.
-            group_rows = [r for r in rows if isinstance(r.get('chat_id'), int) and r.get('chat_id') < 0]
+            # Keep only group/channel chats: chat_id must be an int, not NULL, not -1, and negative
+            group_rows = [
+                r for r in rows
+                if isinstance(r.get('chat_id'), int) and r.get('chat_id') is not None and r.get('chat_id') < 0 and r.get('chat_id') != -1
+            ]
             if not group_rows:
                 await update.message.reply_text("Нет данных по звёздам для групповых чатов.")
                 return
