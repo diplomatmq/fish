@@ -450,7 +450,8 @@ class FishBot:
             lines = []
             for r in rows:
                 title = r.get('chat_title') or f"chat {r.get('chat_id')}"
-                lines.append(f"{title} - {r.get('stars_total', 0)} ⭐")
+                occurrences = r.get('occurrences', 0)
+                lines.append(f"{title} - встретился_{occurrences} - {r.get('stars_total', 0)} ⭐")
 
             await update.message.reply_text("\n".join(lines))
         except Exception as e:
@@ -3606,6 +3607,12 @@ class FishBot:
                 db.increment_chat_stars(chat_id, total_amount, chat_title=chat_title)
             except Exception as e:
                 logger.warning("Failed to record star transaction or increment chat stars: %s", e)
+            else:
+                try:
+                    occ = db.get_chat_occurrences(chat_id)
+                    logger.info(f"Recorded star payment: chat_id={chat_id}, chat_title={chat_title} - встретился_{occ}, user_id={user_id}, amount={total_amount}")
+                except Exception:
+                    logger.info(f"Recorded star payment: chat_id={chat_id}, user_id={user_id}, amount={total_amount}")
             # If DB has explicit star_transactions chat columns we will keep them in migration
         
         # Убираем запланированный таймаут для этого сообщения
@@ -3937,7 +3944,15 @@ class FishBot:
             'payload': invoice_payload,
             'created_at': datetime.now().isoformat()
         }
-        logger.info(f"Saved invoice info for user {user_id}: group_chat_id={chat_id}, group_message_id={query.message.message_id}")
+        try:
+            chat_title = update.effective_chat.title if update.effective_chat and hasattr(update.effective_chat, 'title') else None
+        except Exception:
+            chat_title = None
+        try:
+            occ = db.get_chat_occurrences(chat_id)
+        except Exception:
+            occ = 0
+        logger.info(f"Saved invoice info for user {user_id}: group_chat_id={chat_id}, chat_title={chat_title} - встретился_{occ}, group_message_id={query.message.message_id}")
 
         await self.schedule_timeout(
             chat_id,
