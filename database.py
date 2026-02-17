@@ -1615,6 +1615,7 @@ class Database:
         chunk_size = 500
         with self._connect() as conn:
             cursor = conn.cursor()
+            total_updated = 0
             for i in range(0, len(fish_ids), chunk_size):
                 chunk = fish_ids[i:i + chunk_size]
                 placeholders = ','.join('?' * len(chunk))
@@ -1623,7 +1624,15 @@ class Database:
                     SET sold = 1, sold_at = CURRENT_TIMESTAMP
                     WHERE id IN ({placeholders})
                 ''', chunk)
+                try:
+                    updated = cursor.rowcount if hasattr(cursor, 'rowcount') else -1
+                except Exception:
+                    updated = -1
+                if isinstance(updated, int) and updated > 0:
+                    total_updated += updated
+                logger.info("mark_fish_as_sold: chunk %s-%s updated %s rows", i, i+len(chunk)-1, updated)
             conn.commit()
+            logger.info("mark_fish_as_sold: total ids=%s total_updated=%s", len(fish_ids), total_updated)
     
     def get_player_stats(self, user_id: int, chat_id: int) -> Dict[str, Any]:
         """Получить статистику игрока"""
