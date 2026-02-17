@@ -45,20 +45,53 @@ def main():
     conn.autocommit = True
     cur = conn.cursor()
     try:
+        retry_queue = []
         for i, stmt in enumerate(iter_statements(DUMP), 1):
-            if should_execute(stmt):
-                try:
-                    cur.execute(stmt)
-                except Exception as e:
-                    # If row already exists (unique violation), skip and continue
-                    pgcode = getattr(e, 'pgcode', None)
-                    if pgcode == '23505':
-                        print(f"WARNING duplicate on statement #{i}: {e}")
-                        continue
-                    print(f"ERROR on statement #{i}: {e}")
-                    print("Failed SQL (truncated):", stmt[:1000])
-                    conn.close()
-                    sys.exit(1)
+            if not should_execute(stmt):
+                continue
+            try:
+                cur.execute(stmt)
+            except Exception as e:
+                pgcode = getattr(e, 'pgcode', None)
+                if pgcode == '23505':
+                    print(f"WARNING duplicate on statement #{i}: {e}")
+                    continue
+                if pgcode == '23503':
+                    # foreign key violation - defer and retry later
+                    print(f"DEFERRED FK on statement #{i}: {e}")
+                    retry_queue.append((i, stmt))
+                    continue
+                print(f"ERROR on statement #{i}: {e}")
+                print("Failed SQL (truncated):", stmt[:1000])
+                conn.close()
+                sys.exit(1)
+
+        # Retry deferred FK statements a few times (in case referenced rows are inserted later)
+        if retry_queue:
+            max_passes = 5
+            for attempt in range(1, max_passes + 1):
+                if not retry_queue:
+                    break
+                print(f"Retry pass {attempt} for {len(retry_queue)} deferred statements")
+                new_queue = []
+                for i, stmt in retry_queue:
+                    try:
+                        cur.execute(stmt)
+                    except Exception as e:
+                        pgcode = getattr(e, 'pgcode', None)
+                        if pgcode == '23505':
+                            print(f"WARNING duplicate on retried statement #{i}: {e}")
+                            continue
+                        if pgcode == '23503':
+                            new_queue.append((i, stmt))
+                            continue
+                        print(f"ERROR on retried statement #{i}: {e}")
+                        print("Failed SQL (truncated):", stmt[:1000])
+                        conn.close()
+                        sys.exit(1)
+                retry_queue = new_queue
+            if retry_queue:
+                print(f"WARNING: {len(retry_queue)} statements still failed with FK after retries. They will be skipped.")
         print("Импорт INSERT/COPY завершён")
     finally:
         cur.close()
