@@ -1636,15 +1636,12 @@ class Database:
 
             with self._connect() as conn:
                 cursor = conn.cursor()
-                # Try to use RETURNING id to get the inserted row id (Postgres), fall back otherwise.
+                # Simple insert; then ensure any rows inserted with NULL/0 chat_id are patched.
                 try:
                     cursor.execute('''
                         INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, length, location)
                         VALUES (?, ?, ?, ?, ?, ?)
-                        RETURNING id
                     ''', (user_id, recorded_chat_id_to_store, normalized_name, weight, length, location))
-                    row = cursor.fetchone()
-                    new_id = row[0] if row else None
                     try:
                         conn.commit()
                     except Exception:
@@ -1652,46 +1649,10 @@ class Database:
                             conn.rollback()
                         except Exception:
                             pass
-                except Exception:
-                    # Some DB adapters (or sqlite) may not support RETURNING — do plain insert then try to fetch last id
-                    try:
-                        cursor.execute('''
-                            INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, length, location)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        ''', (user_id, recorded_chat_id_to_store, normalized_name, weight, length, location))
-                        try:
-                            conn.commit()
-                        except Exception:
-                            try:
-                                conn.rollback()
-                            except Exception:
-                                pass
-                        # attempt best-effort to get the inserted id
-                        try:
-                            new_id = getattr(cursor, 'lastrowid', None)
-                        except Exception:
-                            new_id = None
+                except Exception as e:
+                    logger.error("Failed to insert caught_fish row: %s", e)
 
-                # If the direct insert didn't set chat_id for some reason, patch the specific row by id
-                if new_id:
-                    try:
-                        cursor.execute('''
-                            UPDATE caught_fish SET chat_id = ? WHERE id = ?
-                        ''', (recorded_chat_id_to_store, new_id))
-                        if cursor.rowcount:
-                            try:
-                                conn.commit()
-                            except Exception:
-                                try:
-                                    conn.rollback()
-                                except Exception:
-                                    pass
-                            logger.info("Patched caught_fish id=%s with chat_id=%s", new_id, recorded_chat_id_to_store)
-                    except Exception:
-                        # ignore — we'll still attempt the attribute-based patch below
-                        pass
-
-                # As a safety-net: update any recently inserted rows matching these attributes that still
+                # Safety-net: update any recently inserted rows matching these attributes that still
                 # have NULL or 0 chat_id to the recorded value.
                 try:
                     cursor.execute('''
