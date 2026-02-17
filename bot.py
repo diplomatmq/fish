@@ -1296,62 +1296,79 @@ class FishBot:
         total_value = 0
         
         for i in range(fish_count):
-            # 80% шанс рыбы, 20% шанс мусора
-            is_trash = random.randint(1, 100) <= 20
-            
-            if is_trash and available_trash:
-                # Ловим мусор
-                trash = random.choice(available_trash)
-                db.add_caught_fish(user_id, chat_id, trash['name'], trash['weight'], location, 0)
+            # Net roll: 0-35 = trash, 36-70 = common, 71-94 = rare, 95-100 = legendary
+            roll = random.randint(0, 100)
+            logger.info("Net roll: %s (0-35 trash, 36-70 common, 71-94 rare, 95-100 legendary)", roll)
 
-                logger.info(
-                    "Net catch (trash): user=%s chat_id=%s chat_title=%s item=%s weight=%.2fkg location=%s",
-                    user_id,
-                    chat_id,
-                    update.effective_chat.title or "",
-                    trash['name'],
-                    trash['weight'],
-                    location
-                )
-                
-                catch_results.append({
-                    'type': 'trash',
-                    'name': trash['name'],
-                    'weight': trash['weight'],
-                    'price': trash['price']
-                })
-                total_value += trash['price']
-            elif available_fish:
-                # Ловим рыбу
-                fish = random.choice(available_fish)
-                # Генерируем вес и длину рыбы
-                weight = round(random.uniform(fish['min_weight'], fish['max_weight']), 2)
-                length = round(random.uniform(fish['min_length'], fish['max_length']), 1)
-                
-                # Добавляем рыбу в улов игрока
-                db.add_caught_fish(user_id, chat_id, fish['name'], weight, location, length)
+            if 0 <= roll <= 35:
+                # Trash
+                if available_trash:
+                    trash = random.choice(available_trash)
+                    db.add_caught_fish(user_id, chat_id, trash['name'], trash['weight'], location, 0)
+                    logger.info(
+                        "Net catch (trash): user=%s chat_id=%s chat_title=%s item=%s weight=%.2fkg location=%s",
+                        user_id,
+                        chat_id,
+                        update.effective_chat.title or "",
+                        trash['name'],
+                        trash['weight'],
+                        location
+                    )
+                    catch_results.append({
+                        'type': 'trash',
+                        'name': trash['name'],
+                        'weight': trash['weight'],
+                        'price': trash['price']
+                    })
+                    total_value += trash['price']
+                else:
+                    logger.info("Net: roll trash but no trash available at location %s", location)
+            else:
+                # Determine target rarity string
+                if 36 <= roll <= 70:
+                    target_rarity = 'Обычная'
+                elif 71 <= roll <= 94:
+                    target_rarity = 'Редкая'
+                else:
+                    target_rarity = 'Легендарная'
 
-                logger.info(
-                    "Net catch (fish): user=%s chat_id=%s chat_title=%s fish=%s weight=%.2fkg length=%.1fcm location=%s",
-                    user_id,
-                    chat_id,
-                    update.effective_chat.title or "",
-                    fish['name'],
-                    weight,
-                    length,
-                    location
-                )
-                
-                fish_price = db.calculate_fish_price(fish, weight, length)
+                # Filter available fish by target rarity
+                rarity_pool = [f for f in available_fish if f.get('rarity') == target_rarity]
 
-                catch_results.append({
-                    'type': 'fish',
-                    'name': fish['name'],
-                    'weight': weight,
-                    'length': length,
-                    'price': fish_price
-                })
-                total_value += fish_price
+                # If no fish of that rarity, fall back to any available fish in season
+                if not rarity_pool:
+                    logger.info("Net: no fish of rarity %s at %s; falling back to any available fish", target_rarity, location)
+                    rarity_pool = available_fish
+
+                if rarity_pool:
+                    fish = random.choice(rarity_pool)
+                    weight = round(random.uniform(fish['min_weight'], fish['max_weight']), 2)
+                    length = round(random.uniform(fish['min_length'], fish['max_length']), 1)
+                    db.add_caught_fish(user_id, chat_id, fish['name'], weight, location, length)
+
+                    logger.info(
+                        "Net catch (fish): user=%s chat_id=%s chat_title=%s fish=%s weight=%.2fkg length=%.1fcm location=%s rarity=%s",
+                        user_id,
+                        chat_id,
+                        update.effective_chat.title or "",
+                        fish['name'],
+                        weight,
+                        length,
+                        location,
+                        fish.get('rarity')
+                    )
+
+                    fish_price = db.calculate_fish_price(fish, weight, length)
+                    catch_results.append({
+                        'type': 'fish',
+                        'name': fish['name'],
+                        'weight': weight,
+                        'length': length,
+                        'price': fish_price
+                    })
+                    total_value += fish_price
+                else:
+                    logger.info("Net: no fish available to catch at %s", location)
         
         # Используем сеть
         db.use_net(user_id, net_name, chat_id)
