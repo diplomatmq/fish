@@ -100,7 +100,14 @@ class EmojiBot(ExtBot):
     async def edit_message_text(self, *args, **kwargs):
         if 'text' in kwargs:
             kwargs['text'] = replace_coin_emoji(kwargs['text'])
-        return await super().edit_message_text(*args, **kwargs)
+        try:
+            return await super().edit_message_text(*args, **kwargs)
+        except BadRequest as e:
+            # Ignore harmless 'Message is not modified' errors so callers
+            # like callback_query.edit_message_text() don't have to handle them.
+            if "Message is not modified" in str(e):
+                return None
+            raise
 
 def format_level_progress(level_info):
     if not level_info:
@@ -181,6 +188,14 @@ class FishBot:
                 wait = getattr(e, 'retry_after', None) or getattr(e, 'timeout', 1)
                 logger.warning("RetryAfter on edit_message_text, waiting %s sec (attempt %s)", wait, attempt + 1)
                 await asyncio.sleep(float(wait) + 1)
+            except BadRequest as e:
+                # Ignore harmless 'Message is not modified' errors when content and reply_markup
+                # are identical to current message state. Log other BadRequest cases.
+                msg = str(e)
+                if "Message is not modified" in msg:
+                    return None
+                logger.warning("BadRequest on edit_message_text: %s args=%s", e, kwargs)
+                return None
         logger.error("_safe_edit_message_text: failed after retries args=%s", kwargs)
         return None
 
