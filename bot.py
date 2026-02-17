@@ -3585,7 +3585,11 @@ class FishBot:
         telegram_payment_charge_id = getattr(payment, "telegram_payment_charge_id", None)
         total_amount = getattr(payment, "total_amount", 0)
 
-        # Сохраняем транзакцию
+        # Prefer original group chat id where invoice was created (stored in active_invoices)
+        original_invoice = self.active_invoices.get(user_id) or {}
+        original_group_chat_id = original_invoice.get('group_chat_id')
+
+        # Сохраняем транзакцию — используем group chat id from invoice when possible
         if telegram_payment_charge_id:
             # try to include chat metadata when recording the transaction
             chat_title = None
@@ -3593,6 +3597,10 @@ class FishBot:
                 chat_title = update.effective_chat.title
             except Exception:
                 chat_title = None
+
+            # Determine chat_id to record: prefer the group chat where invoice was initiated
+            recorded_chat_id = original_group_chat_id if original_group_chat_id is not None else chat_id
+
             try:
                 # If DB supports chat_id/chat_title columns, add them via migration-aware method
                 db.add_star_transaction(
@@ -3600,19 +3608,19 @@ class FishBot:
                     telegram_payment_charge_id=telegram_payment_charge_id,
                     total_amount=total_amount,
                     refund_status="none",
-                    chat_id=chat_id,
+                    chat_id=recorded_chat_id,
                     chat_title=chat_title,
                 )
                 # update chat-level aggregate (this will also save chat_title in chat_configs)
-                db.increment_chat_stars(chat_id, total_amount, chat_title=chat_title)
+                db.increment_chat_stars(recorded_chat_id, total_amount, chat_title=chat_title)
             except Exception as e:
                 logger.warning("Failed to record star transaction or increment chat stars: %s", e)
             else:
                 try:
-                    occ = db.get_chat_occurrences(chat_id)
-                    logger.info(f"Recorded star payment: chat_id={chat_id}, chat_title={chat_title} - встретился_{occ}, user_id={user_id}, amount={total_amount}")
+                    occ = db.get_chat_occurrences(recorded_chat_id)
+                    logger.info(f"Recorded star payment: chat_id={recorded_chat_id}, chat_title={chat_title} - встретился_{occ}, user_id={user_id}, amount={total_amount}")
                 except Exception:
-                    logger.info(f"Recorded star payment: chat_id={chat_id}, user_id={user_id}, amount={total_amount}")
+                    logger.info(f"Recorded star payment: chat_id={recorded_chat_id}, user_id={user_id}, amount={total_amount}")
             # If DB has explicit star_transactions chat columns we will keep them in migration
         
         # Убираем запланированный таймаут для этого сообщения
