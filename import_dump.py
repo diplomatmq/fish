@@ -95,9 +95,23 @@ def main():
                                 uid = raw_val.strip().strip("'")
                                 try:
                                     uid_int = int(uid)
-                                    # insert placeholder player
+                                    # determine chat_id if present in the INSERT
+                                    chat_val = -1
+                                    if 'chat_id' in cols:
+                                        cidx = cols.index('chat_id')
+                                        raw_c = vals[cidx].strip()
+                                        if raw_c.upper() != 'NULL':
+                                            chat_str = raw_c.strip().strip("'")
+                                            try:
+                                                chat_val = int(chat_str)
+                                            except Exception:
+                                                chat_val = -1
+                                    # insert placeholder player with detected chat_id
                                     try:
-                                        cur.execute("INSERT INTO players (user_id, chat_id, username, created_at) VALUES (%s, %s, %s, now()) ON CONFLICT DO NOTHING", (uid_int, -1, f"imported_{uid_int}"))
+                                        cur.execute(
+                                            "INSERT INTO players (user_id, chat_id, username, created_at) VALUES (%s, %s, %s, now()) ON CONFLICT DO NOTHING",
+                                            (uid_int, chat_val, f"imported_{uid_int}")
+                                        )
                                         # try original statement again
                                         try:
                                             cur.execute(stmt)
