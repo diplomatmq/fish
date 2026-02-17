@@ -1608,14 +1608,21 @@ class Database:
         """Пометить рыбу как проданную"""
         if not fish_ids:
             return
+
+        # Some DB drivers (SQLite) have a limit on the number of bound parameters
+        # allowed in a single statement. To be robust when selling many items at
+        # once, perform the update in chunks.
+        chunk_size = 500
         with self._connect() as conn:
             cursor = conn.cursor()
-            placeholders = ','.join('?' * len(fish_ids))
-            cursor.execute(f'''
-                UPDATE caught_fish 
-                SET sold = 1, sold_at = CURRENT_TIMESTAMP
-                WHERE id IN ({placeholders})
-            ''', fish_ids)
+            for i in range(0, len(fish_ids), chunk_size):
+                chunk = fish_ids[i:i + chunk_size]
+                placeholders = ','.join('?' * len(chunk))
+                cursor.execute(f'''
+                    UPDATE caught_fish 
+                    SET sold = 1, sold_at = CURRENT_TIMESTAMP
+                    WHERE id IN ({placeholders})
+                ''', chunk)
             conn.commit()
     
     def get_player_stats(self, user_id: int, chat_id: int) -> Dict[str, Any]:
