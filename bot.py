@@ -447,8 +447,15 @@ class FishBot:
                 await update.message.reply_text("Нет данных по звёздам для чатов.")
                 return
 
+            # Keep only group/channel chats (chat ids are negative for groups/channels),
+            # this excludes private chats where chat_id == user_id.
+            group_rows = [r for r in rows if isinstance(r.get('chat_id'), int) and r.get('chat_id') < 0]
+            if not group_rows:
+                await update.message.reply_text("Нет данных по звёздам для групповых чатов.")
+                return
+
             lines = []
-            for r in rows:
+            for r in group_rows:
                 title = r.get('chat_title') or f"chat {r.get('chat_id')}"
                 occurrences = r.get('occurrences', 0)
                 lines.append(f"{title} - встретился_{occurrences} - {r.get('stars_total', 0)} ⭐")
