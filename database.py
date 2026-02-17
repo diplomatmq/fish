@@ -1625,18 +1625,27 @@ class Database:
                 except Exception:
                     recorded_chat_id = recorded_chat_id
 
+            # Ensure we write an integer chat_id (use 0 as explicit fallback instead of NULL)
+            try:
+                if recorded_chat_id is None:
+                    recorded_chat_id_to_store = 0
+                else:
+                    recorded_chat_id_to_store = int(recorded_chat_id)
+            except Exception:
+                recorded_chat_id_to_store = 0
+
             with self._connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, length, location)
                     VALUES (?, ?, ?, ?, ?, ?)
-                ''', (user_id, recorded_chat_id, normalized_name, weight, length, location))
+                ''', (user_id, recorded_chat_id_to_store, normalized_name, weight, length, location))
                 conn.commit()
 
             logger.info(
                 "Caught fish saved: user=%s chat_id=%s fish=%s weight=%.2fkg length=%.1fcm location=%s",
                 user_id,
-                recorded_chat_id,
+                recorded_chat_id_to_store,
                 normalized_name,
                 float(weight or 0),
                 float(length or 0),
