@@ -729,21 +729,29 @@ class Database:
                     ON CONFLICT (user_id, chat_id) DO NOTHING
                 ''')
 
-                # Drop old table and rename new one. On Postgres this may fail if
-                # other tables have foreign keys referencing `players`.
+                # Attempt to replace the old players table only if nothing
+                # references it via foreign key constraints. If other objects
+                # depend on `players` skip the destructive replacement to
+                # avoid dropping dependent objects and noisy stack traces.
                 try:
-                    cursor.execute('DROP TABLE players')
-                    cursor.execute('ALTER TABLE players_new RENAME TO players')
-                    conn.commit()
-                except Exception as e:
-                    logger.warning("Could not replace players table (%s). Skipping composite-PK migration.", e)
-                    # The failed DROP may leave the current transaction aborted in Postgres;
-                    # rollback to clear the error state so subsequent commands can run.
+                    # Check for any foreign-key constraints referencing players
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM pg_constraint WHERE confrelid = (SELECT oid FROM pg_class WHERE relname = %s AND relnamespace = 'public'::regnamespace)",
+                        ('players',)
+                    )
+                    # fetchone() returns a tuple like (count,); use the first value
+                    ref_count_row = cursor.fetchone()
+                    ref_count = ref_count_row[0] if ref_count_row else 0
+                except Exception:
+                    # Fallback: if we cannot reliably detect references, avoid DROP
+                    ref_count = 1
+
+                if ref_count:
+                    logger.warning("Could not replace players table (dependent objects exist). Skipping composite-PK migration.")
                     try:
                         conn.rollback()
                     except Exception:
                         pass
-                    # Try to drop the temporary table if it exists, in a fresh transaction.
                     try:
                         cursor.execute('DROP TABLE IF EXISTS players_new')
                         conn.commit()
@@ -752,6 +760,25 @@ class Database:
                             conn.rollback()
                         except Exception:
                             pass
+                else:
+                    try:
+                        cursor.execute('DROP TABLE players')
+                        cursor.execute('ALTER TABLE players_new RENAME TO players')
+                        conn.commit()
+                    except Exception as e:
+                        logger.warning("Could not replace players table (%s). Skipping composite-PK migration.", e)
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                        try:
+                            cursor.execute('DROP TABLE IF EXISTS players_new')
+                            conn.commit()
+                        except Exception:
+                            try:
+                                conn.rollback()
+                            except Exception:
+                                pass
 
             # refresh columns list after potential schema change
             columns = get_columns('players')
@@ -780,6 +807,18 @@ class Database:
             ensure_column('chat_configs', 'chat_invite_link', 'TEXT')
             ensure_column('user_ref_links', 'chat_invite_link', 'TEXT')
             ensure_column('caught_fish', 'chat_id', 'INTEGER')
+
+            # Ensure unique index for ON CONFLICT targets that expect (user_id, chat_id)
+            try:
+                cols = get_columns('players')
+                if 'chat_id' in cols:
+                    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS players_user_chat_unique ON players (user_id, chat_id)")
+                    conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
             # Ensure integer PK columns have a sequence/default on Postgres (e.g., rods.id)
             # Also ensure user/chat identifier columns are 64-bit on Postgres to avoid integer out of range
@@ -1766,7 +1805,7 @@ class Database:
                 FROM caught_fish cf
                 LEFT JOIN fish f ON TRIM(cf.fish_name) = f.name
                 LEFT JOIN trash t ON TRIM(cf.fish_name) = t.name
-                WHERE cf.user_id = ? AND cf.chat_id = ?
+                WHERE cf.user_id = ? AND (cf.chat_id = ? OR cf.chat_id IS NULL OR cf.chat_id < 1)
                 ORDER BY cf.weight DESC
             ''', (user_id, chat_id))
             
@@ -1931,21 +1970,32 @@ class Database:
         xp_delta = int(xp_amount or 0)
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                'SELECT COALESCE(xp, 0), COALESCE(level, 0) FROM players WHERE user_id = ? ORDER BY created_at DESC LIMIT 1',
-                (user_id,)
-            )
-            row = cursor.fetchone()
-            current_xp = row[0] if row else 0
-            current_level = row[1] if row else 0
-
-            new_xp = max(0, current_xp + xp_delta)
-            new_level = self.get_level_from_xp(new_xp)
-
-            cursor.execute(
-                'UPDATE players SET xp = ?, level = ? WHERE user_id = ?',
-                (new_xp, new_level, user_id)
-            )
+            # Use the same player-row selection logic as `update_player`:
+            # prefer a global profile row (chat_id IS NULL or <1) when chat-aware schema is used.
+            cursor.execute('PRAGMA table_info(players)')
+            cols = [c[1] for c in cursor.fetchall()]
+            if 'chat_id' in cols:
+                cursor.execute('SELECT COALESCE(xp, 0), COALESCE(level, 0) FROM players WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) LIMIT 1', (user_id,))
+                row = cursor.fetchone()
+                if not row:
+                    cursor.execute('SELECT COALESCE(xp, 0), COALESCE(level, 0) FROM players WHERE user_id = ? AND chat_id = ? LIMIT 1', (user_id, chat_id))
+                    row = cursor.fetchone()
+                current_xp = row[0] if row else 0
+                current_level = row[1] if row else 0
+                new_xp = max(0, current_xp + xp_delta)
+                new_level = self.get_level_from_xp(new_xp)
+                # update global row if exists, else update per-chat row
+                cursor.execute('UPDATE players SET xp = ?, level = ? WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1)', (new_xp, new_level, user_id))
+                if cursor.rowcount == 0:
+                    cursor.execute('UPDATE players SET xp = ?, level = ? WHERE user_id = ? AND chat_id = ?', (new_xp, new_level, user_id, chat_id))
+            else:
+                cursor.execute('SELECT COALESCE(xp, 0), COALESCE(level, 0) FROM players WHERE user_id = ? ORDER BY created_at DESC LIMIT 1', (user_id,))
+                row = cursor.fetchone()
+                current_xp = row[0] if row else 0
+                current_level = row[1] if row else 0
+                new_xp = max(0, current_xp + xp_delta)
+                new_level = self.get_level_from_xp(new_xp)
+                cursor.execute('UPDATE players SET xp = ?, level = ? WHERE user_id = ?', (new_xp, new_level, user_id))
             conn.commit()
 
         progress = self.get_level_progress(new_xp)
