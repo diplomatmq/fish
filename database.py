@@ -1608,17 +1608,35 @@ class Database:
         """Добавить пойманную рыбу"""
         normalized_name = fish_name.strip() if isinstance(fish_name, str) else fish_name
         try:
+            # Defensive: if chat_id is None or invalid, try to resolve a sensible group chat
+            recorded_chat_id = chat_id
+            if recorded_chat_id is None or recorded_chat_id == 0:
+                try:
+                    with self._connect() as conn:
+                        cur = conn.cursor()
+                        # Prefer a group chat id (<0) from player's profiles for this user
+                        cur.execute('''
+                            SELECT chat_id FROM players WHERE user_id = ? AND chat_id IS NOT NULL AND CAST(chat_id AS INTEGER) < 0
+                            ORDER BY created_at DESC LIMIT 1
+                        ''', (user_id,))
+                        r = cur.fetchone()
+                        if r and r[0] is not None:
+                            recorded_chat_id = int(r[0])
+                except Exception:
+                    recorded_chat_id = recorded_chat_id
+
             with self._connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, length, location)
                     VALUES (?, ?, ?, ?, ?, ?)
-                ''', (user_id, chat_id, normalized_name, weight, length, location))
+                ''', (user_id, recorded_chat_id, normalized_name, weight, length, location))
                 conn.commit()
+
             logger.info(
                 "Caught fish saved: user=%s chat_id=%s fish=%s weight=%.2fkg length=%.1fcm location=%s",
                 user_id,
-                chat_id,
+                recorded_chat_id,
                 normalized_name,
                 float(weight or 0),
                 float(length or 0),
@@ -2104,6 +2122,7 @@ class Database:
 
             # If chat_id provided, filter strictly by integer chat_id stored in caught_fish
             if chat_id is not None:
+                # Filter strictly by provided chat_id (allow positive private ids and negative group ids)
                 where_clauses.append("CAST(cf.chat_id AS BIGINT) = ?")
                 params.append(int(chat_id))
 
