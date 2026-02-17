@@ -1608,9 +1608,9 @@ class Database:
         """Добавить пойманную рыбу"""
         normalized_name = fish_name.strip() if isinstance(fish_name, str) else fish_name
         try:
-            # Defensive: if chat_id is None or invalid, try to resolve a sensible group chat
+            # Use the provided chat_id as-is when available; only if it's None try to resolve a group chat
             recorded_chat_id = chat_id
-            if recorded_chat_id is None or recorded_chat_id == 0:
+            if recorded_chat_id is None:
                 try:
                     with self._connect() as conn:
                         cur = conn.cursor()
@@ -1623,16 +1623,16 @@ class Database:
                         if r and r[0] is not None:
                             recorded_chat_id = int(r[0])
                 except Exception:
-                    recorded_chat_id = recorded_chat_id
+                    recorded_chat_id = None
 
-            # Ensure we write an integer chat_id (use 0 as explicit fallback instead of NULL)
+            # Store None as NULL in DB when chat_id is unknown; otherwise store exact integer value
             try:
                 if recorded_chat_id is None:
-                    recorded_chat_id_to_store = 0
+                    recorded_chat_id_to_store = None
                 else:
                     recorded_chat_id_to_store = int(recorded_chat_id)
             except Exception:
-                recorded_chat_id_to_store = 0
+                recorded_chat_id_to_store = None
 
             with self._connect() as conn:
                 cursor = conn.cursor()
