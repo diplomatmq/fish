@@ -2358,10 +2358,35 @@ class Database:
         """Return list of chats with their title and total stars."""
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT chat_id, COALESCE(chat_title, "") as chat_title, COALESCE(stars_total,0) as stars_total FROM chat_configs ORDER BY stars_total DESC')
+            # Also include how many times this chat_id appears in star_transactions (occurrences)
+            cursor.execute('''
+                SELECT
+                    c.chat_id,
+                    COALESCE(c.chat_title, '') AS chat_title,
+                    COALESCE(c.stars_total, 0) AS stars_total,
+                    COALESCE(t.occurrences, 0) AS occurrences
+                FROM chat_configs c
+                LEFT JOIN (
+                    SELECT chat_id, COUNT(*) AS occurrences
+                    FROM star_transactions
+                    WHERE chat_id IS NOT NULL
+                    GROUP BY chat_id
+                ) t ON t.chat_id = c.chat_id
+                ORDER BY c.stars_total DESC
+            ''')
             rows = cursor.fetchall()
             cols = [d[0] for d in cursor.description]
             return [dict(zip(cols, r)) for r in rows]
+
+    def get_chat_occurrences(self, chat_id: int) -> int:
+        """Return number of star_transactions rows for a given chat_id."""
+        if chat_id is None:
+            return 0
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM star_transactions WHERE chat_id = ?', (chat_id,))
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
 
     def update_chat_title(self, chat_id: int, chat_title: str) -> bool:
         """Update chat title in chat_configs."""
