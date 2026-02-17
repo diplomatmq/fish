@@ -1642,6 +1642,23 @@ class Database:
                 ''', (user_id, recorded_chat_id_to_store, normalized_name, weight, length, location))
                 conn.commit()
 
+                # Some DB adapters or migration layers previously caused chat_id to be stored as NULL.
+                # As a safety, update any recently inserted rows matching these attributes that still
+                # have NULL or 0 chat_id to the recorded value.
+                try:
+                    cursor.execute('''
+                        UPDATE caught_fish
+                        SET chat_id = ?
+                        WHERE user_id = ? AND TRIM(fish_name) = TRIM(?) AND weight = ? AND length = ? AND location = ?
+                          AND (chat_id IS NULL OR chat_id = 0)
+                    ''', (recorded_chat_id_to_store, user_id, normalized_name, weight, length, location))
+                    updated = cursor.rowcount
+                    if updated:
+                        conn.commit()
+                        logger.info("Patched %s caught_fish rows with chat_id=%s for recent insert", updated, recorded_chat_id_to_store)
+                except Exception as e:
+                    logger.warning("Failed to patch caught_fish chat_id after insert: %s", e)
+
             logger.info(
                 "Caught fish saved: user=%s chat_id=%s fish=%s weight=%.2fkg length=%.1fcm location=%s",
                 user_id,
