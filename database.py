@@ -569,6 +569,15 @@ class Database:
                     FOREIGN KEY (user_id) REFERENCES players (user_id)
                 )
             ''')
+            # Ensure `chat_id` column exists (some deployments have it; add if missing)
+            try:
+                cursor.execute("ALTER TABLE caught_fish ADD COLUMN IF NOT EXISTS chat_id BIGINT")
+            except Exception:
+                try:
+                    # Older SQLite emulation may not support ALTER TABLE ADD COLUMN IF NOT EXISTS
+                    cursor.execute("ALTER TABLE caught_fish ADD COLUMN chat_id INTEGER")
+                except Exception:
+                    pass
 
             # Таблица транзакций Telegram Stars
             cursor.execute('''
