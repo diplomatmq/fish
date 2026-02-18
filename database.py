@@ -1608,40 +1608,17 @@ class Database:
         """Добавить пойманную рыбу"""
         normalized_name = fish_name.strip() if isinstance(fish_name, str) else fish_name
         try:
-            # Use the provided chat_id as-is when available; only if it's None try to resolve a group chat
-            recorded_chat_id = chat_id
-            if recorded_chat_id is None:
-                try:
-                    with self._connect() as conn:
-                        cur = conn.cursor()
-                        # Prefer a group chat id (<0) from player's profiles for this user
-                        cur.execute('''
-                            SELECT chat_id FROM players WHERE user_id = ? AND chat_id IS NOT NULL AND CAST(chat_id AS INTEGER) < 0
-                            ORDER BY created_at DESC LIMIT 1
-                        ''', (user_id,))
-                        r = cur.fetchone()
-                        if r and r[0] is not None:
-                            recorded_chat_id = int(r[0])
-                except Exception:
-                    recorded_chat_id = None
-
-            # Store None as NULL in DB when chat_id is unknown; otherwise store exact integer value
-            try:
-                if recorded_chat_id is None:
-                    recorded_chat_id_to_store = None
-                else:
-                    recorded_chat_id_to_store = int(recorded_chat_id)
-            except Exception:
-                recorded_chat_id_to_store = None
+            # Записываем `chat_id` ровно таким, каким он пришёл — без проверок и преобразований.
+            recorded_chat_id_to_store = chat_id
 
             with self._connect() as conn:
                 cursor = conn.cursor()
-                # Simple insert; then ensure any rows inserted with NULL/0 chat_id are patched.
                 try:
+                    # Записываем `chat_id` напрямую в самый конец VALUES — никаких проверок и патчей.
                     cursor.execute('''
-                        INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, length, location)
+                        INSERT INTO caught_fish (user_id, fish_name, weight, length, location, chat_id)
                         VALUES (?, ?, ?, ?, ?, ?)
-                    ''', (user_id, recorded_chat_id_to_store, normalized_name, weight, length, location))
+                    ''', (user_id, normalized_name, weight, length, location, recorded_chat_id_to_store))
                     try:
                         conn.commit()
                     except Exception:
@@ -1651,28 +1628,6 @@ class Database:
                             pass
                 except Exception as e:
                     logger.error("Failed to insert caught_fish row: %s", e)
-
-                # Safety-net: update any recently inserted rows matching these attributes that still
-                # have NULL or 0 chat_id to the recorded value.
-                try:
-                    cursor.execute('''
-                        UPDATE caught_fish
-                        SET chat_id = ?
-                        WHERE user_id = ? AND TRIM(fish_name) = TRIM(?) AND weight = ? AND length = ? AND location = ?
-                          AND (chat_id IS NULL OR chat_id = 0)
-                    ''', (recorded_chat_id_to_store, user_id, normalized_name, weight, length, location))
-                    updated = cursor.rowcount
-                    if updated:
-                        try:
-                            conn.commit()
-                        except Exception:
-                            try:
-                                conn.rollback()
-                            except Exception:
-                                pass
-                        logger.info("Patched %s caught_fish rows with chat_id=%s for recent insert", updated, recorded_chat_id_to_store)
-                except Exception as e:
-                    logger.warning("Failed to patch caught_fish chat_id after insert: %s", e)
 
             logger.info(
                 "Caught fish saved: user=%s chat_id=%s fish=%s weight=%.2fkg length=%.1fcm location=%s",
