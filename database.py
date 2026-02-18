@@ -157,12 +157,14 @@ class PostgresConnWrapper:
                 if isinstance(params, list):
                     params = tuple(params)
                 try:
+                    logger.debug("Postgres executing SQL: %s PARAMS: %s", out_sql, params)
                     cur.execute(out_sql, params)
                 except Exception:
                     logger.exception("DB execute failed. SQL: %s PARAMS: %s", out_sql, params)
                     raise
             else:
                 try:
+                    logger.debug("Postgres executing SQL: %s (no params)", out_sql)
                     cur.execute(out_sql)
                 except Exception:
                     logger.exception("DB execute failed. SQL: %s", out_sql)
