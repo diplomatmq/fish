@@ -1651,6 +1651,19 @@ class Database:
                         rowcount = getattr(cursor, 'rowcount', None)
                         lastid = getattr(cursor, 'lastrowid', None)
                         logger.info("DB insert succeeded: rowcount=%s lastrowid=%s params=%s", rowcount, lastid, insert_params)
+                        # Read back the most recent caught_fish for this user to verify what's stored
+                        try:
+                            cursor.execute('''
+                                SELECT id, user_id, chat_id, fish_name, weight, length, location, caught_at
+                                FROM caught_fish
+                                WHERE user_id = ?
+                                ORDER BY caught_at DESC
+                                LIMIT 1
+                            ''', (user_id,))
+                            fetched = cursor.fetchone()
+                            logger.info("DB verify fetched row after insert: %s", fetched)
+                        except Exception as verify_exc:
+                            logger.warning("Failed to verify inserted caught_fish row: %s", verify_exc)
                     except Exception as commit_exc:
                         try:
                             conn.rollback()
