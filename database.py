@@ -157,7 +157,11 @@ class PostgresConnWrapper:
                 if isinstance(params, list):
                     params = tuple(params)
                 try:
-                    logger.debug("Postgres executing SQL: %s PARAMS: %s", out_sql, params)
+                    # Log executed SQL at INFO for caught_fish inserts so production logs show exact SQL/params
+                    if 'caught_fish' in out_sql.lower():
+                        logger.info("Postgres executing SQL: %s PARAMS: %s", out_sql, params)
+                    else:
+                        logger.debug("Postgres executing SQL: %s PARAMS: %s", out_sql, params)
                     cur.execute(out_sql, params)
                 except Exception:
                     logger.exception("DB execute failed. SQL: %s PARAMS: %s", out_sql, params)
@@ -1647,34 +1651,39 @@ class Database:
 
             with self._connect() as conn:
                 cursor = conn.cursor()
-                # Simple insert; then ensure any rows inserted with NULL/0 chat_id are patched.
+                # Use RETURNING to capture what Postgres actually stored for chat_id
                 insert_sql = '''
                         INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, length, location)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?) RETURNING id, chat_id
                     '''
                 insert_params = (user_id, recorded_chat_id_to_store, normalized_name, weight, length, location)
-                logger.debug("Inserting caught_fish. SQL: %s PARAMS: %s", insert_sql.strip(), insert_params)
+                logger.debug("Inserting caught_fish (RETURNING). SQL: %s PARAMS: %s", insert_sql.strip(), insert_params)
                 try:
                     cursor.execute(insert_sql, insert_params)
-                    # Attempt commit and log outcome
+                    # Attempt to fetch RETURNING results (Postgres) and then commit
+                    try:
+                        returned = cursor.fetchone()
+                    except Exception:
+                        returned = None
                     try:
                         conn.commit()
                         rowcount = getattr(cursor, 'rowcount', None)
-                        lastid = getattr(cursor, 'lastrowid', None)
-                        logger.info("DB insert succeeded: rowcount=%s lastrowid=%s params=%s", rowcount, lastid, insert_params)
-                        # Read back the most recent caught_fish for this user to verify what's stored
-                        try:
-                            cursor.execute('''
-                                SELECT id, user_id, chat_id, fish_name, weight, length, location, caught_at
-                                FROM caught_fish
-                                WHERE user_id = ?
-                                ORDER BY caught_at DESC
-                                LIMIT 1
-                            ''', (user_id,))
-                            fetched = cursor.fetchone()
-                            logger.info("DB verify fetched row after insert: %s", fetched)
-                        except Exception as verify_exc:
-                            logger.warning("Failed to verify inserted caught_fish row: %s", verify_exc)
+                        lastid = returned[0] if returned and len(returned) > 0 else getattr(cursor, 'lastrowid', None)
+                        logger.info("DB insert succeeded: rowcount=%s returned=%s params=%s", rowcount, returned, insert_params)
+                        # If RETURNING wasn't supported or didn't return chat_id, do a defensive verify
+                        if not returned or (len(returned) > 1 and returned[1] is None):
+                            try:
+                                cursor.execute('''
+                                    SELECT id, user_id, chat_id, fish_name, weight, length, location, caught_at
+                                    FROM caught_fish
+                                    WHERE user_id = ?
+                                    ORDER BY id DESC
+                                    LIMIT 1
+                                ''', (user_id,))
+                                fetched = cursor.fetchone()
+                                logger.info("DB verify fetched row after insert: %s", fetched)
+                            except Exception as verify_exc:
+                                logger.warning("Failed to verify inserted caught_fish row: %s", verify_exc)
                     except Exception as commit_exc:
                         try:
                             conn.rollback()
