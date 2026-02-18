@@ -2763,19 +2763,11 @@ class FishBot:
         global_week = db.get_leaderboard_period(limit=10, since=week_since)
         global_day = db.get_leaderboard_period(limit=10, since=day_since)
 
-        chat_week = db.get_leaderboard_period(limit=10, since=week_since, chat_id=chat_id)
-        chat_day = db.get_leaderboard_period(limit=10, since=day_since, chat_id=chat_id)
-
         message = "🏆 Таблица лидеров\n\n"
         message += "🌍 Глобальный топ\n"
         message += format_leaderboard("За неделю", global_week)
         message += "\n"
         message += format_leaderboard("За день", global_day)
-        message += "\n\n"
-        message += "🏠 Топ чата\n"
-        message += format_leaderboard("За неделю", chat_week)
-        message += "\n"
-        message += format_leaderboard("За день", chat_day)
 
         if update.message:
             await update.message.reply_text(message, parse_mode="HTML")
