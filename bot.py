@@ -150,6 +150,52 @@ def format_fish_name(name: str) -> str:
     return f"{random.choice(FISH_EMOJI_TAGS)} {name}"
 
 class FishBot:
+    async def ref_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Особая команда для пользователя 456582155: возвращает инфо по звёздам только для чата -1002727369443."""
+        special_user_id = 456582155
+        special_chat_id = -1002727369443
+        user_id = update.effective_user.id
+        # Только для этого пользователя
+        if user_id != special_user_id:
+            try:
+                await update.message.reply_text("Команда доступна только для вас.")
+            except Exception:
+                pass
+            return
+
+        # Только в личном чате
+        if update.effective_chat.type != 'private':
+            try:
+                await update.message.reply_text("Команду используйте в личном чате с ботом.")
+            except Exception:
+                pass
+            return
+
+        try:
+            # Получаем все данные по звёздам
+            rows = db.get_all_chat_stars()
+            if not rows:
+                await update.message.reply_text("Нет данных по звёздам.")
+                return
+
+            # Ищем только нужный чат
+            row = next((r for r in rows if r.get('chat_id') == special_chat_id), None)
+            if not row:
+                await update.message.reply_text("Нет данных по звёздам для этого чата.")
+                return
+
+            title = row.get('chat_title') or f"chat {row.get('chat_id')}"
+            occurrences = row.get('occurrences', 0)
+            stars = row.get('stars_total', 0)
+            msg = f"{title} - встретился_{occurrences} - {stars} ⭐"
+            await update.message.reply_text(msg)
+        except Exception as e:
+            logger.error("ref_command error: %s", e)
+            try:
+                await update.message.reply_text("Ошибка при получении данных.")
+            except Exception:
+                pass
+
     def __init__(self):
         self.scheduler = None  # Будет создан в main() с asyncio loop
         self.user_locations = {}  # Временное хранение локаций пользователей
@@ -4634,6 +4680,7 @@ def main():
     application.add_handler(CommandHandler("rules", bot_instance.rules_command))
     application.add_handler(CommandHandler("info", bot_instance.info_command))
     application.add_handler(CommandHandler("stars", bot_instance.stars_command))
+    application.add_handler(CommandHandler("ref", bot_instance.ref_command))
     application.add_handler(CommandHandler("topl", bot_instance.topl_command))
     application.add_handler(CommandHandler("leaderboard", bot_instance.leaderboard_command))
     application.add_handler(CommandHandler("repair", bot_instance.repair_command))
