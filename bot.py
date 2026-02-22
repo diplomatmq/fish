@@ -151,6 +151,30 @@ def format_fish_name(name: str) -> str:
 
 class FishBot:
 
+    async def tour_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Только в группах
+        if update.effective_chat.type == 'private':
+            await update.message.reply_text("Команда доступна только в группах.")
+            return
+        # Проверяем, установлен ли турнир
+        if not self.tour_params["start"] or not self.tour_params["end"]:
+            await update.message.reply_text("Турнир не активен.")
+            return
+        # Получаем топ по турниру
+        try:
+            leaderboard = db.get_leaderboard_period(
+                limit=10,
+                since=self.tour_params["start"],
+                until=self.tour_params["end"]
+            )
+            text = f"<b>Турнирный ТОП ({self.tour_params['start'].strftime('%d.%m.%Y %H:%M')} - {self.tour_params['end'].strftime('%d.%m.%Y %H:%M')}):</b>\n"
+            for i, row in enumerate(leaderboard, 1):
+                text += f"{i}. {row['username']} ({row['user_id']}): {row['total_weight']:.2f} кг, {row['total_fish']} рыб\n"
+            await update.message.reply_text(text, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Ошибка вывода турнира: {e}")
+            await update.message.reply_text("Ошибка вывода турнира. См. логи.")
+
     NEW_TOUR_ADMIN_ID = 793216884
     waiting_new_tour = False
     waiting_tour_dates = False
