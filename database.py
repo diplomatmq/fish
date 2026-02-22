@@ -2182,8 +2182,8 @@ class Database:
                 for row in rows
             ]
 
-    def get_leaderboard_period(self, limit: int = 10, since: Optional[datetime] = None, chat_id: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Получить таблицу лидеров за период и/или по чату"""
+    def get_leaderboard_period(self, limit: int = 10, since: Optional[datetime] = None, until: Optional[datetime] = None, chat_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Получить таблицу лидеров за период (с фильтром по началу и концу) и/или по чату"""
         with self._connect() as conn:
             cursor = conn.cursor()
 
@@ -2199,6 +2199,9 @@ class Database:
             if since is not None:
                 where_clauses.append("datetime(cf.caught_at) >= datetime(?)")
                 params.append(since.strftime("%Y-%m-%d %H:%M:%S"))
+            if until is not None:
+                where_clauses.append("datetime(cf.caught_at) <= datetime(?)")
+                params.append(until.strftime("%Y-%m-%d %H:%M:%S"))
 
             where_clauses.append("cf.sold = 0")
 
