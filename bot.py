@@ -150,6 +150,112 @@ def format_fish_name(name: str) -> str:
     return f"{random.choice(FISH_EMOJI_TAGS)} {name}"
 
 class FishBot:
+
+    NEW_TOUR_ADMIN_ID = 793216884
+    waiting_new_tour = False
+    waiting_tour_dates = False
+    new_tour_data = {}
+    # Глобальные параметры турнира (можно заменить на хранение в файле)
+    tour_params = {
+        "start": None,
+        "end": None,
+        "text": None,
+        "photo": None
+    }
+
+    async def new_tour_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        if user_id != self.NEW_TOUR_ADMIN_ID:
+            await update.message.reply_text("Нет доступа.")
+            return
+        self.waiting_new_tour = True
+        self.new_tour_data = {"chat_id": update.effective_chat.id}
+        await update.message.reply_text("Пришлите текст сообщения для рассылки (можно с фото). После этого оно будет разослано во все чаты.")
+
+    async def handle_new_tour_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        # 1. Получаем текст/фото
+        if self.waiting_new_tour and user_id == self.NEW_TOUR_ADMIN_ID:
+            self.waiting_new_tour = False
+            text = update.message.text or ""
+            photo = None
+            if update.message.photo:
+                photo = update.message.photo[-1].file_id
+            self.new_tour_data["text"] = text
+            self.new_tour_data["photo"] = photo
+            await update.message.reply_text("Теперь укажите даты турнира в формате: ДД.ММ.ГГГГ ЧЧ:ММ - ДД.ММ.ГГГГ ЧЧ:ММ\nПример: 01.03.2026 12:00 - 10.03.2026 23:59")
+            self.waiting_tour_dates = True
+            return
+        # 2. Получаем даты
+        if self.waiting_tour_dates and user_id == self.NEW_TOUR_ADMIN_ID:
+            self.waiting_tour_dates = False
+            import re, datetime
+            msg = update.message.text or ""
+            m = re.match(r"(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2})\s*-\s*(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2})", msg)
+            if not m:
+                await update.message.reply_text("Неверный формат. Пример: 01.03.2026 12:00 - 10.03.2026 23:59")
+                self.waiting_tour_dates = True
+                return
+            try:
+                start = datetime.datetime.strptime(m.group(1), "%d.%m.%Y %H:%M")
+                end = datetime.datetime.strptime(m.group(2), "%d.%m.%Y %H:%M")
+            except Exception:
+                await update.message.reply_text("Ошибка разбора дат. Пример: 01.03.2026 12:00 - 10.03.2026 23:59")
+                self.waiting_tour_dates = True
+                return
+            # Сохраняем параметры турнира
+            self.tour_params = {
+                "start": start,
+                "end": end,
+                "text": self.new_tour_data.get("text"),
+                "photo": self.new_tour_data.get("photo")
+            }
+            await update.message.reply_text(f"Турнир установлен!\nПериод: {start.strftime('%d.%m.%Y %H:%M')} - {end.strftime('%d.%m.%Y %H:%M')}\nНачинаю рассылку...")
+            # Рассылка
+            try:
+                all_chats = db.get_all_chat_stars()
+                count = 0
+                for chat in all_chats:
+                    chat_id = chat.get("chat_id")
+                    if not chat_id:
+                        continue
+                    try:
+                        if self.tour_params["photo"]:
+                            await self._safe_send_message(chat_id=chat_id, photo=self.tour_params["photo"], caption=self.tour_params["text"])
+                        else:
+                            await self._safe_send_message(chat_id=chat_id, text=self.tour_params["text"])
+                        count += 1
+                    except Exception as e:
+                        logger.warning(f"Не удалось отправить в чат {chat_id}: {e}")
+                await self._safe_send_message(chat_id=self.NEW_TOUR_ADMIN_ID, text=f"Рассылка завершена. Отправлено в {count} чатов.")
+            except Exception as e:
+                logger.error(f"Ошибка рассылки: {e}")
+                await self._safe_send_message(chat_id=self.NEW_TOUR_ADMIN_ID, text="Ошибка рассылки. См. логи.")
+            return
+
+        async def tour_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+            # Только в группах
+            if update.effective_chat.type == 'private':
+                await update.message.reply_text("Команда доступна только в группах.")
+                return
+            # Проверяем, установлен ли турнир
+            if not self.tour_params["start"] or not self.tour_params["end"]:
+                await update.message.reply_text("Турнир не активен.")
+                return
+            # Получаем топ по турниру
+            try:
+                leaderboard = db.get_leaderboard_period(
+                    limit=10,
+                    since=self.tour_params["start"],
+                    until=self.tour_params["end"]
+                )
+                text = f"<b>Турнирный ТОП ({self.tour_params['start'].strftime('%d.%m.%Y %H:%M')} - {self.tour_params['end'].strftime('%d.%m.%Y %H:%M')}):</b>\n"
+                for i, row in enumerate(leaderboard, 1):
+                    text += f"{i}. {row['username']} ({row['user_id']}): {row['total_weight']:.2f} кг, {row['total_fish']} рыб\n"
+                await update.message.reply_text(text, parse_mode="HTML")
+            except Exception as e:
+                logger.error(f"Ошибка вывода турнира: {e}")
+                await update.message.reply_text("Ошибка вывода турнира. См. логи.")
     async def ref_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Особая команда для пользователя 456582155: возвращает инфо по звёздам только для чата -1002727369443."""
         special_user_id = 456582155
@@ -4213,6 +4319,8 @@ def main():
             logger.exception("post_init: failed to start notifications worker: %s", e)
 
     application = Application.builder().bot(emoji_bot).post_init(_post_init).build()
+    # Добавляем обработчик турнира
+    application.add_handler(CommandHandler("tour", bot_instance.tour_command))
 
     # Устанавливаем приложение в экземпляр бота
     bot_instance.application = application
@@ -4221,6 +4329,14 @@ def main():
     bot_instance.scheduler = AsyncIOScheduler()
     # Scheduler будет запущен после запуска приложения
     print("✅ Application создана успешно")
+
+    # --- NEW TOUR BROADCAST HANDLERS ---
+    application.add_handler(CommandHandler("new_tour", bot_instance.new_tour_command))
+    # Обработка любого сообщения/фото от владельца, если ждем рассылку
+    application.add_handler(MessageHandler(
+        filters.User(793216884) & (filters.TEXT | filters.PHOTO) & ~filters.COMMAND,
+        bot_instance.handle_new_tour_message
+    ))
 
     async def dbinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Owner-only helper to inspect runtime DB file on the container
