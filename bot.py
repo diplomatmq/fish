@@ -5865,12 +5865,14 @@ def main():
     # Обработчик новых участников группы отключён — не присылаем автоматические приветствия
     # (application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, bot_instance.welcome_new_member)))
     
-    # Ввод для сценариев /ref и /new_ref
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_withdraw_stars_input))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_new_ref_input))
+    # Ввод для сценариев /ref и /new_ref.
+    # В python-telegram-bot в рамках одной группы выполняется только первый подошедший handler,
+    # поэтому разносим обработчики по группам: сценарные -> общий текстовый.
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_withdraw_stars_input), group=0)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_new_ref_input), group=1)
 
-    # Обработчик сообщений о рыбалке и покупке наживки (должен быть перед filters.ALL)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_fish_message))
+    # Обработчик сообщений о рыбалке и покупке наживки
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_fish_message), group=2)
     
     # Обработчик стикеров
     application.add_handler(MessageHandler(filters.Sticker.ALL, bot_instance.handle_sticker))
