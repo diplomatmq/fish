@@ -530,7 +530,7 @@ class FishBot:
 
         return False
 
-    async def send_invoice_url_button(self, chat_id, invoice_url, text, user_id=None, invoice_id=None, timeout_sec=60):
+    async def send_invoice_url_button(self, chat_id, invoice_url, text, user_id=None, invoice_id=None, timeout_sec=60, reply_to_message_id=None):
         """Отправить кнопку оплаты со ссылкой инвойса, с автоотключением."""
         logger.info(f"[INVOICE] Sending invoice button to chat_id={chat_id}, url={invoice_url}, user_id={user_id}, invoice_id={invoice_id}")
         if user_id is None:
@@ -542,7 +542,15 @@ class FishBot:
             url=invoice_url
         )]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        msg = await self.application.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+        send_kwargs = {
+            "chat_id": chat_id,
+            "text": text,
+            "reply_markup": reply_markup,
+        }
+        if reply_to_message_id is not None:
+            send_kwargs["reply_to_message_id"] = reply_to_message_id
+
+        msg = await self.application.bot.send_message(**send_kwargs)
         # Сохраняем активный инвойс для пользователя
         self.active_invoices[user_id] = {
             'invoice_url': invoice_url,
@@ -1139,7 +1147,8 @@ class FishBot:
                     chat_id=chat_id,
                     invoice_url=invoice_url,
                     text=f"⏰ {message}\n\n⭐ Оплатите 1 Telegram Stars для гарантированного улова на локации: {player['current_location']}",
-                    user_id=user_id
+                    user_id=user_id,
+                    reply_to_message_id=update.effective_message.message_id if update.effective_message else None
                 )
             else:
                 error_text = f"⏰ {message}\n\n(Ошибка генерации ссылки для оплаты)"
@@ -1395,7 +1404,8 @@ class FishBot:
                         chat_id=chat_id,
                         invoice_url=invoice_url,
                         text=f"😔 {result['message']}\n\n⭐ Оплатите 1 Telegram Stars для гарантированного улова на локации: {result['location']}",
-                        user_id=user_id
+                        user_id=user_id,
+                        reply_to_message_id=update.effective_message.message_id if update.effective_message else None
                     )
                 else:
                     error_text = f"😔 {result['message']}\n\n(Ошибка генерации ссылки для оплаты)"
@@ -2272,6 +2282,7 @@ class FishBot:
             text=f"⭐ Оплатите {HARPOON_SKIP_COST_STARS} Telegram Stars для мгновенного использования гарпуна.",
             user_id=user_id,
             timeout_sec=600,
+            reply_to_message_id=query.message.message_id if query and query.message else None,
         )
 
         await query.edit_message_text("Ссылка на оплату отправлена. После оплаты гарпун сработает автоматически.")
@@ -2343,7 +2354,8 @@ class FishBot:
                 chat_id=query.message.chat_id,
                 invoice_url=invoice_url,
                 text=f"⭐ Оплатите {repair_cost} Telegram Stars для мгновенного восстановления удочки.",
-                user_id=user_id
+                user_id=user_id,
+                reply_to_message_id=query.message.message_id if query and query.message else None,
             )
         else:
             error_text = f"(Ошибка генерации ссылки для оплаты)"
@@ -2857,6 +2869,7 @@ class FishBot:
             ),
             user_id=user_id,
             timeout_sec=900,
+            reply_to_message_id=query.message.message_id if query and query.message else None,
         )
 
         await query.edit_message_text("Ссылка на оплату отправлена. После оплаты кормушка активируется автоматически.")
@@ -2901,6 +2914,7 @@ class FishBot:
             text=f"⭐ Оплатите {ECHOSOUNDER_COST_STARS} Telegram Stars для активации эхолота на 24 часа.",
             user_id=user_id,
             timeout_sec=900,
+            reply_to_message_id=query.message.message_id if query and query.message else None,
         )
 
         await query.edit_message_text("Ссылка на оплату отправлена. После оплаты эхолот активируется автоматически.")
