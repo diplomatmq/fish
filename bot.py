@@ -355,7 +355,10 @@ class FishBot:
 
         await update.message.reply_text(
             "Введите ID пользователя, которому дать доступ, и ссылку на чат (через пробел):\n"
-            "Пример: 123456789 https://t.me/joinchat/AAAAAE2v..."
+            "Примеры:\n"
+            "123456789 -1001234567890\n"
+            "123456789 @channel_or_group_username\n"
+            "123456789 https://t.me/channel_or_group_username"
         )
         context.user_data['waiting_new_ref'] = True
 
@@ -368,16 +371,49 @@ class FishBot:
         if len(parts) != 2:
             await update.message.reply_text("Ошибка: введите ID и ссылку через пробел.")
             return
-        ref_user_id, chat_link = parts
+        ref_user_id_raw, chat_link = parts
+
+        try:
+            ref_user_id = int(ref_user_id_raw)
+        except ValueError:
+            await update.message.reply_text("Ошибка: ID пользователя должен быть числом.")
+            return
+
         chat_id = None
+
+        # 1) Прямой числовой chat_id (например: -1001234567890)
         m = re.search(r'-?\d{9,}', chat_link)
         if m:
             chat_id = int(m.group(0))
         else:
-            await update.message.reply_text("Не удалось извлечь chat_id из ссылки. Проверьте формат.")
+            # 2) t.me/c/<id>/<msg_id> -> преобразуем в -100<id>
+            m_c = re.search(r't\.me/c/(\d+)', chat_link, flags=re.IGNORECASE)
+            if m_c:
+                chat_id = int(f"-100{m_c.group(1)}")
+
+        # 3) username / @username / t.me/username[/msg_id] -> resolve через get_chat
+        if chat_id is None:
+            username = None
+            m_user = re.search(r't\.me/([A-Za-z0-9_]{5,})(?:/\d+)?/?$', chat_link, flags=re.IGNORECASE)
+            if m_user:
+                username = m_user.group(1)
+            elif re.fullmatch(r'@?[A-Za-z0-9_]{5,}', chat_link):
+                username = chat_link.lstrip('@')
+
+            if username:
+                try:
+                    chat = await context.bot.get_chat(f"@{username}")
+                    chat_id = chat.id
+                except Exception as e:
+                    logger.warning("/new_ref: failed to resolve @%s: %s", username, e)
+
+        if chat_id is None:
+            await update.message.reply_text(
+                "Не удалось определить chat_id. Используйте -100... или @username (бот должен быть в этом чате)."
+            )
             return
         try:
-            db.add_ref_access(int(ref_user_id), chat_id)
+            db.add_ref_access(ref_user_id, chat_id)
             await update.message.reply_text(f"✅ Доступ для пользователя {ref_user_id} к чату {chat_id} сохранён.")
         except Exception as e:
             await update.message.reply_text(f"Ошибка при сохранении: {e}")
