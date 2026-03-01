@@ -2299,6 +2299,66 @@ class Database:
             rows = cursor.fetchall()
             columns = [description[0] for description in cursor.description]
             return [dict(zip(columns, row)) for row in rows]
+
+    def get_active_feeder_bonus(self, user_id: int, chat_id: int) -> int:
+        """Получить активный бонус кормушки для игрока.
+
+        Возвращает процентный бонус (целое число). Если таблиц/колонок кормушек
+        в текущей схеме нет, возвращает 0.
+        """
+        candidate_tables = [
+            'player_feeders',
+            'active_feeders',
+            'player_feeder_effects',
+            'feeders_active',
+        ]
+        bonus_columns_priority = ['bonus_percent', 'fish_bonus', 'bonus', 'effect_bonus']
+        time_columns_priority = ['expires_at', 'active_until', 'ends_at', 'end_at']
+        active_columns_priority = ['is_active', 'active', 'enabled']
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+
+            for table in candidate_tables:
+                try:
+                    cursor.execute(
+                        "SELECT column_name FROM information_schema.columns WHERE table_name = %s AND table_schema = 'public'",
+                        (table,)
+                    )
+                    columns = {row[0] for row in cursor.fetchall()}
+                    if not columns or 'user_id' not in columns:
+                        continue
+
+                    bonus_col = next((col for col in bonus_columns_priority if col in columns), None)
+                    if not bonus_col:
+                        continue
+
+                    time_col = next((col for col in time_columns_priority if col in columns), None)
+                    active_col = next((col for col in active_columns_priority if col in columns), None)
+
+                    where_parts = ["user_id = ?"]
+                    params: List[Union[int, str]] = [user_id]
+
+                    if 'chat_id' in columns:
+                        where_parts.append("(chat_id = ? OR chat_id IS NULL OR chat_id < 1)")
+                        params.append(chat_id)
+
+                    if active_col:
+                        where_parts.append(f"({active_col} = 1 OR {active_col} IS NULL)")
+
+                    if time_col:
+                        where_parts.append(f"({time_col} IS NULL OR {time_col} > CURRENT_TIMESTAMP)")
+
+                    query = f"SELECT COALESCE(MAX({bonus_col}), 0) FROM {table} WHERE " + " AND ".join(where_parts)
+                    cursor.execute(query, params)
+                    row = cursor.fetchone()
+                    value = int((row[0] if row else 0) or 0)
+                    return max(0, value)
+                except Exception:
+                    # Пробуем следующую таблицу/схему без падения игрового цикла.
+                    continue
+
+        return 0
     
     def get_bait_count(self, user_id: int, bait_name: str) -> int:
         """Получить количество наживки у игрока"""
