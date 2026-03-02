@@ -3493,6 +3493,8 @@ class FishBot:
         else:
             page = 0
         fish_list = sorted(fish_counts.items())
+        # Store full name mapping so handle_sell_species can look up by index
+        context.user_data['sell_fish_names'] = {str(i): name for i, (name, _) in enumerate(fish_list)}
         page_size = 10
         total_pages = max(1, (len(fish_list) + page_size - 1) // page_size)
         page = max(0, min(page, total_pages - 1))
@@ -3502,9 +3504,11 @@ class FishBot:
         page_fish = fish_list[start:end]
 
         keyboard = []
-        for fish_name, info in page_fish:
+        for i, (fish_name, info) in enumerate(page_fish):
+            full_idx = start + i
             button_text = f"{fish_name} (×{info['count']}) - {info['total_price']} 🪙"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"sell_species_{fish_name.replace(' ', '_')}_{user_id}")])
+            # Use numeric index to keep callback_data within Telegram's 64-byte limit
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"sell_sp_{full_idx}_{user_id}")])
 
         # Добавляем кнопку продажи всего
         if total_value > 0:
@@ -3736,15 +3740,21 @@ class FishBot:
             logger.error("Failed to get user_id in handle_sell_species")
             return
         
-        # Проверка прав доступа - извлекаем user_id из callback_data
-        # Формат: sell_species_{fish_name}_{user_id}
+        # Проверка прав доступа
+        # Формат: sell_sp_{idx}_{user_id}
         if not query.data.endswith(f"_{user_id}"):
             await query.answer("Эта кнопка не для вас", show_alert=True)
             return
-        
-        # Извлекаем название вида рыбы из callback_data
+
+        # Извлекаем индекс из callback_data и ищем имя в context.user_data
         parts = query.data.split('_')
-        fish_name = '_'.join(parts[2:-1]).replace('_', ' ')
+        fish_idx_str = parts[2] if len(parts) > 2 else None
+        fish_name = None
+        if fish_idx_str is not None:
+            fish_name = context.user_data.get('sell_fish_names', {}).get(fish_idx_str)
+        if not fish_name:
+            await query.answer("Сессия устарела, откройте лавку заново.", show_alert=True)
+            return
         
         await query.answer()
         
@@ -6120,7 +6130,7 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_use_net, pattern="^use_net_"))  # Использование сетей
     application.add_handler(CallbackQueryHandler(bot_instance.handle_back_to_menu, pattern="^back_to_menu_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_sell_fish, pattern=r"^sell_fish_\d+$"))
-    application.add_handler(CallbackQueryHandler(bot_instance.handle_sell_species, pattern="^sell_species_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_sell_species, pattern="^sell_sp_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_sell_all, pattern=r"^sell_all_\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_confirm_sell_all, pattern=r"^confirm_sell_all_\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_cancel_sell_all, pattern=r"^cancel_sell_all_\d+$"))
