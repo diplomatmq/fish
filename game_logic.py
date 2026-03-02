@@ -281,16 +281,16 @@ class FishingGame:
         TRASH_MAX = 7499
         COMMON_MAX = 11999
         RARE_MAX = 14549
-        LEGENDARY_MAX = 14969
+        LEGENDARY_MAX = 14997
 
         # Единая механика для всех локаций: один бросок от 0 до 15000
         # 0-3749 = ничего не клюёт
         # 3750-7499 = мусор
         # 7500-11999 = обычная
         # 12000-14549 = редкая
-        # 14550-14969 = легендарная
-        # 14970-14999 = мифическая (в несколько раз реже)
-        # 15000 = NFT (или 14999-15000 с удачливой удочкой)
+        # 14550-14997 = легендарная
+        # 14998-14999 = мифическая (~0.013%, почти как NFT)
+        # 15000 = NFT
         roll = random.randint(0, ROLL_MAX)
         is_lucky_rod = bool(rod and rod.get('name') == 'Удачливая удочка')
 
@@ -320,7 +320,7 @@ class FishingGame:
             f"   🎲 Random roll: {roll}/15000 (adjusted: {adjusted_roll}/15000 "
             f"with weather {weather_condition}, feeder {feeder_bonus:+d}%)"
         )
-        logger.info("   📊 Ranges: 0-3749=NO_BITE, 3750-7499=TRASH, 7500-11999=COMMON, 12000-14549=RARE, 14550-14969=LEGENDARY, 14970-14999=MYTHIC, 15000=NFT")
+        logger.info("   📊 Ranges: 0-3749=NO_BITE, 3750-7499=TRASH, 7500-11999=COMMON, 12000-14549=RARE, 14550-14997=LEGENDARY, 14998-14999=MYTHIC, 15000=NFT")
         
         if roll == ROLL_MAX or (is_lucky_rod and roll == 14999):
             logger.info("   🏆 Result: NFT WIN (raw roll %s, lucky_rod=%s)", roll, is_lucky_rod)
@@ -588,10 +588,7 @@ class FishingGame:
 
         temp_rod_result = self._consume_temp_rod_use(user_id, chat_id, player['current_rod'])
 
-        # Определяем цену рыбы и начисляем монеты
-        fish_price = caught_fish.get('price', 0)
         db.update_player(user_id, chat_id,
-                coins=player['coins'] + fish_price,
                 last_fish_time=datetime.now().isoformat())
 
         # Начисляем опыт за улов
@@ -603,9 +600,11 @@ class FishingGame:
             'is_trash': False,
         })
         level_info = db.add_player_xp(user_id, chat_id, xp_earned)
-        
+
         # Обновление популяции рыбы на локации
         self._update_fish_population(location, -1)
+
+        fish_price = caught_fish.get('price', 0)
 
         return {
             "success": True,
@@ -614,7 +613,7 @@ class FishingGame:
             "length": length,
             "location": location,
             "earned": fish_price,
-            "new_balance": player['coins'] + fish_price,
+            "new_balance": player['coins'],
             "xp_earned": xp_earned,
             "level_info": level_info,
             # This was a normal (non-paid) catch
@@ -632,7 +631,7 @@ class FishingGame:
         TRASH_MAX = 7999
         COMMON_MAX = 16999
         RARE_MAX = 18999
-        LEGENDARY_MAX = 19799
+        LEGENDARY_MAX = 19899
         MYTHIC_MAX = 19999
 
         roll = random.randint(0, ROLL_MAX)
