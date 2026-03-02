@@ -1157,7 +1157,7 @@ class FishBot:
         try:
             rows = db.get_all_chat_stars()
             if not rows:
-                await update.message.reply_text("Нет данных по звёздам для чатов.")
+                await update.message.reply_text("Нет данных по звёздам для чатов.", parse_mode=None)
                 return
 
             lines = []
@@ -1204,13 +1204,13 @@ class FishBot:
                 if cur:
                     chunks.append("\n".join(cur))
                 for chunk in chunks:
-                    await update.message.reply_text(chunk)
+                    await update.message.reply_text(chunk, parse_mode=None)
             else:
-                await update.message.reply_text(text)
+                await update.message.reply_text(text, parse_mode=None)
         except Exception as e:
             logger.exception("stars_command error: %s", e)
             try:
-                await update.message.reply_text(f"Ошибка при получении данных: {e}")
+                await update.message.reply_text(f"Ошибка при получении данных: {e}", parse_mode=None)
             except Exception:
                 pass
     
