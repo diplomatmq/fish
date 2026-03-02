@@ -1161,9 +1161,12 @@ class FishBot:
                 return
 
             lines = []
+            total_stars = 0
             for r in rows:
                 chat_id = r.get('chat_id')
                 title = (r.get('chat_title') or '').strip()
+                stars = r.get('stars_total', 0) or 0
+                total_stars += stars
 
                 if not title and chat_id:
                     try:
@@ -1174,19 +1177,40 @@ class FishBot:
                                 db.update_chat_title(chat_id, title)
                             except Exception:
                                 pass
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("stars_command: could not get_chat for %s: %s", chat_id, e)
                         title = ""
 
                 if not title:
                     title = f"chat:{chat_id}"
 
-                lines.append(f"{title} - {r.get('stars_total', 0)} ⭐")
+                lines.append(f"{title} — {stars} ⭐")
 
-            await update.message.reply_text("\n".join(lines))
+            header = f"Всего звёзд: {total_stars}\n\n"
+            text = header + "\n".join(lines)
+            # Split into chunks if needed
+            if len(text) > 4000:
+                chunks = []
+                cur = [header.rstrip()]
+                cur_len = len(header)
+                for ln in lines:
+                    if cur_len + len(ln) + 1 > 4000:
+                        chunks.append("\n".join(cur))
+                        cur = [ln]
+                        cur_len = len(ln) + 1
+                    else:
+                        cur.append(ln)
+                        cur_len += len(ln) + 1
+                if cur:
+                    chunks.append("\n".join(cur))
+                for chunk in chunks:
+                    await update.message.reply_text(chunk)
+            else:
+                await update.message.reply_text(text)
         except Exception as e:
-            logger.error("stars_command error: %s", e)
+            logger.exception("stars_command error: %s", e)
             try:
-                await update.message.reply_text("Ошибка при получении данных.")
+                await update.message.reply_text(f"Ошибка при получении данных: {e}")
             except Exception:
                 pass
     
@@ -4981,20 +5005,26 @@ class FishBot:
         if payload and payload.startswith("repair_rod_"):
             # Обработка восстановления удочки
             rod_name = payload.replace("repair_rod_", "")
+            repair_reply_id = None
+            if user_id in self.active_invoices:
+                repair_reply_id = self.active_invoices[user_id].get('group_message_id')
+                del self.active_invoices[user_id]
             if rod_name in TEMP_ROD_RANGES:
                 try:
-                    await update.message.reply_text(
-                        "❌ Эта удочка одноразовая и не ремонтируется."
+                    await self._safe_send_message(
+                        chat_id=accounting_chat_id,
+                        text="❌ Эта удочка одноразовая и не ремонтируется.",
+                        reply_to_message_id=repair_reply_id,
                     )
                 except Exception as e:
                     logger.warning(f"Could not send temp rod repair rejection to {user_id}: {e}")
                 return
             db.repair_rod(user_id, rod_name, accounting_chat_id)
-            
-            # Отправляем подтверждение в ЛС
             try:
-                await update.message.reply_text(
-                    f"✅ Удочка '{rod_name}' полностью восстановлена!"
+                await self._safe_send_message(
+                    chat_id=accounting_chat_id,
+                    text=f"✅ Удочка '{rod_name}' полностью восстановлена!",
+                    reply_to_message_id=repair_reply_id,
                 )
             except Exception as e:
                 logger.warning(f"Could not send repair confirmation to {user_id}: {e}")
@@ -5029,7 +5059,9 @@ class FishBot:
             booster_code = str(parsed_booster_payload.get("booster_code") or "")
             group_chat_id = int(parsed_booster_payload.get("group_chat_id") or accounting_chat_id)
 
+            booster_reply_id = None
             if user_id in self.active_invoices:
+                booster_reply_id = self.active_invoices[user_id].get('group_message_id')
                 del self.active_invoices[user_id]
 
             if booster_code == ECHOSOUNDER_CODE:
@@ -5040,9 +5072,8 @@ class FishBot:
                         f"✅ Эхолот активирован на {ECHOSOUNDER_DURATION_HOURS} часа!\n"
                         "Откройте меню наживки и нажмите кнопку 'Эхолот'."
                     ),
+                    reply_to_message_id=booster_reply_id,
                 )
-                if group_chat_id != chat_id:
-                    await update.message.reply_text("✅ Эхолот активирован в игровом чате.")
                 return
 
             feeder = self._get_feeder_by_code(booster_code)
@@ -5063,9 +5094,8 @@ class FishBot:
                     f"✅ {feeder['name']} активирована на 1 час!\n"
                     f"🎯 Бонус к клёву: +{feeder['bonus']}%"
                 ),
+                reply_to_message_id=booster_reply_id,
             )
-            if group_chat_id != chat_id:
-                await update.message.reply_text("✅ Кормушка активирована в игровом чате.")
             return
         elif payload and payload.startswith("guaranteed_"):
             parsed = parsed_guaranteed_payload or self._parse_guaranteed_payload(payload)
