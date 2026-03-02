@@ -1156,63 +1156,51 @@ class FishBot:
 
         try:
             rows = db.get_all_chat_stars()
-            if not rows:
-                await update.message.reply_text("Нет данных по звёздам для чатов.", parse_mode=None)
-                return
-
-            lines = []
-            total_stars = 0
-            for r in rows:
-                chat_id = r.get('chat_id')
-                title = (r.get('chat_title') or '').strip()
-                stars = r.get('stars_total', 0) or 0
-                total_stars += stars
-
-                if not title and chat_id:
-                    try:
-                        chat_obj = await self.application.bot.get_chat(chat_id)
-                        title = getattr(chat_obj, 'title', None) or ""
-                        if title:
-                            try:
-                                db.update_chat_title(chat_id, title)
-                            except Exception:
-                                pass
-                    except Exception as e:
-                        logger.warning("stars_command: could not get_chat for %s: %s", chat_id, e)
-                        title = ""
-
-                if not title:
-                    title = f"chat:{chat_id}"
-
-                lines.append(f"{title} — {stars} ⭐")
-
-            header = f"Всего звёзд: {total_stars}\n\n"
-            text = header + "\n".join(lines)
-            # Split into chunks if needed
-            if len(text) > 4000:
-                chunks = []
-                cur = [header.rstrip()]
-                cur_len = len(header)
-                for ln in lines:
-                    if cur_len + len(ln) + 1 > 4000:
-                        chunks.append("\n".join(cur))
-                        cur = [ln]
-                        cur_len = len(ln) + 1
-                    else:
-                        cur.append(ln)
-                        cur_len += len(ln) + 1
-                if cur:
-                    chunks.append("\n".join(cur))
-                for chunk in chunks:
-                    await update.message.reply_text(chunk, parse_mode=None)
-            else:
-                await update.message.reply_text(text, parse_mode=None)
         except Exception as e:
-            logger.exception("stars_command error: %s", e)
+            logger.exception("stars_command: db error: %s", e)
+            await update.message.reply_text(f"Ошибка БД: {e}", parse_mode=None)
+            return
+
+        # Only show chats that actually have stars
+        rows = [r for r in rows if (r.get('stars_total') or 0) > 0]
+
+        if not rows:
+            await update.message.reply_text("Нет данных по звёздам.", parse_mode=None)
+            return
+
+        total_stars = sum((r.get('stars_total') or 0) for r in rows)
+        lines = []
+        for r in rows:
+            chat_id = r.get('chat_id')
+            title = (r.get('chat_title') or '').strip() or f"chat:{chat_id}"
+            stars = r.get('stars_total') or 0
+            lines.append(f"{title} — {stars} ⭐")
+
+        header = f"Всего звёзд: {total_stars}\n\n"
+
+        # Build chunks of at most 4000 chars, header only on first chunk
+        chunks = []
+        cur_lines = []
+        cur_len = len(header)
+        first = True
+        for ln in lines:
+            needed = len(ln) + 1  # +1 for \n
+            if cur_len + needed > 4000 and cur_lines:
+                chunks.append((header if first else "") + "\n".join(cur_lines))
+                first = False
+                cur_lines = [ln]
+                cur_len = needed
+            else:
+                cur_lines.append(ln)
+                cur_len += needed
+        if cur_lines:
+            chunks.append((header if first else "") + "\n".join(cur_lines))
+
+        for chunk in chunks:
             try:
-                await update.message.reply_text(f"Ошибка при получении данных: {e}", parse_mode=None)
-            except Exception:
-                pass
+                await update.message.reply_text(chunk, parse_mode=None)
+            except Exception as e:
+                logger.exception("stars_command: send error: %s", e)
     
     async def fish_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /fish - просто забросить удочку"""
@@ -1782,24 +1770,48 @@ class FishBot:
         query = update.callback_query
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
-        
+
         # Разбор: change_bait_loc_{loc_idx}_{user_id}_{page}
-        parts = query.data.split('_')
-        loc_idx = int(parts[3])
-        page = int(parts[5]) if len(parts) > 5 else 1
-        
-        await query.answer()
-        
-        # Получаем локацию
-        locations = db.get_locations()
+        try:
+            parts = query.data.split('_')
+            loc_idx = int(parts[3])
+            page = int(parts[5]) if len(parts) > 5 else 1
+        except (IndexError, ValueError) as e:
+            logger.error("handle_change_bait_location: bad callback_data=%s: %s", query.data, e)
+            await query.answer("Ошибка навигации", show_alert=True)
+            return
+
+        try:
+            await query.answer()
+        except Exception:
+            pass
+
+        try:
+            locations = db.get_locations()
+        except Exception as e:
+            logger.exception("handle_change_bait_location: db.get_locations failed: %s", e)
+            try:
+                await query.edit_message_text("❌ Не удалось загрузить локации. Попробуйте позже.")
+            except Exception:
+                pass
+            return
+
         if loc_idx >= len(locations):
             await query.edit_message_text("❌ Локация не найдена!")
             return
         location = locations[loc_idx]['name']
         
         # Получаем наживки игрока для этой локации
-        baits = db.get_player_baits_for_location(user_id, location)
-        
+        try:
+            baits = db.get_player_baits_for_location(user_id, location)
+        except Exception as e:
+            logger.exception("handle_change_bait_location: db error user=%s location=%s: %s", user_id, location, e)
+            try:
+                await query.edit_message_text("❌ Не удалось загрузить наживки. Попробуйте позже.")
+            except Exception:
+                pass
+            return
+
         if not baits:
             keyboard = [
                 [InlineKeyboardButton("🪱 Черви (∞)", callback_data=f"select_bait_Черви_{user_id}")],
@@ -3406,20 +3418,35 @@ class FishBot:
         except (AttributeError, TypeError):
             logger.error("Failed to get user_id in handle_sell_fish")
             return
-        
+
         if update.callback_query:
             query = update.callback_query
             # Проверка прав доступа
             if not query.data.endswith(f"_{user_id}"):
                 await query.answer("Эта кнопка не для вас", show_alert=True)
                 return
-            await query.answer()
+            try:
+                await query.answer()
+            except Exception:
+                pass
         else:
             query = None
-        
-        # Получаем всю пойманную рыбу пользователя
-        caught_fish = db.get_caught_fish(user_id, chat_id)
-        
+
+        try:
+            # Получаем всю пойманную рыбу пользователя
+            caught_fish = db.get_caught_fish(user_id, chat_id)
+        except Exception as e:
+            logger.exception("handle_sell_fish: db.get_caught_fish failed user=%s chat=%s: %s", user_id, chat_id, e)
+            _err_text = "❌ Не удалось загрузить улов. Попробуйте позже."
+            try:
+                if query:
+                    await query.edit_message_text(_err_text)
+                else:
+                    await update.message.reply_text(_err_text)
+            except Exception:
+                pass
+            return
+
         # Фильтруем только непроданную рыбу (sold=0)
         unsold_fish = [f for f in caught_fish if f.get('sold', 0) == 0]
         
@@ -3438,6 +3465,7 @@ class FishBot:
         total_value = 0
         for fish in unsold_fish:
             name = fish['fish_name']
+            price = fish.get('price') or 0
             if name not in fish_counts:
                 fish_counts[name] = {
                     'count': 0,
@@ -3445,8 +3473,8 @@ class FishBot:
                     'fish_id': fish['id']
                 }
             fish_counts[name]['count'] += 1
-            fish_counts[name]['total_price'] += fish['price']
-            total_value += fish['price']
+            fish_counts[name]['total_price'] += price
+            total_value += price
 
         # --- ПАГИНАЦИЯ ---
         # Получаем текущую страницу из callback_data или context.user_data
@@ -3493,11 +3521,15 @@ class FishBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         message = f"""🐟 Лавка рыбы\n\nВсего рыбы к продаже: {len(unsold_fish)}\nОбщая стоимость: {total_value} 🪙\n\nВыберите что продать:"""
 
-        if query:
-            await query.edit_message_text(message, reply_markup=reply_markup)
-        else:
-            await update.message.reply_text(message, reply_markup=reply_markup)
-    
+        try:
+            if query:
+                await query.edit_message_text(message, reply_markup=reply_markup)
+            else:
+                await update.message.reply_text(message, reply_markup=reply_markup)
+        except Exception as e:
+            if "Message is not modified" not in str(e):
+                logger.exception("handle_sell_fish: failed to send menu user=%s: %s", user_id, e)
+
     async def handle_inventory(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка инвентаря с показом локаций"""
         try:
