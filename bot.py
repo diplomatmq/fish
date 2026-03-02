@@ -6142,6 +6142,7 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_use_net, pattern="^use_net_"))  # Использование сетей
     application.add_handler(CallbackQueryHandler(bot_instance.handle_back_to_menu, pattern="^back_to_menu_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_sell_fish, pattern=r"^sell_fish_\d+$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_sell_fish, pattern=r"^sell_page_\d+_\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_sell_species, pattern="^sell_sp_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_sell_all, pattern=r"^sell_all_\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_confirm_sell_all, pattern=r"^confirm_sell_all_\d+$"))
