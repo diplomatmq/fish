@@ -120,7 +120,7 @@ FEEDER_ITEMS = [
     {
         "code": "feeder_5",
         "name": "Кормушка базовая",
-        "bonus": 5,
+        "bonus": 3,
         "duration_minutes": 60,
         "price_coins": 3000,
         "price_stars": 0,
@@ -128,7 +128,7 @@ FEEDER_ITEMS = [
     {
         "code": "feeder_7",
         "name": "Кормушка усиленная",
-        "bonus": 7,
+        "bonus": 5,
         "duration_minutes": 60,
         "price_coins": 5000,
         "price_stars": 0,
@@ -136,7 +136,7 @@ FEEDER_ITEMS = [
     {
         "code": "feeder_10",
         "name": "Кормушка звёздная",
-        "bonus": 10,
+        "bonus": 7,
         "duration_minutes": 60,
         "price_coins": 0,
         "price_stars": 10,
