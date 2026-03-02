@@ -3802,6 +3802,33 @@ class Database:
         except Exception:
             return None
 
+    def get_feeder_cooldown_remaining(self, user_id: int, chat_id: int) -> int:
+        """Return remaining feeder time in seconds (0 if none active)."""
+        from datetime import datetime, timezone
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT expires_at FROM player_feeders
+                    WHERE user_id = ? AND chat_id = ?
+                    ORDER BY expires_at DESC
+                    LIMIT 1
+                    ''',
+                    (int(user_id), int(chat_id)),
+                )
+                row = cursor.fetchone()
+                if not row or row[0] is None:
+                    return 0
+                expires_at = row[0]
+                if hasattr(expires_at, 'tzinfo') and expires_at.tzinfo:
+                    now = datetime.now(timezone.utc)
+                else:
+                    now = datetime.utcnow()
+                return max(0, int((expires_at - now).total_seconds()))
+        except Exception:
+            return 0
+
     # ------------------------------------------------------------------
     # Гарпун — кулдаун
     # ------------------------------------------------------------------
