@@ -416,6 +416,18 @@ class FishingGame:
         else:
             target_rarity = "Мифическая"
             logger.info("   🎯 Rarity: MYTHIC (adjusted roll in 14970-14999)")
+
+        # Нерф легендарки: шанс легендарной редкости в 5 раз меньше.
+        # Если проверка не пройдена — мгновенный срыв (без понижения редкости и без выбора рыбы).
+        if target_rarity == "Легендарная" and random.randint(1, 5) != 1:
+            logger.info("   🎯 Legendary roll failed -> SNAP (nerf x5)")
+            db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
+            return {
+                "success": False,
+                "snap": True,
+                "message": "🪝 Легендарная рыба сорвалась!",
+                "location": location,
+            }
         
         # Получаем список рыб для локации и сезона
         # Всегда учитывать сезон при выборе списка рыб (даже для легендарных)
@@ -575,15 +587,25 @@ class FishingGame:
             logger.info(f"   🪱 Used 1x {player['current_bait']}")
 
         temp_rod_result = self._consume_temp_rod_use(user_id, chat_id, player['current_rod'])
-        
+
+        # Определяем цену рыбы и начисляем монеты
+        fish_price = caught_fish.get('price', 0)
         db.update_player(user_id, chat_id,
+                coins=player['coins'] + fish_price,
                 last_fish_time=datetime.now().isoformat())
+
+        # Начисляем опыт за улов
+        xp_earned = db.calculate_item_xp({
+            'rarity': caught_fish.get('rarity', 'Обычная'),
+            'weight': weight,
+            'min_weight': caught_fish.get('min_weight', 0),
+            'max_weight': caught_fish.get('max_weight', 0),
+            'is_trash': False,
+        })
+        level_info = db.add_player_xp(user_id, chat_id, xp_earned)
         
         # Обновление популяции рыбы на локации
         self._update_fish_population(location, -1)
-        
-        # Determine earned price for the caught fish
-        fish_price = caught_fish.get('price', 0)
 
         return {
             "success": True,
@@ -593,6 +615,8 @@ class FishingGame:
             "location": location,
             "earned": fish_price,
             "new_balance": player['coins'] + fish_price,
+            "xp_earned": xp_earned,
+            "level_info": level_info,
             # This was a normal (non-paid) catch
             "guaranteed": False,
             "stars_spent": 0,
@@ -682,6 +706,13 @@ class FishingGame:
             target_rarity = "Мифическая"
         else:
             target_rarity = "Мифическая"
+
+        # Нерф легендарки: шанс легендарной редкости в 5 раз меньше.
+        # В платном забросе всегда должен быть улов, поэтому при фейле
+        # легендарка заменяется на обычную редкость.
+        if target_rarity == "Легендарная" and random.randint(1, 5) != 1:
+            logger.info("   🎯 Guaranteed legendary roll failed -> COMMON replacement (nerf x5)")
+            target_rarity = "Обычная"
 
         logger.info(f"   🎯 Rarity: {target_rarity} (roll: {adjusted_roll})")
 
