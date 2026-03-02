@@ -1846,7 +1846,15 @@ class Database:
                 'sold_fish_count': sold_count or 0,
                 'sold_fish_weight': sold_weight or 0
             }
-    
+
+    def get_total_fish_species(self) -> int:
+        """Возвращает общее количество видов рыб в каталоге."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM fish')
+            row = cursor.fetchone()
+            return row[0] if row else 0
+
     def get_rod(self, rod_name: str) -> Optional[Dict[str, Any]]:
         """Получить информацию об удочке"""
         with self._connect() as conn:
