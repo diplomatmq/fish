@@ -17,7 +17,7 @@ def get_button_style(text: str) -> str:
     if any(x in text_lower for x in ["нет", "отмена", "отклон", "cancel", "no", "decline"]):
         return "destructive"
     return None
-from telegram.error import BadRequest, RetryAfter, TimedOut, NetworkError, Conflict
+from telegram.error import BadRequest, Forbidden, RetryAfter, TimedOut, NetworkError, Conflict
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, PreCheckoutQueryHandler, filters, ContextTypes, Defaults, ExtBot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -178,9 +178,9 @@ class EmojiBot(ExtBot):
                 wait = float(getattr(exc, 'retry_after', 1) or 1)
                 logger.warning("EmojiBot.%s flood limit, waiting %.2fs (attempt %s/%s)", method_name, wait, attempt + 1, self.API_CALL_RETRIES + 1)
                 await asyncio.sleep(wait + 1)
-            except BadRequest as exc:
-                # Ошибки Telegram API (например, Chat not found) не лечатся retry'ем
-                logger.warning("EmojiBot.%s bad request: %s", method_name, exc)
+            except (BadRequest, Forbidden) as exc:
+                # Ошибки Telegram API (например, Chat not found, Forbidden) не лечатся retry'ем
+                logger.warning("EmojiBot.%s non-retryable error: %s", method_name, exc)
                 raise
             except (TimedOut, NetworkError, asyncio.TimeoutError) as exc:
                 last_exc = exc
@@ -272,12 +272,13 @@ class FishBot:
         for ref_chat_id in allowed_chats:
             chat_title = db.get_chat_title(ref_chat_id) or f"Чат {ref_chat_id}"
             stars_total = db.get_chat_stars_total(ref_chat_id)
+            matured_stars_total = db.get_chat_stars_total(ref_chat_id, min_age_days=21)
             refunds_total = db.get_chat_refunds_total(ref_chat_id)
-            percent_sum = int((stars_total * 0.85) / 2)
+            percent_sum = int((matured_stars_total * 0.85) / 2)
             available_stars = db.get_available_stars_for_withdraw(user_id, ref_chat_id)
             withdrawn_stars = db.get_withdrawn_stars(user_id, ref_chat_id)
             lines.append(
-                f"{chat_title}\nВсего звёзд: {stars_total}\nРефаунды: {refunds_total}\nВаш процент: {percent_sum}\nДоступно к выводу: {available_stars}\nУже выведено: {withdrawn_stars}"
+                f"{chat_title}\nВсего звёзд: {stars_total}\nЗвёзд старше 21 дня: {matured_stars_total}\nРефаунды: {refunds_total}\nВаш процент: {percent_sum}\nДоступно к выводу: {available_stars}\nУже выведено: {withdrawn_stars}"
             )
         keyboard = [[InlineKeyboardButton("💸 Вывод", callback_data=f"withdraw_stars_{user_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -339,7 +340,28 @@ class FishBot:
         _, _, user_id, amount = parts
         user_id = int(user_id)
         amount = int(amount)
-        db.mark_stars_withdrawn(user_id, amount)
+
+        allowed_chats = db.get_ref_access_chats(user_id)
+        if not allowed_chats:
+            await query.answer("Нет доступных чатов для вывода", show_alert=True)
+            return
+
+        remaining = amount
+        for chat_id in allowed_chats:
+            if remaining <= 0:
+                break
+            chat_available = db.get_available_stars_for_withdraw(user_id, chat_id)
+            if chat_available <= 0:
+                continue
+            chunk = min(remaining, chat_available)
+            if chunk > 0:
+                db.mark_stars_withdrawn(user_id, chunk, chat_id=chat_id)
+                remaining -= chunk
+
+        if remaining > 0:
+            await query.answer("Недостаточно доступных звёзд на момент одобрения", show_alert=True)
+            return
+
         await query.answer("Одобрено!")
         await self.application.bot.send_message(
             chat_id=user_id,
@@ -795,6 +817,8 @@ class FishBot:
         self.active_invoices = {}  # Отслеживание активных инвойсов по пользователям
         self.application = None  # Будет установлено в main()
         self.OWNER_ID = 793216884
+        # Время запуска бота — сообщения, отправленные ДО этого времени, игнорируются
+        self.bot_start_time = datetime.utcnow()
         self.TOUR_TYPES = {
             'longest_fish': 'Самая длинная рыба',
             'biggest_weight': 'Самая большая рыба (вес)',
@@ -821,10 +845,17 @@ class FishBot:
         for attempt in range(3):
             try:
                 return await self.application.bot.send_message(**kwargs)
+            except (BadRequest, Forbidden) as e:
+                logger.warning("_safe_send_message: non-retryable error (chat_id=%s): %s", kwargs.get('chat_id'), e)
+                return None
             except RetryAfter as e:
                 wait = getattr(e, 'retry_after', None) or getattr(e, 'timeout', 1)
                 logger.warning("RetryAfter on send_message, waiting %s sec (attempt %s)", wait, attempt + 1)
                 await asyncio.sleep(float(wait) + 1)
+            except Exception as e:
+                logger.warning("_safe_send_message: unexpected error (chat_id=%s, attempt %s): %s", kwargs.get('chat_id'), attempt + 1, e)
+                if attempt >= 2:
+                    return None
         logger.error("_safe_send_message: failed after retries args=%s", kwargs)
         return None
 
@@ -832,10 +863,17 @@ class FishBot:
         for attempt in range(3):
             try:
                 return await self.application.bot.send_document(**kwargs)
+            except (BadRequest, Forbidden) as e:
+                logger.warning("_safe_send_document: non-retryable error (chat_id=%s): %s", kwargs.get('chat_id'), e)
+                return None
             except RetryAfter as e:
                 wait = getattr(e, 'retry_after', None) or getattr(e, 'timeout', 1)
                 logger.warning("RetryAfter on send_document, waiting %s sec (attempt %s)", wait, attempt + 1)
                 await asyncio.sleep(float(wait) + 1)
+            except Exception as e:
+                logger.warning("_safe_send_document: unexpected error (attempt %s): %s", attempt + 1, e)
+                if attempt >= 2:
+                    return None
         logger.error("_safe_send_document: failed after retries args=%s", kwargs)
         return None
 
@@ -843,10 +881,17 @@ class FishBot:
         for attempt in range(3):
             try:
                 return await self.application.bot.edit_message_text(**kwargs)
+            except (BadRequest, Forbidden) as e:
+                logger.warning("_safe_edit_message_text: non-retryable error: %s", e)
+                return None
             except RetryAfter as e:
                 wait = getattr(e, 'retry_after', None) or getattr(e, 'timeout', 1)
                 logger.warning("RetryAfter on edit_message_text, waiting %s sec (attempt %s)", wait, attempt + 1)
                 await asyncio.sleep(float(wait) + 1)
+            except Exception as e:
+                logger.warning("_safe_edit_message_text: unexpected error (attempt %s): %s", attempt + 1, e)
+                if attempt >= 2:
+                    return None
         logger.error("_safe_edit_message_text: failed after retries args=%s", kwargs)
         return None
 
@@ -854,10 +899,17 @@ class FishBot:
         for attempt in range(3):
             try:
                 return await self.application.bot.send_invoice(**kwargs)
+            except (BadRequest, Forbidden) as e:
+                logger.warning("_safe_send_invoice: non-retryable error (chat_id=%s): %s", kwargs.get('chat_id'), e)
+                return None
             except RetryAfter as e:
                 wait = getattr(e, 'retry_after', None) or getattr(e, 'timeout', 1)
                 logger.warning("RetryAfter on send_invoice, waiting %s sec (attempt %s)", wait, attempt + 1)
                 await asyncio.sleep(float(wait) + 1)
+            except Exception as e:
+                logger.warning("_safe_send_invoice: unexpected error (attempt %s): %s", attempt + 1, e)
+                if attempt >= 2:
+                    return None
         logger.error("_safe_send_invoice: failed after retries args=%s", kwargs)
         return None
 
@@ -943,6 +995,13 @@ class FishBot:
             id=f"timeout_{chat_id}_{message_id}"
         )
     
+    async def heartbeat(self):
+        """Периодический heartbeat-лог для мониторинга жизнеспособности бота"""
+        try:
+            logger.info("[HEARTBEAT] Bot is alive")
+        except Exception as e:
+            logger.error(f"Error in heartbeat: {e}")
+    
     async def auto_recover_rods(self):
         """Автоматически восстанавливает прочность удочек игроков каждые 10 минут"""
         try:
@@ -981,15 +1040,8 @@ class FishBot:
                             SET recovery_start_time = NULL
                             WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND rod_name = ?
                         ''', (user_id, rod_name))
-                        
-                        # Отправляем уведомление в ЛС
-                        try:
-                            await self.application.bot.send_message(
-                                chat_id=user_id,
-                                text=f"✅ Ваша удочка '{rod_name}' полностью восстановлена!"
-                            )
-                        except Exception as e:
-                            logger.warning(f"Could not send recovery notification to {user_id}: {e}")
+                        # Уведомления в ЛС отключены, чтобы избежать 403 Forbidden
+                        logger.info(f"Rod fully recovered for user {user_id}: {rod_name}")
                 
                 conn.commit()
                 logger.info(f"Rod recovery job completed for {len(rods)} rods")
@@ -1012,6 +1064,14 @@ class FishBot:
                 'interval',
                 minutes=10,
                 id='auto_recover_rods',
+                replace_existing=True
+            )
+            # Добавляем heartbeat-лог каждую минуту
+            self.scheduler.add_job(
+                self.heartbeat,
+                'interval',
+                minutes=1,
+                id='heartbeat',
                 replace_existing=True
             )
             logger.info("AsyncIOScheduler запущен")
@@ -4157,6 +4217,12 @@ class FishBot:
     
     async def handle_fish_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка сообщения 'рыбалка' и других текстовых сообщений"""
+        # Игнорируем сообщения, отправленные ДО запуска бота (старые рыбалки не срабатывают)
+        if update.message and update.message.date:
+            msg_ts = update.message.date.replace(tzinfo=None)
+            if msg_ts < self.bot_start_time:
+                return
+
         if context.user_data.get('new_tour'):
             consumed = await self.handle_new_tour_input(update, context)
             if consumed:
@@ -5096,18 +5162,22 @@ class FishBot:
         # Отправляем стикер рыбы если он есть - в ответ на сообщение с кнопкой
         sticker_message = None
         if fish['name'] in FISH_STICKERS:
-            try:
-                fish_image = FISH_STICKERS[fish['name']]
-                image_path = Path(__file__).parent / fish_image
-                # Send sticker/document immediately and follow-up text reply to the group
+            fish_image = FISH_STICKERS[fish['name']]
+            image_path = Path(__file__).parent / fish_image
+            # Send sticker/document immediately and follow-up text reply to the group
+            image_sent = False
+            if image_path.exists():
                 try:
                     with open(image_path, 'rb') as f:
                         await self._safe_send_document(chat_id=group_chat_id, document=f, reply_to_message_id=group_message_id)
+                    image_sent = True
                 except Exception as e:
-                    logger.warning("Immediate send of fish image failed: %s", e)
-                await self._safe_send_message(chat_id=group_chat_id, text=message, reply_to_message_id=group_message_id)
-            except Exception as e:
-                logger.warning(f"Could not send fish image for {fish['name']}: {e}")
+                    logger.warning("Failed to send fish image %s: %s", fish_image, e)
+            else:
+                logger.debug("Fish image not found: %s (fish=%s)", image_path, fish['name'])
+            
+            # Всегда отправляем текстовое сообщение
+            await self._safe_send_message(chat_id=group_chat_id, text=message, reply_to_message_id=group_message_id)
 
         # Отправляем сообщение в ответ на стикер
         # Message(s) already enqueued above for fish case
@@ -5421,6 +5491,11 @@ def main():
     # Создаем приложение
     defaults = Defaults(parse_mode="HTML")
     emoji_bot = EmojiBot(token=BOT_TOKEN, defaults=defaults)
+    # Таймауты сети для предотвращения зависания бота
+    _read_timeout = float(os.getenv('TG_READ_TIMEOUT', '7'))
+    _write_timeout = float(os.getenv('TG_WRITE_TIMEOUT', '10'))
+    _connect_timeout = float(os.getenv('TG_CONNECT_TIMEOUT', '10'))
+    _pool_timeout = float(os.getenv('TG_POOL_TIMEOUT', '3'))
 
     async def _post_init(application: Application):
         try:
@@ -5430,7 +5505,16 @@ def main():
         except Exception as e:
             logger.exception("post_init: failed to start notifications worker: %s", e)
 
-    application = Application.builder().bot(emoji_bot).post_init(_post_init).build()
+    application = (
+        Application.builder()
+        .bot(emoji_bot)
+        .post_init(_post_init)
+        .read_timeout(_read_timeout)
+        .write_timeout(_write_timeout)
+        .connect_timeout(_connect_timeout)
+        .pool_timeout(_pool_timeout)
+        .build()
+    )
 
     # Устанавливаем приложение в экземпляр бота
     bot_instance.application = application
@@ -5988,8 +6072,18 @@ def main():
     print("🎣 Бот для рыбалки запущен!")
     
     # Запуск бота с обработкой ошибок
+    # drop_pending_updates=True — при перезапуске все сообщения, отправленные
+    # пока бот был выключен, будут проигнорированы (старые рыбалки не сработают).
     try:
-        application.run_polling()
+        application.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=[
+                "message",
+                "callback_query",
+                "pre_checkout_query",
+                "chosen_inline_result",
+            ],
+        )
         print("✅ Polling запущен успешно")
     except Exception as e:
         print(f"❌ Ошибка запуска бота: {e}")
