@@ -280,7 +280,7 @@ class FishingGame:
         NO_BITE_MAX = 3749
         TRASH_MAX = 7499
         COMMON_MAX = 11999
-        RARE_MAX = 14549
+        RARE_MAX = 14849
         LEGENDARY_MAX = 14997
 
         # Единая механика для всех локаций: один бросок от 0 до 15000
@@ -320,7 +320,7 @@ class FishingGame:
             f"   🎲 Random roll: {roll}/15000 (adjusted: {adjusted_roll}/15000 "
             f"with weather {weather_condition}, feeder {feeder_bonus:+d}%)"
         )
-        logger.info("   📊 Ranges: 0-3749=NO_BITE, 3750-7499=TRASH, 7500-11999=COMMON, 12000-14549=RARE, 14550-14997=LEGENDARY, 14998-14999=MYTHIC, 15000=NFT")
+        logger.info("   📊 Ranges: 0-3749=NO_BITE, 3750-7499=TRASH, 7500-11999=COMMON, 12000-14849=RARE, 14850-14997=LEGENDARY, 14998-14999=MYTHIC, 15000=NFT")
         
         if roll == ROLL_MAX or (is_lucky_rod and roll == 14999):
             logger.info("   🏆 Result: NFT WIN (raw roll %s, lucky_rod=%s)", roll, is_lucky_rod)
@@ -331,9 +331,9 @@ class FishingGame:
                 "location": location
             }
 
-        force_legendary = adjusted_roll >= 14550
+        force_legendary = adjusted_roll >= 14850
         if force_legendary:
-            logger.info("   🎯 Forced TOP TIER (adjusted roll >= 14550)")
+            logger.info("   🎯 Forced TOP TIER (adjusted roll >= 14850)")
 
         if not force_legendary and adjusted_roll <= NO_BITE_MAX:
             logger.info(f"   📊 Result: NO_BITE (adjusted roll {adjusted_roll} <= {NO_BITE_MAX})")
@@ -409,13 +409,13 @@ class FishingGame:
             logger.info("   🎯 Rarity: COMMON (adjusted roll in 7500-11999)")
         elif adjusted_roll <= RARE_MAX:
             target_rarity = "Редкая"
-            logger.info("   🎯 Rarity: RARE (adjusted roll in 12000-14549)")
+            logger.info("   🎯 Rarity: RARE (adjusted roll in 12000-14849)")
         elif adjusted_roll <= LEGENDARY_MAX:
             target_rarity = "Легендарная"
-            logger.info("   🎯 Rarity: LEGENDARY (adjusted roll in 14550-14969)")
+            logger.info("   🎯 Rarity: LEGENDARY (adjusted roll in 14850-14997)")
         else:
             target_rarity = "Мифическая"
-            logger.info("   🎯 Rarity: MYTHIC (adjusted roll in 14970-14999)")
+            logger.info("   🎯 Rarity: MYTHIC (adjusted roll in 14998-14999)")
 
         # Нерф легендарки: шанс легендарной редкости в 5 раз меньше.
         # Если проверка не пройдена — мгновенный срыв (без понижения редкости и без выбора рыбы).
@@ -709,8 +709,8 @@ class FishingGame:
         # Нерф легендарки: шанс легендарной редкости в 5 раз меньше.
         # В платном забросе всегда должен быть улов, поэтому при фейле
         # легендарка заменяется на обычную редкость.
-        if target_rarity == "Легендарная" and random.randint(1, 5) != 1:
-            logger.info("   🎯 Guaranteed legendary roll failed -> COMMON replacement (nerf x5)")
+        if target_rarity == "Легендарная" and random.randint(1, 10) != 1:
+            logger.info("   🎯 Guaranteed legendary roll failed -> COMMON replacement (nerf x10)")
             target_rarity = "Обычная"
 
         logger.info(f"   🎯 Rarity: {target_rarity} (roll: {adjusted_roll})")
