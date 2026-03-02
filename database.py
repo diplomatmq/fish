@@ -1082,7 +1082,24 @@ class Database:
                         )
                     except Exception:
                         pass
-            
+
+            # Migrate echosounder to be per-user (chat_id=0) instead of per-chat
+            try:
+                cursor.execute(
+                    '''
+                    INSERT INTO player_echosounder (user_id, chat_id, expires_at)
+                    SELECT user_id, 0, MAX(expires_at)
+                    FROM player_echosounder
+                    WHERE chat_id != 0
+                    GROUP BY user_id
+                    ON CONFLICT (user_id, chat_id) DO UPDATE
+                        SET expires_at = EXCLUDED.expires_at
+                    '''
+                )
+                cursor.execute("DELETE FROM player_echosounder WHERE chat_id != 0")
+            except Exception:
+                pass
+
             conn.commit()
     
     def _fill_default_data(self):
@@ -3701,7 +3718,7 @@ class Database:
     # ------------------------------------------------------------------
 
     def activate_echosounder(self, user_id: int, chat_id: int, duration_hours: int):
-        """Activate or refresh echosounder for a user in a chat."""
+        """Activate or refresh echosounder for a user (global across all chats)."""
         from datetime import datetime, timedelta
         expires_at = datetime.utcnow() + timedelta(hours=int(duration_hours))
         with self._connect() as conn:
@@ -3709,31 +3726,31 @@ class Database:
             cursor.execute(
                 '''
                 INSERT INTO player_echosounder (user_id, chat_id, expires_at)
-                VALUES (?, ?, ?)
+                VALUES (?, 0, ?)
                 ON CONFLICT (user_id, chat_id) DO UPDATE SET expires_at = EXCLUDED.expires_at
                 ''',
-                (int(user_id), int(chat_id), expires_at.isoformat()),
+                (int(user_id), expires_at.isoformat()),
             )
             conn.commit()
 
-    def is_echosounder_active(self, user_id: int, chat_id: int) -> bool:
-        """Return True if echosounder is currently active for user in chat."""
+    def is_echosounder_active(self, user_id: int, chat_id: int = 0) -> bool:
+        """Return True if echosounder is currently active for user (global across all chats)."""
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     '''
                     SELECT 1 FROM player_echosounder
-                    WHERE user_id = ? AND chat_id = ? AND expires_at > NOW()
+                    WHERE user_id = ? AND chat_id = 0 AND expires_at > NOW()
                     ''',
-                    (int(user_id), int(chat_id)),
+                    (int(user_id),),
                 )
                 return cursor.fetchone() is not None
         except Exception:
             return False
 
-    def get_echosounder_remaining_seconds(self, user_id: int, chat_id: int) -> int:
-        """Return remaining echosounder time in seconds (0 if inactive)."""
+    def get_echosounder_remaining_seconds(self, user_id: int, chat_id: int = 0) -> int:
+        """Return remaining echosounder time in seconds (0 if inactive, global across all chats)."""
         from datetime import datetime, timezone
         try:
             with self._connect() as conn:
@@ -3741,9 +3758,9 @@ class Database:
                 cursor.execute(
                     '''
                     SELECT expires_at FROM player_echosounder
-                    WHERE user_id = ? AND chat_id = ?
+                    WHERE user_id = ? AND chat_id = 0
                     ''',
-                    (int(user_id), int(chat_id)),
+                    (int(user_id),),
                 )
                 row = cursor.fetchone()
                 if not row or row[0] is None:
