@@ -817,6 +817,8 @@ class FishBot:
         self.active_invoices = {}  # Отслеживание активных инвойсов по пользователям
         self.application = None  # Будет установлено в main()
         self.OWNER_ID = 793216884
+        # Множество уже оплаченных payload'ов — защита от двойной оплаты одного инвойса
+        self.paid_payloads: set = set()
         # Время запуска бота — сообщения, отправленные ДО этого времени, игнорируются
         self.bot_start_time = datetime.utcnow()
         self.TOUR_TYPES = {
@@ -2164,8 +2166,15 @@ class FishBot:
                 })
                 total_value += trash['price']
             elif available_fish:
-                # Ловим рыбу
-                fish = random.choice(available_fish)
+                # Ловим рыбу — с весами по редкости (легенда/миф бьётся реже)
+                _RARITY_WEIGHTS = {
+                    'Обычная':    100,
+                    'Редкая':      20,
+                    'Легендарная':  0.5,
+                    'Мифическая':   0.001,
+                }
+                _weights = [_RARITY_WEIGHTS.get(f.get('rarity', 'Обычная'), 100) for f in available_fish]
+                fish = random.choices(available_fish, weights=_weights, k=1)[0]
                 # Генерируем вес и длину рыбы
                 weight = round(random.uniform(fish['min_weight'], fish['max_weight']), 2)
                 length = round(random.uniform(fish['min_length'], fish['max_length']), 1)
@@ -4886,6 +4895,10 @@ class FishBot:
                 if active_feeder:
                     await query.answer(ok=False, error_message="Кормушка уже активна. Дождитесь окончания.")
                     return
+        # Проверяем, не был ли этот инвойс уже оплачен
+        if payload and payload in self.paid_payloads:
+            await query.answer(ok=False, error_message="Этот инвойс уже был оплачен. Запросите новый.")
+            return
         await query.answer(ok=True)
     
     async def successful_payment_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4895,6 +4908,14 @@ class FishBot:
         chat_id = update.effective_chat.id
         payload = payment.invoice_payload or ""
         active_invoice = self.active_invoices.get(user_id) or {}
+
+        # Защита от двойной выдачи: если payload уже обработан — игнорируем
+        if payload and payload in self.paid_payloads:
+            logger.warning("Duplicate payment ignored for payload=%s user_id=%s", payload, user_id)
+            return
+        # Сразу помечаем payload как оплаченный
+        if payload:
+            self.paid_payloads.add(payload)
 
         accounting_chat_id = chat_id
         parsed_guaranteed_payload = None
