@@ -32,6 +32,9 @@ class PostgresConnWrapper:
         s = re.sub(r"INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT", 'SERIAL PRIMARY KEY', s, flags=re.IGNORECASE)
         # Also handle bare AUTOINCREMENT token
         s = re.sub(r"AUTOINCREMENT", '', s, flags=re.IGNORECASE)
+        # Convert empty double-quoted string literals ("") to PostgreSQL single-quoted ('').
+        # SQLite allows "" as an empty string; Postgres treats "" as an invalid zero-length identifier.
+        s = s.replace('""', "''")
         # Convert sqlite '?' placeholders to psycopg2 '%s'
         s = s.replace('?', '%s')
         # Replace sqlite datetime(...) with inner expression (Postgres uses native timestamp types)
