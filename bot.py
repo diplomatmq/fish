@@ -5490,12 +5490,21 @@ def main():
     
     # Создаем приложение
     defaults = Defaults(parse_mode="HTML")
-    emoji_bot = EmojiBot(token=BOT_TOKEN, defaults=defaults)
-    # Таймауты сети для предотвращения зависания бота
+    # Таймауты сети для предотвращения зависания бота.
+    # Передаём их в HTTPXRequest, т.к. при использовании .bot() в builder'е
+    # нельзя задавать таймауты через builder — они должны быть на уровне Request.
+    from telegram.request import HTTPXRequest
     _read_timeout = float(os.getenv('TG_READ_TIMEOUT', '7'))
     _write_timeout = float(os.getenv('TG_WRITE_TIMEOUT', '10'))
     _connect_timeout = float(os.getenv('TG_CONNECT_TIMEOUT', '10'))
     _pool_timeout = float(os.getenv('TG_POOL_TIMEOUT', '3'))
+    _request = HTTPXRequest(
+        read_timeout=_read_timeout,
+        write_timeout=_write_timeout,
+        connect_timeout=_connect_timeout,
+        pool_timeout=_pool_timeout,
+    )
+    emoji_bot = EmojiBot(token=BOT_TOKEN, defaults=defaults, request=_request)
 
     async def _post_init(application: Application):
         try:
@@ -5509,10 +5518,6 @@ def main():
         Application.builder()
         .bot(emoji_bot)
         .post_init(_post_init)
-        .read_timeout(_read_timeout)
-        .write_timeout(_write_timeout)
-        .connect_timeout(_connect_timeout)
-        .pool_timeout(_pool_timeout)
         .build()
     )
 
