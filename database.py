@@ -667,7 +667,29 @@ class Database:
                     value TEXT
                 )
             ''')
-            
+
+            # Таблица эхолота
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS player_echosounder (
+                    user_id BIGINT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (user_id, chat_id)
+                )
+            ''')
+
+            # Таблица активных кормушек
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS player_feeders (
+                    user_id BIGINT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    feeder_type TEXT NOT NULL,
+                    bonus_percent INTEGER DEFAULT 0,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (user_id, chat_id, feeder_type)
+                )
+            ''')
+
             conn.commit()
         
         # Ensure integer PK columns have sequences/defaults (Postgres)
@@ -3438,6 +3460,113 @@ class Database:
         percent_cap = int((matured_stars_total * 0.85) / 2)
         withdrawn_by_user = self.get_withdrawn_stars(user_id, chat_id)
         return max(0, percent_cap - withdrawn_by_user)
+
+
+    # ------------------------------------------------------------------
+    # Эхолот (echosounder)
+    # ------------------------------------------------------------------
+
+    def activate_echosounder(self, user_id: int, chat_id: int, duration_hours: int):
+        """Activate or refresh echosounder for a user in a chat."""
+        from datetime import datetime, timedelta
+        expires_at = datetime.utcnow() + timedelta(hours=int(duration_hours))
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO player_echosounder (user_id, chat_id, expires_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT (user_id, chat_id) DO UPDATE SET expires_at = EXCLUDED.expires_at
+                ''',
+                (int(user_id), int(chat_id), expires_at.isoformat()),
+            )
+            conn.commit()
+
+    def is_echosounder_active(self, user_id: int, chat_id: int) -> bool:
+        """Return True if echosounder is currently active for user in chat."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT 1 FROM player_echosounder
+                    WHERE user_id = ? AND chat_id = ? AND expires_at > NOW()
+                    ''',
+                    (int(user_id), int(chat_id)),
+                )
+                return cursor.fetchone() is not None
+        except Exception:
+            return False
+
+    def get_echosounder_remaining_seconds(self, user_id: int, chat_id: int) -> int:
+        """Return remaining echosounder time in seconds (0 if inactive)."""
+        from datetime import datetime, timezone
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT expires_at FROM player_echosounder
+                    WHERE user_id = ? AND chat_id = ?
+                    ''',
+                    (int(user_id), int(chat_id)),
+                )
+                row = cursor.fetchone()
+                if not row or row[0] is None:
+                    return 0
+                expires_at = row[0]
+                if hasattr(expires_at, 'tzinfo') and expires_at.tzinfo:
+                    now = datetime.now(timezone.utc)
+                else:
+                    now = datetime.utcnow()
+                return max(0, int((expires_at - now).total_seconds()))
+        except Exception:
+            return 0
+
+    # ------------------------------------------------------------------
+    # Кормушки (feeders)
+    # ------------------------------------------------------------------
+
+    def activate_feeder(self, user_id: int, chat_id: int, feeder_type: str,
+                        bonus_percent: int, duration_minutes: int):
+        """Activate (or refresh) a feeder for a player."""
+        from datetime import datetime, timedelta
+        expires_at = datetime.utcnow() + timedelta(minutes=int(duration_minutes))
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO player_feeders (user_id, chat_id, feeder_type, bonus_percent, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (user_id, chat_id, feeder_type)
+                    DO UPDATE SET bonus_percent = EXCLUDED.bonus_percent,
+                                  expires_at = EXCLUDED.expires_at
+                ''',
+                (int(user_id), int(chat_id), str(feeder_type), int(bonus_percent), expires_at.isoformat()),
+            )
+            conn.commit()
+
+    def get_active_feeder(self, user_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
+        """Return the active feeder record for a user, or None."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT feeder_type, bonus_percent, expires_at
+                    FROM player_feeders
+                    WHERE user_id = ? AND chat_id = ? AND expires_at > NOW()
+                    ORDER BY expires_at DESC
+                    LIMIT 1
+                    ''',
+                    (int(user_id), int(chat_id)),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {'feeder_type': row[0], 'bonus_percent': row[1], 'expires_at': row[2]}
+        except Exception:
+            return None
 
 
 # Экземпляр базы данных для импорта в других модулях
