@@ -1381,15 +1381,19 @@ class FishBot:
             }
             fish_name_display = format_fish_name(fish['name'])
             
+            xp_line = ""
+            progress_line = ""
+            if result.get('xp_earned'):
+                xp_line = f"\n✨ Опыт: +{result['xp_earned']}"
+                progress_line = f"\n{format_level_progress(result.get('level_info'))}"
+
             message = f"""
 🎉 Поздравляю! Вы поймали рыбу!
 {rarity_emoji.get(fish['rarity'], '⚪')} {fish_name_display}
 📏 Размер: {length}см | Вес: {weight} кг
-💰 Стоимость: {fish_price} 🪙
+💰 Получено: +{fish_price} 🪙
 📍 Место: {result['location']}
-⭐ Редкость: {fish['rarity']}
-
-Вы можете продать эту рыбу в лавке! 🐟
+⭐ Редкость: {fish['rarity']}{xp_line}{progress_line}
             """
             
             if result.get('guaranteed'):
