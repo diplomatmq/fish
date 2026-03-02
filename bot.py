@@ -1171,40 +1171,33 @@ class FishBot:
         total_stars = sum((r.get('stars_total') or 0) for r in rows)
         lines = []
         for r in rows:
-            chat_id = r.get('chat_id')
-            title = (r.get('chat_title') or '').strip() or f"chat:{chat_id}"
-            # Truncate absurdly long titles
-            if len(title) > 100:
-                title = title[:97] + "..."
+            chat_id_r = r.get('chat_id')
+            title = (r.get('chat_title') or '').strip() or f"chat:{chat_id_r}"
             stars = r.get('stars_total') or 0
-            lines.append(f"{title} — {stars} ⭐")
+            lines.append(f"{title} — {stars}")
 
         header = f"Всего звёзд: {total_stars}\n\n"
+        full_text = header + "\n".join(lines)
 
-        # Build chunks of at most 3000 chars, header only on first chunk
-        CHUNK_LIMIT = 3000
-        chunks = []
-        cur_lines = []
-        cur_len = len(header)
-        first = True
-        for ln in lines:
-            needed = len(ln) + 1  # +1 for \n
-            if cur_lines and cur_len + needed > CHUNK_LIMIT:
-                chunks.append((header if first else "") + "\n".join(cur_lines))
-                first = False
-                cur_lines = [ln]
-                cur_len = needed
-            else:
-                cur_lines.append(ln)
-                cur_len += needed
-        if cur_lines:
-            chunks.append((header if first else "") + "\n".join(cur_lines))
-
-        for chunk in chunks:
+        # If text fits in one Telegram message (4096 bytes), send as text; otherwise as file
+        if len(full_text.encode('utf-8')) <= 4000:
             try:
-                await update.message.reply_text(chunk, parse_mode=None)
+                await update.message.reply_text(full_text, parse_mode=None)
             except Exception as e:
                 logger.exception("stars_command: send error: %s", e)
+        else:
+            import io
+            file_bytes = full_text.encode('utf-8')
+            bio = io.BytesIO(file_bytes)
+            bio.name = "stars.txt"
+            try:
+                await update.message.reply_document(
+                    document=bio,
+                    filename="stars.txt",
+                    caption=f"⭐ Всего звёзд: {total_stars} — {len(rows)} чатов",
+                )
+            except Exception as e:
+                logger.exception("stars_command: send file error: %s", e)
     
     async def fish_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /fish - просто забросить удочку"""
