@@ -1173,19 +1173,23 @@ class FishBot:
         for r in rows:
             chat_id = r.get('chat_id')
             title = (r.get('chat_title') or '').strip() or f"chat:{chat_id}"
+            # Truncate absurdly long titles
+            if len(title) > 100:
+                title = title[:97] + "..."
             stars = r.get('stars_total') or 0
             lines.append(f"{title} — {stars} ⭐")
 
         header = f"Всего звёзд: {total_stars}\n\n"
 
-        # Build chunks of at most 4000 chars, header only on first chunk
+        # Build chunks of at most 3000 chars, header only on first chunk
+        CHUNK_LIMIT = 3000
         chunks = []
         cur_lines = []
         cur_len = len(header)
         first = True
         for ln in lines:
             needed = len(ln) + 1  # +1 for \n
-            if cur_len + needed > 4000 and cur_lines:
+            if cur_lines and cur_len + needed > CHUNK_LIMIT:
                 chunks.append((header if first else "") + "\n".join(cur_lines))
                 first = False
                 cur_lines = [ln]
@@ -4063,19 +4067,11 @@ class FishBot:
         global_week = db.get_leaderboard_period(limit=10, since=week_since)
         global_day = db.get_leaderboard_period(limit=10, since=day_since)
 
-        chat_week = db.get_leaderboard_period(limit=10, since=week_since, chat_id=chat_id)
-        chat_day = db.get_leaderboard_period(limit=10, since=day_since, chat_id=chat_id)
-
         message = "🏆 Таблица лидеров\n\n"
         message += "🌍 Глобальный топ\n"
         message += format_leaderboard("За неделю", global_week)
         message += "\n"
         message += format_leaderboard("За день", global_day)
-        message += "\n\n"
-        message += "🏠 Топ чата\n"
-        message += format_leaderboard("За неделю", chat_week)
-        message += "\n"
-        message += format_leaderboard("За день", chat_day)
 
         if update.message:
             await update.message.reply_text(message, parse_mode="HTML")
