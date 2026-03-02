@@ -1964,6 +1964,11 @@ class Database:
             # which caused old catches to be retroactively reassigned when a user viewed `/stats`.
             # Keep reads side-effect free; use tools/fix_caught_fish_chatid.py or admin commands
             # to perform any explicit normalization instead.
+            #
+            # JOIN uses LOWER(TRIM(...)) for case-insensitive matching so that fish stored with
+            # minor casing differences still resolve correctly from the fish/trash catalogs.
+            # trash_name is included to distinguish actual trash (t.name IS NOT NULL) from a
+            # failed JOIN with the fish table (both f.name and t.name are NULL).
             cursor.execute('''
                 SELECT cf.*, 
                        COALESCE(f.name, t.name) AS name,
@@ -1973,10 +1978,11 @@ class Database:
                        f.max_weight AS max_weight,
                        f.min_length AS min_length,
                        f.max_length AS max_length,
-                       CASE WHEN f.name IS NULL THEN 1 ELSE 0 END AS is_trash
+                       CASE WHEN f.name IS NULL THEN 1 ELSE 0 END AS is_trash,
+                       t.name AS trash_name
                 FROM caught_fish cf
-                LEFT JOIN fish f ON TRIM(cf.fish_name) = f.name
-                LEFT JOIN trash t ON TRIM(cf.fish_name) = t.name
+                LEFT JOIN fish f ON LOWER(TRIM(cf.fish_name)) = LOWER(f.name)
+                LEFT JOIN trash t ON LOWER(TRIM(cf.fish_name)) = LOWER(t.name)
                 WHERE cf.user_id = ? AND (cf.chat_id = ? OR cf.chat_id IS NULL OR cf.chat_id < 1)
                 ORDER BY cf.weight DESC
             ''', (user_id, chat_id))
@@ -1985,8 +1991,47 @@ class Database:
             columns = [description[0] for description in cursor.description]
             results = [dict(zip(columns, row)) for row in rows]
 
+            # Collect items where the JOIN failed (is_trash=1 meaning f.name IS NULL,
+            # AND trash_name IS NULL meaning not in trash table either).
+            # These are real fish whose names don't match due to encoding/case differences.
+            # We do a single batch secondary lookup to recover their catalog data.
+            orphan_indices = [
+                i for i, item in enumerate(results)
+                if item.get('is_trash') and item.get('trash_name') is None
+            ]
+            if orphan_indices:
+                orphan_names = [results[i].get('fish_name', '') for i in orphan_indices]
+                try:
+                    placeholders = ','.join(['?' for _ in orphan_names])
+                    cursor.execute(
+                        f"SELECT name, rarity, price, min_weight, max_weight, min_length, max_length "
+                        f"FROM fish WHERE LOWER(name) IN ({placeholders})",
+                        [n.lower().strip() for n in orphan_names]
+                    )
+                    lookup_rows = cursor.fetchall()
+                    fish_by_lower = {}
+                    for row in lookup_rows:
+                        fish_by_lower[str(row[0]).lower()] = {
+                            'rarity': row[1], 'price': row[2],
+                            'min_weight': row[3], 'max_weight': row[4],
+                            'min_length': row[5], 'max_length': row[6],
+                        }
+                    for i in orphan_indices:
+                        item = results[i]
+                        key = str(item.get('fish_name', '')).lower().strip()
+                        fish_row = fish_by_lower.get(key)
+                        if fish_row:
+                            item.update(fish_row)
+                            item['is_trash'] = 0
+                            item['name'] = item.get('fish_name', '')
+                except Exception:
+                    logger.exception("get_caught_fish: secondary orphan lookup failed")
+
             for item in results:
-                if item.get('is_trash'):
+                # Only skip price recalculation for genuine trash items (in the trash catalog).
+                # Fish with is_trash=1 but no trash_name match were not found in either catalog;
+                # they still get a price so they don't show as 0 coins in the shop.
+                if item.get('is_trash') and item.get('trash_name') is not None:
                     continue
                 item['price'] = self.calculate_fish_price(item, item.get('weight', 0), item.get('length', 0))
 
