@@ -2532,26 +2532,26 @@ class Database:
             return False
 
     def get_all_chat_stars(self) -> List[Dict[str, Any]]:
-        """Return list of chats with their title and total stars."""
+        """Return list of chats with their title and total stars, sourced from star_transactions."""
         with self._connect() as conn:
             cursor = conn.cursor()
-            # Compute stars_total and occurrences from star_transactions excluding refunded entries
             cursor.execute('''
                 SELECT
-                    c.chat_id,
+                    s.chat_id,
                     COALESCE(c.chat_title, '') AS chat_title,
                     COALESCE(s.stars_total, 0) AS stars_total,
                     COALESCE(s.occurrences, 0) AS occurrences
-                FROM chat_configs c
-                LEFT JOIN (
+                FROM (
                     SELECT chat_id,
-                           COALESCE(SUM(total_amount), 0) AS stars_total,
+                           SUM(total_amount) AS stars_total,
                            COUNT(*) AS occurrences
                     FROM star_transactions
-                    WHERE chat_id IS NOT NULL AND COALESCE(refund_status, 'none') = 'none'
+                    WHERE chat_id IS NOT NULL
+                      AND COALESCE(refund_status, 'none') = 'none'
                     GROUP BY chat_id
-                ) s ON s.chat_id = c.chat_id
-                ORDER BY s.stars_total DESC
+                ) s
+                LEFT JOIN chat_configs c ON c.chat_id = s.chat_id
+                ORDER BY s.stars_total DESC NULLS LAST
             ''')
             rows = cursor.fetchall()
             cols = [d[0] for d in cursor.description]
