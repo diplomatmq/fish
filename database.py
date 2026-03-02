@@ -3568,6 +3568,65 @@ class Database:
         except Exception:
             return None
 
+    # ------------------------------------------------------------------
+    # Гарпун — кулдаун
+    # ------------------------------------------------------------------
+
+    def ensure_rod_catalog(self):
+        """Гарантирует, что таблица удочек заполнена начальными данными.
+
+        Вызывается перед показом меню удочек чтобы убедиться, что каталог актуален.
+        В текущей реализации данные уже заполняются при init_db → _fill_default_data,
+        поэтому метод является no-op-заглушкой для обратной совместимости.
+        """
+        pass
+
+    def mark_harpoon_used(self, user_id: int, chat_id: int) -> None:
+        """Записать время последнего использования гарпуна (для кулдауна)."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                now_iso = datetime.utcnow().isoformat()
+                # Сохраняем время в last_repair_time строки гарпуна в player_rods
+                cursor.execute(
+                    '''
+                    UPDATE player_rods
+                    SET last_repair_time = ?
+                    WHERE user_id = ? AND rod_name = 'Гарпун'
+                    ''',
+                    (now_iso, int(user_id)),
+                )
+                conn.commit()
+        except Exception:
+            logger.exception("mark_harpoon_used failed user=%s chat=%s", user_id, chat_id)
+
+    def get_harpoon_cooldown_remaining(self, user_id: int, chat_id: int, cooldown_minutes: int) -> int:
+        """Вернуть оставшееся время кулдауна гарпуна в секундах (0 — готов к использованию)."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT last_repair_time FROM player_rods
+                    WHERE user_id = ? AND rod_name = 'Гарпун'
+                    ''',
+                    (int(user_id),),
+                )
+                row = cursor.fetchone()
+                if not row or not row[0]:
+                    return 0
+                last_used_raw = row[0]
+                if hasattr(last_used_raw, 'isoformat'):
+                    last_used = last_used_raw.replace(tzinfo=None) if hasattr(last_used_raw, 'tzinfo') and last_used_raw.tzinfo else last_used_raw
+                else:
+                    from datetime import datetime as _dt
+                    last_used = _dt.fromisoformat(str(last_used_raw).replace('Z', ''))
+                elapsed = (datetime.utcnow() - last_used).total_seconds()
+                remaining = cooldown_minutes * 60 - elapsed
+                return max(0, int(remaining))
+        except Exception:
+            return 0
+
 
 # Экземпляр базы данных для импорта в других модулях
 db = Database()
