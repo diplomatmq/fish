@@ -1161,8 +1161,18 @@ class FishBot:
             await update.message.reply_text(f"Ошибка БД: {e}", parse_mode=None)
             return
 
-        # Only show chats that actually have stars
-        rows = [r for r in rows if (r.get('stars_total') or 0) > 0]
+        # Only show chats that have stars AND a real chat title (not @username, not empty)
+        def _is_real_title(r):
+            if (r.get('stars_total') or 0) <= 0:
+                return False
+            t = (r.get('chat_title') or '').strip()
+            if not t:
+                return False          # no title stored
+            if t.startswith('@'):
+                return False          # username-only, not a group name
+            return True
+
+        rows = [r for r in rows if _is_real_title(r)]
 
         if not rows:
             await update.message.reply_text("Нет данных по звёздам.", parse_mode=None)
@@ -1171,8 +1181,7 @@ class FishBot:
         total_stars = sum((r.get('stars_total') or 0) for r in rows)
         lines = []
         for r in rows:
-            chat_id_r = r.get('chat_id')
-            title = (r.get('chat_title') or '').strip() or f"chat:{chat_id_r}"
+            title = (r.get('chat_title') or '').strip()
             stars = r.get('stars_total') or 0
             lines.append(f"{title} — {stars}")
 
