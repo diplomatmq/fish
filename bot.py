@@ -2553,9 +2553,8 @@ class FishBot:
             invoice_url=invoice_url,
             text=f"⭐ Оплатите {HARPOON_SKIP_COST_STARS} Telegram Stars для мгновенного использования гарпуна.",
             user_id=user_id,
-            reply_to_message_id=query.message.message_id if query.message else None,
-            timeout_sec=600,
             reply_to_message_id=query.message.message_id if query and query.message else None,
+            timeout_sec=600,
         )
 
         await query.edit_message_text("Ссылка на оплату отправлена. После оплаты гарпун сработает автоматически.")
