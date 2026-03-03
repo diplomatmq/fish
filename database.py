@@ -1498,24 +1498,27 @@ class Database:
             
             # Добавление мусора для реки
             trash_data = [
-                ("Коряга", 0.5, 2, "Река", None),
-                ("Старая шина", 2.0, 1, "Река", None),
-                ("Консервная банка", 0.1, 1, "Река", None),
-                ("Ботинок", 0.3, 2, "Река", None),
-                ("Пластиковая бутылка", 0.05, 0, "Река", None),
-                ("Ржавый крючок", 0.02, 5, "Река", None),
-                ("Кусок трубы", 1.5, 3, "Река", None),
-                ("Поломанная удочка", 1.0, 10, "Река", None),
-                ("Рыболовная сетка", 0.8, 5, "Река", None),
-                ("Деревянная доска", 2.5, 4, "Река", None),
-                ("Старый якорь", 3.0, 15, "Река", None),
-                ("Веревка", 0.3, 1, "Река", None),
+                ("Коряга", 0.5, 2, "Все", None),
+                ("Старая шина", 2.0, 1, "Все", None),
+                ("Консервная банка", 0.1, 1, "Все", None),
+                ("Ботинок", 0.3, 2, "Все", None),
+                ("Пластиковая бутылка", 0.05, 0, "Все", None),
+                ("Ржавый крючок", 0.02, 5, "Все", None),
+                ("Кусок трубы", 1.5, 3, "Все", None),
+                ("Поломанная удочка", 1.0, 10, "Все", None),
+                ("Рыболовная сетка", 0.8, 5, "Все", None),
+                ("Деревянная доска", 2.5, 4, "Все", None),
+                ("Старый якорь", 3.0, 15, "Все", None),
+                ("Веревка", 0.3, 1, "Все", None),
             ]
             
             cursor.executemany('''
                 INSERT OR IGNORE INTO trash (name, weight, price, locations, sticker_id)
                 VALUES (?, ?, ?, ?, ?)
             ''', trash_data)
+
+            # Обновляем locations всех мусорных предметов до Все (чтобы они попадали в сеть на любой локации)
+            cursor.execute("UPDATE trash SET locations = 'Все' WHERE locations = 'Река'")
             
             # Добавление сетей
             # Формат: (name, price, fish_count, cooldown_hours, max_uses, description)
@@ -2722,12 +2725,18 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT * FROM trash 
-                WHERE locations LIKE ?
+                WHERE locations LIKE ? OR locations = 'Все'
                 ORDER BY name
             ''', (f"%{location}%",))
             rows = cursor.fetchall()
             columns = [description[0] for description in cursor.description]
-            return [dict(zip(columns, row)) for row in rows]
+            result = [dict(zip(columns, row)) for row in rows]
+            # Если нет мусора для конкретной локации — вернём весь мусор 
+            if not result:
+                cursor.execute('SELECT * FROM trash ORDER BY name')
+                rows = cursor.fetchall()
+                result = [dict(zip(columns, row)) for row in rows]
+            return result
     
     def get_random_trash(self, location: str) -> Optional[Dict[str, Any]]:
         """Получить случайный мусор для локации"""
