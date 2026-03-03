@@ -1495,6 +1495,8 @@ class Database:
                 INSERT OR REPLACE INTO fish (name, rarity, min_weight, max_weight, min_length, max_length, price, locations, seasons, suitable_baits, max_rod_weight, required_level, sticker_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', fish_data)
+            # Никакой рыбе не нужно набирать уровень — сбрасываем required_level в 0 для всех существующих записей
+            cursor.execute('UPDATE fish SET required_level = 0')
             
             # Добавление мусора для реки
             trash_data = [
@@ -1825,9 +1827,7 @@ class Database:
                 WHERE locations LIKE ? AND (seasons LIKE ? OR seasons LIKE '%Все%')
             '''
             params: List[Union[str, int]] = [f"%{location}%", f"%{season}%"]
-            if min_level is not None:
-                query += " AND required_level <= ?"
-                params.append(min_level)
+            # min_level игнорируется: никакой рыбе не нужно уровень
             query += " ORDER BY rarity"
             cursor.execute(query, params)
             rows = cursor.fetchall()
@@ -1843,9 +1843,7 @@ class Database:
                 WHERE locations LIKE ?
             '''
             params: List[Union[str, int]] = [f"%{location}%"]
-            if min_level is not None:
-                query += " AND required_level <= ?"
-                params.append(min_level)
+            # min_level игнорируется: никакой рыбе не нужно уровень
             query += " ORDER BY rarity"
             cursor.execute(query, params)
             rows = cursor.fetchall()
