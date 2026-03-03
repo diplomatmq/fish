@@ -818,7 +818,9 @@ class FishBot:
         self.application = None  # Будет установлено в main()
         self.OWNER_ID = 793216884
         # Множество уже оплаченных payload'ов — защита от двойной оплаты одного инвойса
+        # Ограничено 5000 записями — при переполнении удаляем половину (старые записи)
         self.paid_payloads: set = set()
+        self._paid_payloads_max: int = 5000
         # Время запуска бота — сообщения, отправленные ДО этого времени, игнорируются
         self.bot_start_time = datetime.utcnow()
         self.TOUR_TYPES = {
@@ -991,11 +993,15 @@ class FishBot:
         
         # Планируем выполнение через указанное время
         run_time = datetime.now() + timedelta(seconds=timeout_seconds)
-        self.scheduler.add_job(
-            handle_timeout,
-            trigger=DateTrigger(run_date=run_time),
-            id=f"timeout_{chat_id}_{message_id}"
-        )
+        try:
+            self.scheduler.add_job(
+                handle_timeout,
+                trigger=DateTrigger(run_date=run_time),
+                id=f"timeout_{chat_id}_{message_id}",
+                replace_existing=True,
+            )
+        except Exception as e:
+            logger.warning("schedule_timeout: failed to add job for %s: %s", timeout_key, e)
     
     async def heartbeat(self):
         """Периодический heartbeat-лог для мониторинга жизнеспособности бота"""
@@ -1239,7 +1245,48 @@ class FishBot:
         # Проверяем кулдаун
         can_fish, message = game.can_fish(user_id, chat_id)
         if not can_fish:
-            # При неудаче сразу создаём invoice_url и кнопку с прямой ссылкой
+            # Если удочка сломалась — предлагаем ремонт за 20 ⭐ (НЕ платный заброс)
+            if "сломалась" in message:
+                rod_name = player['current_rod']
+                if rod_name in TEMP_ROD_RANGES:
+                    # Временная/одноразовая удочка — просто купить новую
+                    await update.message.reply_text(f"💥 {message}")
+                    return
+                # Бамбуковая / обычная удочка — предлагаем ремонт за 20 ⭐
+                from config import BOT_TOKEN
+                try:
+                    from bot import TelegramBotAPI as _TelegramBotAPI
+                    tg_api = _TelegramBotAPI(BOT_TOKEN)
+                    repair_invoice_url = await tg_api.create_invoice_link(
+                        title="Ремонт удочки",
+                        description=f"Полное восстановление прочности удочки '{rod_name}'",
+                        payload=f"repair_rod_{rod_name}",
+                        currency="XTR",
+                        prices=[{"label": f"Ремонт {rod_name}", "amount": 20}]
+                    )
+                    logger.info(f"[INVOICE] Repair invoice created for rod='{rod_name}' user={user_id}")
+                except Exception as e:
+                    logger.error(f"[INVOICE] Failed to create repair invoice: {e}")
+                    repair_invoice_url = None
+                if repair_invoice_url:
+                    await self.send_invoice_url_button(
+                        chat_id=chat_id,
+                        invoice_url=repair_invoice_url,
+                        text=(
+                            "💔 Ваша удочка сломалась!\n\n"
+                            "🔧 Оплатите 20 ⭐ Telegram Stars чтобы мгновенно восстановить её.\n"
+                            "Или используйте /repair для бесплатного автовосстановления (займёт время)."
+                        ),
+                        user_id=user_id,
+                        reply_to_message_id=update.effective_message.message_id if update.effective_message else None
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"💔 {message}\n\nИспользуйте /repair для восстановления.",
+                        parse_mode=None
+                    )
+                return
+            # Кулдаун — обычная кнопка гарантированного улова за 1 ⭐
             from config import BOT_TOKEN, STAR_NAME
             import traceback
             invoice_error = None
@@ -1539,6 +1586,25 @@ class FishBot:
                     await update.message.reply_text(error_text, parse_mode=None)
                 return
             else:
+                # Если арест рыбнадзора — не показываем кнопку платного заброса
+                if result.get('fish_inspector') or "рыбнадзор" in result.get('message', '').lower():
+                    # Стикер рыбнадзора — только при свежем аресте (не при повторных попытках)
+                    if result.get('fish_inspector'):
+                        try:
+                            inspector_image = FISH_STICKERS.get("Рыбнадзор")
+                            if inspector_image:
+                                image_path = Path(__file__).parent / inspector_image
+                                if image_path.exists():
+                                    with open(image_path, 'rb') as f:
+                                        await self.application.bot.send_document(
+                                            chat_id=update.effective_chat.id,
+                                            document=f,
+                                            reply_to_message_id=update.message.message_id
+                                        )
+                        except Exception as e:
+                            logger.warning(f"Could not send fish inspector sticker: {e}")
+                    await update.message.reply_text(result['message'], parse_mode=None)
+                    return
                 # Отправляем сообщение с причиной и кнопкой оплаты
                 reply_markup = await self._build_guaranteed_invoice_markup(user_id, chat_id)
                 await update.message.reply_text(
@@ -2097,11 +2163,13 @@ class FishBot:
         
         # Показываем список сетей
         keyboard = []
+        any_on_cooldown = False
         for net in player_nets:
             # Проверяем кулдаун
             cooldown = db.get_net_cooldown_remaining(user_id, net['net_name'], chat_id)
             
             if cooldown > 0:
+                any_on_cooldown = True
                 hours = cooldown // 3600
                 minutes = (cooldown % 3600) // 60
                 time_str = f"{hours}ч {minutes}м" if hours > 0 else f"{minutes}м"
@@ -2115,6 +2183,8 @@ class FishBot:
             button_text = f"🕸️ {net['net_name']} - {status}"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"view_net_{net['net_name']}_{user_id}")])
         
+        if any_on_cooldown:
+            keyboard.append([InlineKeyboardButton("⚡ Сбросить КД сетей — 10 ⭐", callback_data=f"net_skip_cd_{user_id}")])
         keyboard.append([
             InlineKeyboardButton("🛒 Купить сети", callback_data=f"shop_nets_{user_id}"),
             InlineKeyboardButton("🔙 Назад", callback_data=f"change_bait_{user_id}")
@@ -2394,6 +2464,52 @@ class FishBot:
 
         await self._execute_harpoon_catch(user_id, chat_id, reply_to_message_id=query.message.message_id)
 
+    async def handle_net_skip_cd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка кнопки сброса КД сетей за 10 звезд."""
+        query = update.callback_query
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+
+        if not query.data.endswith(f"_{user_id}"):
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
+        await query.answer()
+
+        # Проверяем, что хотя бы одна сеть действительно на КД
+        player_nets = db.get_player_nets(user_id, chat_id)
+        any_on_cooldown = any(
+            db.get_net_cooldown_remaining(user_id, net['net_name'], chat_id) > 0
+            for net in player_nets
+        )
+        if not any_on_cooldown:
+            await query.answer("✅ Все сети уже свободны!", show_alert=True)
+            return
+
+        from config import BOT_TOKEN, STAR_NAME
+        tg_api = TelegramBotAPI(BOT_TOKEN)
+        payload = f"net_skip_cd_{user_id}_{chat_id}_{int(datetime.now().timestamp())}"
+
+        invoice_url = await tg_api.create_invoice_link(
+            title="Сброс КД сетей",
+            description="Мгновенный сброс кулдауна всех ваших сетей (10 ⭐)",
+            payload=payload,
+            currency="XTR",
+            prices=[{"label": "Сброс КД сетей", "amount": 10}],
+        )
+
+        if not invoice_url:
+            await query.edit_message_text("❌ Не удалось создать ссылку оплаты. Попробуйте позже.")
+            return
+
+        await self.send_invoice_url_button(
+            chat_id=chat_id,
+            invoice_url=invoice_url,
+            text="⚡ Оплатите 10 Telegram Stars чтобы сбросить кулдаун всех сетей и использовать их сразу.",
+            user_id=user_id,
+            reply_to_message_id=query.message.message_id if query.message else None,
+        )
+
     async def handle_use_harpoon_paid(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Оплата пропуска КД гарпуна через Telegram Stars."""
         query = update.callback_query
@@ -2437,6 +2553,7 @@ class FishBot:
             invoice_url=invoice_url,
             text=f"⭐ Оплатите {HARPOON_SKIP_COST_STARS} Telegram Stars для мгновенного использования гарпуна.",
             user_id=user_id,
+            reply_to_message_id=query.message.message_id if query.message else None,
             timeout_sec=600,
             reply_to_message_id=query.message.message_id if query and query.message else None,
         )
@@ -4274,9 +4391,11 @@ class FishBot:
         
         # Показываем меню выбора сети
         keyboard = []
+        any_on_cooldown = False
         for net in player_nets:
             cooldown = db.get_net_cooldown_remaining(user_id, net['net_name'], chat_id)
             if cooldown > 0:
+                any_on_cooldown = True
                 hours = cooldown // 3600
                 minutes = (cooldown % 3600) // 60
                 time_str = f"{hours}ч {minutes}м" if hours > 0 else f"{minutes}м"
@@ -4292,6 +4411,8 @@ class FishBot:
             button_text = f"🕸️ {net['net_name']} - {status}"
             callback_data = f"use_net_{net['net_name']}_{user_id}" if not callback_disabled else "net_disabled"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+        if any_on_cooldown:
+            keyboard.append([InlineKeyboardButton("⚡ Сбросить КД сетей — 10 ⭐", callback_data=f"net_skip_cd_{user_id}")])
         keyboard.append([InlineKeyboardButton("🔙 Меню", callback_data=f"back_to_menu_{user_id}")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         message = f"🕸️ Выберите сеть для использования:\n\n📍 Локация: {player['current_location']}"
@@ -4969,6 +5090,21 @@ class FishBot:
                 if active_feeder:
                     await query.answer(ok=False, error_message="Кормушка уже активна. Дождитесь окончания.")
                     return
+        elif payload.startswith("net_skip_cd_"):
+            # format: net_skip_cd_{user_id}_{chat_id}_{ts}
+            parts = payload.split("_")
+            try:
+                payload_user_id = int(parts[3])
+                created_ts = int(parts[5])
+                if payload_user_id != user_id:
+                    await query.answer(ok=False, error_message="Этот инвойс создан для другого пользователя.")
+                    return
+                if int(datetime.now().timestamp()) - created_ts > 900:
+                    await query.answer(ok=False, error_message="Срок действия инвойса истек. Запросите новый.")
+                    return
+            except (ValueError, IndexError):
+                await query.answer(ok=False, error_message="Инвойс устарел. Запросите новый.")
+                return
         # Проверяем, не был ли этот инвойс уже оплачен
         if payload and payload in self.paid_payloads:
             await query.answer(ok=False, error_message="Этот инвойс уже был оплачен. Запросите новый.")
@@ -4989,6 +5125,11 @@ class FishBot:
             return
         # Сразу помечаем payload как оплаченный
         if payload:
+            if len(self.paid_payloads) >= self._paid_payloads_max:
+                # Удаляем половину старых записей, чтобы не расти бесконечно
+                old_entries = list(self.paid_payloads)
+                self.paid_payloads = set(old_entries[len(old_entries)//2:])
+                logger.info("paid_payloads trimmed to %d entries", len(self.paid_payloads))
             self.paid_payloads.add(payload)
 
         accounting_chat_id = chat_id
@@ -5007,6 +5148,13 @@ class FishBot:
             parsed_booster_payload = self._parse_booster_payload(payload)
             if parsed_booster_payload and parsed_booster_payload.get("group_chat_id"):
                 accounting_chat_id = int(parsed_booster_payload["group_chat_id"])
+        elif payload.startswith("net_skip_cd_"):
+            # format: net_skip_cd_{user_id}_{chat_id}_{ts}
+            try:
+                _parts = payload.split("_")
+                accounting_chat_id = int(_parts[4])
+            except (ValueError, IndexError):
+                accounting_chat_id = active_invoice.get("group_chat_id") or chat_id
         elif active_invoice.get("group_chat_id"):
             try:
                 accounting_chat_id = int(active_invoice.get("group_chat_id"))
@@ -5052,7 +5200,20 @@ class FishBot:
             del self.active_timeouts[timeout_key]
         
         # Извлекаем локацию и chat_id из payload (если есть) или используем текущую
-        if payload and payload.startswith("repair_rod_"):
+        if payload and payload.startswith("net_skip_cd_"):
+            # Сброс кулдауна всех сетей
+            skip_reply_id = None
+            if user_id in self.active_invoices:
+                skip_reply_id = self.active_invoices[user_id].get('group_message_id')
+                del self.active_invoices[user_id]
+            db.reset_net_cooldowns(user_id)
+            await self._safe_send_message(
+                chat_id=accounting_chat_id,
+                text="✅ Кулдаун всех сетей сброшен! Используйте /net чтобы закинуть сети снова.",
+                reply_to_message_id=skip_reply_id,
+            )
+            return
+        elif payload and payload.startswith("repair_rod_"):
             # Обработка восстановления удочки
             rod_name = payload.replace("repair_rod_", "")
             repair_reply_id = None
@@ -5178,6 +5339,37 @@ class FishBot:
             del self.active_invoices[user_id]
         
         # Выполняем гарантированный улов (все проверки уже пройдены в precheckout)
+        # Дополнительно: если бамбуковая/обычная удочка сломана — возвращаем звезду
+        player_rod_check = db.get_player(user_id, group_chat_id)
+        if player_rod_check:
+            _current_rod = player_rod_check.get('current_rod', BAMBOO_ROD)
+            if _current_rod not in TEMP_ROD_RANGES:
+                _rod_data = db.get_player_rod(user_id, _current_rod, group_chat_id)
+                if _rod_data and _rod_data.get('current_durability', 100) <= 0:
+                    await self.refund_star_payment(user_id, telegram_payment_charge_id)
+                    await self._safe_send_message(
+                        chat_id=group_chat_id,
+                        text=(
+                            "💔 Гарантированный улов отменён — ваша удочка сломана!\n"
+                            "Оплата возвращена. Используйте /repair или кнопку ремонта за 20 ⭐."
+                        ),
+                        reply_to_message_id=group_message_id,
+                    )
+                    return
+        # Если игрок арестован рыбнадзором — возвращаем звезду
+        if player_rod_check and player_rod_check.get('is_banned'):
+            _ban_until = player_rod_check.get('ban_until')
+            if _ban_until:
+                from datetime import datetime as _dt
+                if _dt.now() < _dt.fromisoformat(_ban_until):
+                    await self.refund_star_payment(user_id, telegram_payment_charge_id)
+                    await self._safe_send_message(
+                        chat_id=group_chat_id,
+                        text="⛔️ Гарантированный улов отменён — вы под арестом рыбнадзора!\nОплата возвращена. Откупитесь командой /payfine (15 ⭐).",
+                        reply_to_message_id=group_message_id,
+                    )
+                    return
+
         try:
             result = game.fish(user_id, group_chat_id, location, guaranteed=True)
         except Exception as e:
@@ -5265,23 +5457,17 @@ class FishBot:
         if fish['name'] in FISH_STICKERS:
             fish_image = FISH_STICKERS[fish['name']]
             image_path = Path(__file__).parent / fish_image
-            # Send sticker/document immediately and follow-up text reply to the group
-            image_sent = False
             if image_path.exists():
                 try:
                     with open(image_path, 'rb') as f:
                         await self._safe_send_document(chat_id=group_chat_id, document=f, reply_to_message_id=group_message_id)
-                    image_sent = True
                 except Exception as e:
                     logger.warning("Failed to send fish image %s: %s", fish_image, e)
             else:
                 logger.debug("Fish image not found: %s (fish=%s)", image_path, fish['name'])
-            
-            # Всегда отправляем текстовое сообщение
-            await self._safe_send_message(chat_id=group_chat_id, text=message, reply_to_message_id=group_message_id)
 
-        # Отправляем сообщение в ответ на стикер
-        # Message(s) already enqueued above for fish case
+        # Всегда отправляем текстовое сообщение о рыбе (вынесено из блока стикера)
+        await self._safe_send_message(chat_id=group_chat_id, text=message, reply_to_message_id=group_message_id)
 
         if result.get('temp_rod_broken'):
             await self._safe_send_message(chat_id=group_chat_id, text=(
@@ -6140,6 +6326,7 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_use_harpoon_paid, pattern="^use_harpoon_paid_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_use_harpoon, pattern="^use_harpoon_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_use_net, pattern="^use_net_"))  # Использование сетей
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_net_skip_cd, pattern="^net_skip_cd_"))  # Сброс КД сетей
     application.add_handler(CallbackQueryHandler(bot_instance.handle_back_to_menu, pattern="^back_to_menu_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_sell_fish, pattern=r"^sell_fish_\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_sell_fish, pattern=r"^sell_page_\d+_\d+$"))
