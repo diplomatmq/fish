@@ -322,8 +322,8 @@ class FishingGame:
         )
         logger.info("   📊 Ranges: 0-3749=NO_BITE, 3750-7499=TRASH, 7500-11999=COMMON, 12000-14849=RARE, 14850-14997=LEGENDARY, 14998-14999=MYTHIC, 15000=NFT")
         
-        if roll == ROLL_MAX or (is_lucky_rod and roll == 14999):
-            logger.info("   🏆 Result: NFT WIN (raw roll %s, lucky_rod=%s)", roll, is_lucky_rod)
+        if roll == ROLL_MAX or (is_lucky_rod and roll == ROLL_MAX - 1):
+            logger.info("   🏆 Result: NFT WIN (raw roll %s/%s, lucky_rod=%s)", roll, ROLL_MAX, is_lucky_rod)
             db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
             return {
                 "success": False,
@@ -641,8 +641,10 @@ class FishingGame:
             f"(adjusted: {adjusted_roll}/{ROLL_MAX}, feeder {feeder_bonus:+d}%)"
         )
 
-        if roll == ROLL_MAX:
-            logger.info("   🏆 Guaranteed result: NFT WIN (raw roll 20000)")
+        is_lucky_rod_g = (player.get('current_rod') == 'Удачливая удочка')
+
+        if roll == ROLL_MAX or (is_lucky_rod_g and roll == 19999):
+            logger.info("   🏆 Guaranteed result: NFT WIN (raw roll %s, lucky_rod=%s)", roll, is_lucky_rod_g)
             db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
             return {
                 "success": False,
@@ -654,7 +656,11 @@ class FishingGame:
             # Trash branch for guaranteed cast
             logger.info("   📊 Result: TRASH (roll in range 0-7999)")
             trash = db.get_random_trash(location)
-            if trash:
+            if not trash:
+                # Нет мусора — принудительно даём обычную рыбу
+                logger.info("   ⚠️ No trash available — forcing Обычная fish instead")
+                target_rarity = "Обычная"
+            elif trash:
                 logger.info(f"   🗑️ Caught trash: {trash['name']}")
                 damage = self.get_durability_damage("trash", is_guaranteed=True)
                 db.reduce_rod_durability(user_id, player['current_rod'], damage, chat_id)
@@ -719,11 +725,20 @@ class FishingGame:
         fish_list = db.get_fish_by_location(location, self.current_season, min_level=player.get('level', 0))
         fish_list = self._normalize_fish_list(fish_list)
         if not fish_list:
-            logger.info(f"   ⚠️ No fish available for location: {location}, season: {self.current_season}")
+            # Расширяем поиск: игнорируем сезон и уровень — гарантия ВСЕГДА даёт рыбу
+            logger.info(f"   ⚠️ No seasonal fish for {location}, season {self.current_season} — expanding to all fish")
+            fish_list = self._normalize_fish_list(db.get_fish_by_location(location, 'Все', min_level=0))
+        if not fish_list:
+            # Последний резерв: любая рыба из БД без фильтра локации
+            logger.info(f"   ⚠️ No fish at all for {location} — using global fallback")
+            fish_list = self._normalize_fish_list(db.get_all_fish_list() if hasattr(db, 'get_all_fish_list') else [])
+        if not fish_list:
+            # Совсем нет рыбы в БД — единственный допустимый выход с ошибкой
+            logger.error(f"   ❌ No fish in DB at all — guaranteed cast cannot proceed")
             db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
             return {
                 "success": False,
-                "message": "На этой локации нет рыбы в текущее время года.",
+                "message": "В базе данных нет рыбы. Обратитесь к администратору.",
                 "location": location
             }
 
@@ -735,9 +750,54 @@ class FishingGame:
 
         caught_fish = random.choice(target_fish)
 
-        weight = self._generate_weight_by_ranges(caught_fish['min_weight'], caught_fish['max_weight'])
+        # ── Rod weight cap for guaranteed cast ──────────────────────────────
+        # Fixed per-rod caps for guaranteed cast (no pay-to-win on weak rods).
+        # Бамбуковая: 110 кг | Углепластик: 145 кг | Карбон: 230 кг
+        # Золотая: 410 кг  | Удачливая: 710 кг
+        ROD_GUARANTEED_CAPS = {
+            "Бамбуковая удочка": 110.0,
+            "Углепластиковая удочка": 145.0,
+            "Карбоновая удочка": 230.0,
+            "Золотая удочка": 410.0,
+            "Удачливая удочка": 710.0,
+        }
+        RARITY_ORDER_GUARANTEED = ["Обычная", "Редкая", "Легендарная", "Мифическая"]
+        rod_obj = db.get_rod(player['current_rod'])
+        rod_max_weight = float(rod_obj.get('max_weight', 999)) if rod_obj else 999.0
+        weight_cap = ROD_GUARANTEED_CAPS.get(player.get('current_rod', ''), rod_max_weight + 45.0)
+
+        if float(caught_fish['min_weight']) > weight_cap:
+            # Even minimum weight of selected fish exceeds cap → find a fitting fish
+            fitting_same = [f for f in fish_list
+                            if f['rarity'] == target_rarity and float(f['min_weight']) <= weight_cap]
+            if fitting_same:
+                caught_fish = random.choice(fitting_same)
+                logger.info(f"   ⚖️ Rod weight cap {weight_cap}kg: picked {caught_fish['name']} (same rarity, fits)")
+            else:
+                # Drop rarity until a fitting fish is found
+                current_idx = RARITY_ORDER_GUARANTEED.index(target_rarity) if target_rarity in RARITY_ORDER_GUARANTEED else 0
+                found_fit = False
+                for idx in range(current_idx - 1, -1, -1):
+                    lower_rarity = RARITY_ORDER_GUARANTEED[idx]
+                    fitting_lower = [f for f in fish_list
+                                     if f['rarity'] == lower_rarity and float(f['min_weight']) <= weight_cap]
+                    if fitting_lower:
+                        caught_fish = random.choice(fitting_lower)
+                        logger.info(f"   ⚖️ Rod weight cap {weight_cap}kg: dropped to {lower_rarity}, picked {caught_fish['name']}")
+                        found_fit = True
+                        break
+                if not found_fit:
+                    # Last resort: lightest fish available this season
+                    sorted_by_weight = sorted(fish_list, key=lambda f: float(f['min_weight']))
+                    caught_fish = sorted_by_weight[0]
+                    logger.info(f"   ⚖️ Rod weight cap {weight_cap}kg: last resort, picked {caught_fish['name']} (min_weight={caught_fish['min_weight']})")
+
+        # Generate weight capped by rod limit (no snaps — guaranteed cast always gives fish)
+        gen_max = min(float(caught_fish['max_weight']), weight_cap)
+        gen_min = float(caught_fish['min_weight'])
+        weight = self._generate_weight_by_ranges(gen_min, gen_max)
         length = round(random.uniform(caught_fish['min_length'], caught_fish['max_length']), 1)
-        logger.info(f"   📏 Fish stats: weight={weight}kg, length={length}cm")
+        logger.info(f"   📏 Fish stats: weight={weight}kg (cap={weight_cap}kg), length={length}cm")
 
         # Применяем урон прочности для гарантированного улова
         damage = self.get_durability_damage(caught_fish['rarity'], is_guaranteed=True)
