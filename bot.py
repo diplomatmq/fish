@@ -671,9 +671,9 @@ class FishBot:
 
     async def _location_leaderboard_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, location_name: str):
         """Топ-10 по самой длинной рыбе на локации в рамках активного турнира."""
-        tour = db.get_active_tournament()
+        tour = db.get_active_tournament_for_location(location_name)
         if not tour:
-            await update.message.reply_text("🏁 Сейчас нет активных турниров.")
+            await update.message.reply_text(f"🏁 Нет активного турнира по длине рыбы для локации {location_name}.")
             return
 
         rows = db.get_location_leaderboard_length(location_name, tour['starts_at'], tour['ends_at'])
