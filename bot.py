@@ -588,6 +588,96 @@ class FishBot:
 
         return False
 
+    async def tour_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать топ-10 игроков по суммарному весу в активном турнире."""
+        tour = db.get_active_tournament()
+        if not tour:
+            await update.message.reply_text("🏁 Сейчас нет активных турниров.")
+            return
+
+        rows = db.get_tour_leaderboard_weight(tour['starts_at'], tour['ends_at'])
+        medals = ['🥇', '🥈', '🥉']
+        starts_str = tour['starts_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['starts_at'], 'strftime') else str(tour['starts_at'])[:16]
+        ends_str = tour['ends_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['ends_at'], 'strftime') else str(tour['ends_at'])[:16]
+
+        lines = [
+            f"🏆 <b>Турнир: {tour['title']}</b>",
+            f"📅 {starts_str} — {ends_str}",
+            f"💰 Призовой фонд: {tour.get('prize_pool', 50)} ⭐",
+            "",
+        ]
+        if not rows:
+            lines.append("Пока никто не поймал рыбу.")
+        else:
+            for i, r in enumerate(rows, 1):
+                medal = medals[i - 1] if i <= 3 else f"{i}."
+                name = r.get('username') or str(r['user_id'])
+                weight = round(float(r['total_weight']), 2)
+                lines.append(f"{medal} {name} — {weight} кг")
+
+        await update.message.reply_text("\n".join(lines), parse_mode='HTML')
+
+    async def _location_leaderboard_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, location_name: str):
+        """Топ-10 по самой длинной рыбе на локации в рамках активного турнира."""
+        tour = db.get_active_tournament()
+        if not tour:
+            await update.message.reply_text("🏁 Сейчас нет активных турниров.")
+            return
+
+        rows = db.get_location_leaderboard_length(location_name, tour['starts_at'], tour['ends_at'])
+        medals = ['🥇', '🥈', '🥉']
+        starts_str = tour['starts_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['starts_at'], 'strftime') else str(tour['starts_at'])[:16]
+        ends_str = tour['ends_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['ends_at'], 'strftime') else str(tour['ends_at'])[:16]
+
+        lines = [
+            f"🕸️ <b>Топ локации: {location_name}</b>",
+            f"📅 {starts_str} — {ends_str}",
+            "",
+        ]
+        if not rows:
+            lines.append("Пока никто не поймал рыбу на этой локации.")
+        else:
+            for i, r in enumerate(rows, 1):
+                medal = medals[i - 1] if i <= 3 else f"{i}."
+                name = r.get('username') or str(r['user_id'])
+                fish = r.get('fish_name', '?')
+                length = round(float(r['best_length']), 1)
+                lines.append(f"{medal} {name} — {fish} — {length} см")
+
+        await update.message.reply_text("\n".join(lines), parse_mode='HTML')
+
+    async def ozero_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await self._location_leaderboard_command(update, context, "Озеро")
+
+    async def reka_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await self._location_leaderboard_command(update, context, "Река")
+
+    async def more_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await self._location_leaderboard_command(update, context, "Море")
+
+    async def prud_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await self._location_leaderboard_command(update, context, "Городской пруд")
+
+    async def mes_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Отправить сообщение во все чаты (только для владельца)."""
+        if not self._is_owner(update):
+            await update.message.reply_text("❌ Только для владельца.")
+            return
+        if not context.args:
+            await update.message.reply_text("Использование: /mes <текст>")
+            return
+        text = " ".join(context.args)
+        chat_ids = db.get_all_chat_ids()
+        sent = 0
+        failed = 0
+        for cid in chat_ids:
+            try:
+                await context.bot.send_message(chat_id=cid, text=text)
+                sent += 1
+            except Exception:
+                failed += 1
+        await update.message.reply_text(f"✅ Отправлено: {sent}, ❌ Ошибки: {failed}")
+
     async def send_invoice_url_button(self, chat_id, invoice_url, text, user_id=None, invoice_id=None, timeout_sec=60, reply_to_message_id=None):
         """Отправить кнопку оплаты со ссылкой инвойса, с автоотключением."""
         logger.info(f"[INVOICE] Sending invoice button to chat_id={chat_id}, url={invoice_url}, user_id={user_id}, invoice_id={invoice_id}")
@@ -6266,6 +6356,18 @@ def main():
     application.add_handler(CommandHandler("ref", bot_instance.ref_command))
     application.add_handler(CommandHandler("new_ref", bot_instance.new_ref_command))
     application.add_handler(CommandHandler("new_tour", bot_instance.new_tour_command))
+    application.add_handler(CommandHandler("tour", bot_instance.tour_command))
+    application.add_handler(CommandHandler("ozero", bot_instance.ozero_command))
+    application.add_handler(CommandHandler("reka", bot_instance.reka_command))
+    application.add_handler(CommandHandler("more", bot_instance.more_command))
+    application.add_handler(CommandHandler("prud", bot_instance.prud_command))
+    application.add_handler(CommandHandler("mes", bot_instance.mes_command))
+    application.add_handler(CommandHandler("tour", bot_instance.tour_command))
+    application.add_handler(CommandHandler("ozero", bot_instance.ozero_command))
+    application.add_handler(CommandHandler("reka", bot_instance.reka_command))
+    application.add_handler(CommandHandler("more", bot_instance.more_command))
+    application.add_handler(CommandHandler("prud", bot_instance.prud_command))
+    application.add_handler(CommandHandler("mes", bot_instance.mes_command))
     # debug handlers removed
     application.add_handler(CommandHandler("fish", bot_instance.fish_command))
     application.add_handler(CommandHandler("menu", bot_instance.menu_command))
