@@ -719,6 +719,7 @@ class Database:
                     ends_at TIMESTAMP NOT NULL,
                     target_fish TEXT,
                     prize_pool INTEGER DEFAULT 50,
+                    target_location TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -1144,6 +1145,7 @@ class Database:
                         ends_at TIMESTAMP NOT NULL,
                         target_fish TEXT,
                         prize_pool INTEGER DEFAULT 50,
+                        target_location TEXT,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )'''
                 )
@@ -1155,6 +1157,10 @@ class Database:
                 pass
             try:
                 cursor.execute("ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS target_location TEXT")
             except Exception:
                 pass
 
@@ -4002,15 +4008,15 @@ class Database:
     # Tournament methods
     # ─────────────────────────────────────────────
 
-    def create_tournament(self, chat_id, created_by, title, tournament_type, starts_at, ends_at, target_fish=None, prize_pool=50):
+    def create_tournament(self, chat_id, created_by, title, tournament_type, starts_at, ends_at, target_fish=None, prize_pool=50, target_location=None):
         """Создать турнир и вернуть его id."""
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    '''INSERT INTO tournaments (chat_id, created_by, title, tournament_type, starts_at, ends_at, target_fish, prize_pool)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)''',
-                    (chat_id, created_by, title, tournament_type, starts_at, ends_at, target_fish, prize_pool)
+                    '''INSERT INTO tournaments (chat_id, created_by, title, tournament_type, starts_at, ends_at, target_fish, prize_pool, target_location)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                    (chat_id, created_by, title, tournament_type, starts_at, ends_at, target_fish, prize_pool, target_location)
                 )
                 conn.commit()
                 cursor.execute('SELECT MAX(id) FROM tournaments')
