@@ -708,6 +708,21 @@ class Database:
                 )
             ''')
 
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS tournaments (
+                    id SERIAL PRIMARY KEY,
+                    chat_id BIGINT,
+                    created_by BIGINT,
+                    title TEXT NOT NULL,
+                    tournament_type TEXT DEFAULT 'total_weight',
+                    starts_at TIMESTAMP NOT NULL,
+                    ends_at TIMESTAMP NOT NULL,
+                    target_fish TEXT,
+                    prize_pool INTEGER DEFAULT 50,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             conn.commit()
         
         # Ensure integer PK columns have sequences/defaults (Postgres)
@@ -3955,6 +3970,127 @@ class Database:
                 return max(0, int(remaining))
         except Exception:
             return 0
+
+    # ─────────────────────────────────────────────
+    # Tournament methods
+    # ─────────────────────────────────────────────
+
+    def create_tournament(self, chat_id, created_by, title, tournament_type, starts_at, ends_at, target_fish=None, prize_pool=50):
+        """Создать турнир и вернуть его id."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''INSERT INTO tournaments (chat_id, created_by, title, tournament_type, starts_at, ends_at, target_fish, prize_pool)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)''',
+                    (chat_id, created_by, title, tournament_type, starts_at, ends_at, target_fish, prize_pool)
+                )
+                conn.commit()
+                cursor.execute('SELECT MAX(id) FROM tournaments')
+                row = cursor.fetchone()
+                return row[0] if row else None
+        except Exception:
+            logger.exception('create_tournament failed')
+            return None
+
+    def get_tournament(self, tournament_id):
+        """Получить турнир по id."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM tournaments WHERE id = %s', (tournament_id,))
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cursor.description]
+                return dict(zip(cols, row))
+        except Exception:
+            logger.exception('get_tournament failed')
+            return None
+
+    def get_active_tournament(self):
+        """Вернуть ближайший активный (не завершённый) турнир."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT * FROM tournaments WHERE ends_at > NOW() ORDER BY starts_at ASC LIMIT 1"
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cursor.description]
+                return dict(zip(cols, row))
+        except Exception:
+            logger.exception('get_active_tournament failed')
+            return None
+
+    def get_tour_leaderboard_weight(self, starts_at, ends_at, limit=10):
+        """Топ игроков по суммарному весу уловов в период турнира."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''SELECT cf.user_id,
+                              COALESCE(p.username, CAST(cf.user_id AS TEXT)) AS username,
+                              SUM(cf.weight) AS total_weight
+                       FROM caught_fish cf
+                       LEFT JOIN players p ON p.user_id = cf.user_id
+                       WHERE cf.caught_at >= %s AND cf.caught_at <= %s AND cf.length > 0
+                       GROUP BY cf.user_id, p.username
+                       ORDER BY total_weight DESC
+                       LIMIT %s''',
+                    (starts_at, ends_at, limit)
+                )
+                rows = cursor.fetchall()
+                cols = [d[0] for d in cursor.description]
+                return [dict(zip(cols, r)) for r in rows]
+        except Exception:
+            logger.exception('get_tour_leaderboard_weight failed')
+            return []
+
+    def get_location_leaderboard_length(self, location, starts_at, ends_at, limit=10):
+        """Топ игроков по самой длинной рыбе на локации за период турнира."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''SELECT cf.user_id,
+                              COALESCE(p.username, CAST(cf.user_id AS TEXT)) AS username,
+                              cf.fish_name,
+                              cf.length AS best_length
+                       FROM caught_fish cf
+                       LEFT JOIN players p ON p.user_id = cf.user_id
+                       INNER JOIN (
+                           SELECT user_id, MAX(length) AS max_len
+                           FROM caught_fish
+                           WHERE location = %s AND caught_at >= %s AND caught_at <= %s AND length > 0
+                           GROUP BY user_id
+                       ) best ON best.user_id = cf.user_id AND best.max_len = cf.length
+                       WHERE cf.location = %s AND cf.caught_at >= %s AND cf.caught_at <= %s AND cf.length > 0
+                       ORDER BY cf.length DESC
+                       LIMIT %s''',
+                    (location, starts_at, ends_at, location, starts_at, ends_at, limit)
+                )
+                rows = cursor.fetchall()
+                cols = [d[0] for d in cursor.description]
+                return [dict(zip(cols, r)) for r in rows]
+        except Exception:
+            logger.exception('get_location_leaderboard_length failed')
+            return []
+
+    def get_all_chat_ids(self):
+        """Вернуть все уникальные группы (chat_id < -1) из caught_fish."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT DISTINCT chat_id FROM caught_fish WHERE chat_id < -1"
+                )
+                return [r[0] for r in cursor.fetchall()]
+        except Exception:
+            logger.exception('get_all_chat_ids failed')
+            return []
 
 
 # Экземпляр базы данных для импорта в других модулях
