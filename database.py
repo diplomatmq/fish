@@ -4058,6 +4058,24 @@ class Database:
             logger.exception('get_active_tournament failed')
             return None
 
+    def get_active_tournament_for_location(self, location: str):
+        """Вернуть активный турнир типа longest_fish для конкретной локации."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT * FROM tournaments WHERE ends_at > NOW() AND tournament_type = 'longest_fish' AND target_location = %s ORDER BY starts_at ASC LIMIT 1",
+                    (location,)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                cols = [d[0] for d in cursor.description]
+                return dict(zip(cols, row))
+        except Exception:
+            logger.exception('get_active_tournament_for_location failed')
+            return None
+
     def get_tour_leaderboard_weight(self, starts_at, ends_at, limit=10):
         """Топ игроков по суммарному весу уловов в период турнира."""
         try:
