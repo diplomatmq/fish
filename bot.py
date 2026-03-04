@@ -712,7 +712,7 @@ class FishBot:
 
     async def mes_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отправить сообщение во все чаты (только для владельца)."""
-        if not self._is_owner(update):
+        if not self._is_owner(update.effective_user.id):
             await update.message.reply_text("❌ Только для владельца.")
             return
         if not context.args:
