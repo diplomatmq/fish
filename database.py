@@ -1131,6 +1131,33 @@ class Database:
             except Exception:
                 pass
 
+            # Ensure tournaments table exists and has all required columns
+            try:
+                cursor.execute(
+                    '''CREATE TABLE IF NOT EXISTS tournaments (
+                        id SERIAL PRIMARY KEY,
+                        chat_id BIGINT,
+                        created_by BIGINT,
+                        title TEXT NOT NULL,
+                        tournament_type TEXT DEFAULT 'total_weight',
+                        starts_at TIMESTAMP NOT NULL,
+                        ends_at TIMESTAMP NOT NULL,
+                        target_fish TEXT,
+                        prize_pool INTEGER DEFAULT 50,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )'''
+                )
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS prize_pool INTEGER DEFAULT 50")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            except Exception:
+                pass
+
             conn.commit()
     
     def _fill_default_data(self):
