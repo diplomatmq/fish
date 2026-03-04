@@ -4088,7 +4088,7 @@ class Database:
                        FROM caught_fish cf
                        LEFT JOIN players p ON p.user_id = cf.user_id
                        WHERE cf.caught_at >= %s AND cf.caught_at <= %s AND cf.length > 0
-                             AND (cf.sold IS NULL OR cf.sold = FALSE)
+                             AND (cf.sold IS NULL OR cf.sold != 1)
                        GROUP BY cf.user_id, p.username
                        ORDER BY total_weight DESC
                        LIMIT %s''',
@@ -4117,7 +4117,7 @@ class Database:
                            FROM caught_fish cf
                            LEFT JOIN players p ON p.user_id = cf.user_id
                            WHERE cf.location = %s AND cf.caught_at >= %s AND cf.caught_at <= %s AND cf.length > 0
-                                 AND (cf.sold IS NULL OR cf.sold = FALSE)
+                                 AND (cf.sold IS NULL OR cf.sold != 1)
                            ORDER BY cf.user_id, cf.length DESC
                        ) sub
                        ORDER BY best_length DESC
