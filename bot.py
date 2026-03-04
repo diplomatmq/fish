@@ -490,10 +490,46 @@ class FishBot:
             )
             return
 
+        if selected_type == 'longest_fish':
+            locations = db.get_locations()
+            keyboard = [
+                [InlineKeyboardButton(loc['name'], callback_data=f'tour_location_{loc["name"]}')]
+                for loc in locations
+            ]
+            draft['step'] = 'location'
+            context.user_data['new_tour'] = draft
+            await query.edit_message_text(
+                f"Выбран тип: {self.TOUR_TYPES[selected_type]}\n\nВыберите локацию:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
+
         draft['step'] = 'title'
         context.user_data['new_tour'] = draft
         await query.edit_message_text(
             f"Выбран тип: {self.TOUR_TYPES[selected_type]}\n\nВведите название турнира:"
+        )
+
+    async def handle_tour_location_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Выбор локации для турнира 'Самая длинная рыба'."""
+        query = update.callback_query
+        await query.answer()
+
+        if not self._is_owner(update.effective_user.id):
+            await query.answer("Нет доступа", show_alert=True)
+            return
+
+        draft = context.user_data.get('new_tour')
+        if not draft or draft.get('step') != 'location':
+            await query.edit_message_text("Сессия не найдена. Запустите /new_tour заново.")
+            return
+
+        location_name = query.data.replace('tour_location_', '', 1)
+        draft['target_location'] = location_name
+        draft['step'] = 'title'
+        context.user_data['new_tour'] = draft
+        await query.edit_message_text(
+            f"📍 Локация: {location_name}\n\nВведите название турнира:"
         )
 
     async def handle_new_tour_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -563,7 +599,8 @@ class FishBot:
                 tournament_type=draft.get('tournament_type'),
                 starts_at=starts_at,
                 ends_at=ends_at,
-                target_fish=draft.get('target_fish')
+                target_fish=draft.get('target_fish'),
+                target_location=draft.get('target_location')
             )
 
             if tournament_id:
@@ -589,30 +626,46 @@ class FishBot:
         return False
 
     async def tour_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать топ-10 игроков по суммарному весу в активном турнире."""
+        """Показать топ-10 игроков в активном турнире."""
         tour = db.get_active_tournament()
         if not tour:
             await update.message.reply_text("🏁 Сейчас нет активных турниров.")
             return
 
-        rows = db.get_tour_leaderboard_weight(tour['starts_at'], tour['ends_at'])
         medals = ['🥇', '🥈', '🥉']
         starts_str = tour['starts_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['starts_at'], 'strftime') else str(tour['starts_at'])[:16]
         ends_str = tour['ends_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['ends_at'], 'strftime') else str(tour['ends_at'])[:16]
+        t_type = tour.get('tournament_type', 'total_weight')
+        target_location = tour.get('target_location')
 
         lines = [
             f"🏆 <b>Турнир: {tour['title']}</b>",
             f"📅 {starts_str} — {ends_str}",
             "",
         ]
-        if not rows:
-            lines.append("Пока никто не поймал рыбу.")
+
+        if t_type == 'longest_fish' and target_location:
+            rows = db.get_location_leaderboard_length(target_location, tour['starts_at'], tour['ends_at'])
+            lines.insert(1, f"📍 Локация: {target_location}")
+            if not rows:
+                lines.append("Пока никто не поймал рыбу на этой локации.")
+            else:
+                for i, r in enumerate(rows, 1):
+                    medal = medals[i - 1] if i <= 3 else f"{i}."
+                    name = r.get('username') or str(r['user_id'])
+                    fish = r.get('fish_name', '?')
+                    length = round(float(r['best_length']), 1)
+                    lines.append(f"{medal} {name} — {fish} — {length} см")
         else:
-            for i, r in enumerate(rows, 1):
-                medal = medals[i - 1] if i <= 3 else f"{i}."
-                name = r.get('username') or str(r['user_id'])
-                weight = round(float(r['total_weight']), 2)
-                lines.append(f"{medal} {name} — {weight} кг")
+            rows = db.get_tour_leaderboard_weight(tour['starts_at'], tour['ends_at'])
+            if not rows:
+                lines.append("Пока никто не поймал рыбу.")
+            else:
+                for i, r in enumerate(rows, 1):
+                    medal = medals[i - 1] if i <= 3 else f"{i}."
+                    name = r.get('username') or str(r['user_id'])
+                    weight = round(float(r['total_weight']), 2)
+                    lines.append(f"{medal} {name} — {weight} кг")
 
         await update.message.reply_text("\n".join(lines), parse_mode='HTML')
 
@@ -6454,6 +6507,7 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_stats_callback, pattern="^stats_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_leaderboard_callback, pattern="^leaderboard$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_tour_type_callback, pattern="^tour_type_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_tour_location_callback, pattern="^tour_location_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_payment_expired_callback, pattern="^payment_expired$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_invoice_cancelled_callback, pattern="^invoice_cancelled$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_pay_telegram_star_callback, pattern="^pay_telegram_star_"))
