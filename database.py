@@ -4130,12 +4130,14 @@ class Database:
             return []
 
     def get_all_chat_ids(self):
-        """Вернуть все уникальные группы (chat_id < -1) из caught_fish."""
+        """Вернуть все уникальные chat_id групп, где работает бот (из chat_configs и caught_fish)."""
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT DISTINCT chat_id FROM caught_fish WHERE chat_id < -1"
+                    """SELECT chat_id FROM chat_configs WHERE chat_id < -1
+                       UNION
+                       SELECT DISTINCT chat_id FROM caught_fish WHERE chat_id < -1"""
                 )
                 return [r[0] for r in cursor.fetchall()]
         except Exception:
