@@ -4101,27 +4101,26 @@ class Database:
             return []
 
     def get_location_leaderboard_length(self, location, starts_at, ends_at, limit=10):
-        """Топ игроков по самой длинной рыбе на локации за период турнира."""
+        """Топ игроков по самой длинной рыбе на локации за период турнира. Каждый игрок — один раз (лучший результат)."""
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    '''SELECT cf.user_id,
-                              COALESCE(p.username, CAST(cf.user_id AS TEXT)) AS username,
-                              cf.fish_name,
-                              cf.length AS best_length
-                       FROM caught_fish cf
-                       LEFT JOIN players p ON p.user_id = cf.user_id
-                       INNER JOIN (
-                           SELECT user_id, MAX(length) AS max_len
-                           FROM caught_fish
-                           WHERE location = %s AND caught_at >= %s AND caught_at <= %s AND length > 0
-                           GROUP BY user_id
-                       ) best ON best.user_id = cf.user_id AND best.max_len = cf.length
-                       WHERE cf.location = %s AND cf.caught_at >= %s AND cf.caught_at <= %s AND cf.length > 0
-                       ORDER BY cf.length DESC
+                    '''SELECT user_id, username, fish_name, best_length
+                       FROM (
+                           SELECT DISTINCT ON (cf.user_id)
+                                  cf.user_id,
+                                  COALESCE(p.username, CAST(cf.user_id AS TEXT)) AS username,
+                                  cf.fish_name,
+                                  cf.length AS best_length
+                           FROM caught_fish cf
+                           LEFT JOIN players p ON p.user_id = cf.user_id
+                           WHERE cf.location = %s AND cf.caught_at >= %s AND cf.caught_at <= %s AND cf.length > 0
+                           ORDER BY cf.user_id, cf.length DESC
+                       ) sub
+                       ORDER BY best_length DESC
                        LIMIT %s''',
-                    (location, starts_at, ends_at, location, starts_at, ends_at, limit)
+                    (location, starts_at, ends_at, limit)
                 )
                 rows = cursor.fetchall()
                 cols = [d[0] for d in cursor.description]
