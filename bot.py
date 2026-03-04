@@ -603,7 +603,6 @@ class FishBot:
         lines = [
             f"🏆 <b>Турнир: {tour['title']}</b>",
             f"📅 {starts_str} — {ends_str}",
-            f"💰 Призовой фонд: {tour.get('prize_pool', 50)} ⭐",
             "",
         ]
         if not rows:
