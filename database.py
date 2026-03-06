@@ -580,6 +580,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS caught_fish (
                     id INTEGER PRIMARY KEY,
                     user_id INTEGER NOT NULL,
+                    chat_id BIGINT,
                     fish_name TEXT NOT NULL,
                     weight REAL NOT NULL,
                     length REAL DEFAULT 0,
@@ -590,13 +591,12 @@ class Database:
                     FOREIGN KEY (user_id) REFERENCES players (user_id)
                 )
             ''')
-            # Ensure `chat_id` column exists (some deployments have it; add if missing)
+            # Ensure `chat_id` column exists (some deployments may have been created without it)
             try:
                 cursor.execute("ALTER TABLE caught_fish ADD COLUMN IF NOT EXISTS chat_id BIGINT")
             except Exception:
                 try:
-                    # Older SQLite emulation may not support ALTER TABLE ADD COLUMN IF NOT EXISTS
-                    cursor.execute("ALTER TABLE caught_fish ADD COLUMN chat_id INTEGER")
+                    cursor.execute("ALTER TABLE caught_fish ADD COLUMN chat_id BIGINT")
                 except Exception:
                     pass
 
@@ -916,7 +916,7 @@ class Database:
             ensure_column('chat_configs', 'admin_ref_link', 'TEXT')
             ensure_column('chat_configs', 'chat_invite_link', 'TEXT')
             ensure_column('user_ref_links', 'chat_invite_link', 'TEXT')
-            ensure_column('caught_fish', 'chat_id', 'INTEGER')
+            ensure_column('caught_fish', 'chat_id', 'BIGINT')
 
             # Ensure unique index for ON CONFLICT targets that expect (user_id, chat_id)
             try:
@@ -941,13 +941,10 @@ class Database:
                     row = cursor.fetchone()
                     if row and row[0] != 'bigint':
                         try:
-                            # Use a safe USING expression that converts only numeric text to bigint,
-                            # setting non-numeric values to NULL to avoid cast errors.
-                            safe_using = (
-                                "USING (CASE WHEN COALESCE(" + column_name + "::text, '') ~ '^[0-9]+$' "
-                                "THEN (" + column_name + "::text)::bigint ELSE NULL END)"
-                            )
-                            cursor.execute(f'ALTER TABLE {table_name} ALTER COLUMN {column_name} TYPE BIGINT {safe_using}')
+                            # Direct cast INTEGER -> BIGINT is always safe and lossless.
+                            # Avoids the old '^[0-9]+$' regex which incorrectly converted
+                            # negative Telegram group chat IDs (e.g. -1001234567890) to NULL.
+                            cursor.execute(f'ALTER TABLE {table_name} ALTER COLUMN {column_name} TYPE BIGINT USING {column_name}::bigint')
                             conn.commit()
                         except Exception:
                             try:
@@ -989,37 +986,65 @@ class Database:
                 except Exception:
                     pass
 
+            # Ensure caught_fish.chat_id is BIGINT (not 32-bit INTEGER).
+            # Telegram supergroup IDs like -1001234567890 exceed INTEGER range and cause
+            # INSERT failures when the column is INTEGER, resulting in NULL chat_id.
+            try:
+                cursor.execute(
+                    "SELECT data_type FROM information_schema.columns "
+                    "WHERE table_name = 'caught_fish' AND column_name = 'chat_id' AND table_schema = 'public'"
+                )
+                dtype_row = cursor.fetchone()
+                if dtype_row and dtype_row[0] == 'integer':
+                    cursor.execute('ALTER TABLE caught_fish ALTER COLUMN chat_id TYPE BIGINT USING chat_id::bigint')
+                    conn.commit()
+                    logger.info("Migrated caught_fish.chat_id from INTEGER to BIGINT")
+            except Exception as _e:
+                logger.warning("Failed to upgrade caught_fish.chat_id to BIGINT: %s", _e)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
             # Populate chat_id in player_rods and player_nets and caught_fish
+            # Use p.chat_id directly — the old regex '^[0-9]+$' incorrectly excluded
+            # negative Telegram group chat IDs, setting them to NULL.
             cursor.execute('''
                 UPDATE player_rods
                 SET chat_id = (
-                    SELECT MAX(
-                        CASE WHEN COALESCE(p.chat_id::text, '') ~ '^[0-9]+$' THEN (p.chat_id::text)::bigint ELSE NULL END
-                    ) FROM players p WHERE p.user_id = player_rods.user_id
+                    SELECT p.chat_id
+                    FROM players p
+                    WHERE p.user_id = player_rods.user_id AND p.chat_id IS NOT NULL AND p.chat_id != 0
+                    ORDER BY p.chat_id
+                    LIMIT 1
                 )
-                WHERE chat_id IS NULL OR chat_id < 1
+                WHERE chat_id IS NULL OR chat_id = 0
             ''')
             conn.commit()
 
             cursor.execute('''
                 UPDATE player_nets
                 SET chat_id = (
-                    SELECT MAX(
-                        CASE WHEN COALESCE(p.chat_id::text, '') ~ '^[0-9]+$' THEN (p.chat_id::text)::bigint ELSE NULL END
-                    ) FROM players p WHERE p.user_id = player_nets.user_id
+                    SELECT p.chat_id
+                    FROM players p
+                    WHERE p.user_id = player_nets.user_id AND p.chat_id IS NOT NULL AND p.chat_id != 0
+                    ORDER BY p.chat_id
+                    LIMIT 1
                 )
-                WHERE chat_id IS NULL OR chat_id < 1
+                WHERE chat_id IS NULL OR chat_id = 0
             ''')
             conn.commit()
 
             cursor.execute('''
                 UPDATE caught_fish
                 SET chat_id = (
-                    SELECT MAX(
-                        CASE WHEN COALESCE(p.chat_id::text, '') ~ '^[0-9]+$' THEN (p.chat_id::text)::bigint ELSE NULL END
-                    ) FROM players p WHERE p.user_id = caught_fish.user_id
+                    SELECT p.chat_id
+                    FROM players p
+                    WHERE p.user_id = caught_fish.user_id AND p.chat_id IS NOT NULL AND p.chat_id != 0
+                    ORDER BY p.chat_id
+                    LIMIT 1
                 )
-                WHERE chat_id IS NULL OR chat_id < 1
+                WHERE chat_id IS NULL OR chat_id = 0
             ''')
             conn.commit()
 
@@ -2507,6 +2532,57 @@ class Database:
     def get_leaderboard(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Получить таблицу лидеров (по умолчанию - глобально за все время)"""
         return self.get_leaderboard_period(limit=limit)
+
+    def get_chat_leaderboard_period(self, chat_id: int, limit: int = 10, since: Optional[datetime] = None, until: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """Получить топ по общему весу улова в конкретном чате за период"""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+
+            where_clauses: List[str] = ['cf.chat_id = %s']
+            params: List = [chat_id]
+
+            if since is not None:
+                where_clauses.append('cf.caught_at >= %s')
+                params.append(since.strftime('%Y-%m-%d %H:%M:%S'))
+            if until is not None:
+                where_clauses.append('cf.caught_at <= %s')
+                params.append(until.strftime('%Y-%m-%d %H:%M:%S'))
+
+            where_clauses.append('cf.sold = 0')
+
+            where_sql = 'WHERE ' + ' AND '.join(where_clauses)
+
+            query = f'''
+                SELECT
+                    COALESCE(MAX(p.username), 'Неизвестно') as username,
+                    cf.user_id,
+                    COUNT(cf.id) as total_fish,
+                    COALESCE(SUM(cf.weight), 0) as total_weight
+                FROM caught_fish cf
+                JOIN fish f ON TRIM(cf.fish_name) = f.name
+                LEFT JOIN players p ON p.user_id = cf.user_id AND p.chat_id = cf.chat_id
+                {where_sql}
+                GROUP BY cf.user_id
+                ORDER BY total_weight DESC, total_fish DESC
+                LIMIT %s
+            '''
+
+            params.append(limit)
+            try:
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+                return [
+                    {
+                        'username': row[0],
+                        'user_id': row[1],
+                        'total_fish': row[2],
+                        'total_weight': row[3],
+                    }
+                    for row in rows
+                ]
+            except Exception:
+                logger.exception('get_chat_leaderboard_period failed')
+                return []
 
     def get_level_leaderboard(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Получить топ по уровню (глобально)"""
