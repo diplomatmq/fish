@@ -986,25 +986,32 @@ class Database:
                 except Exception:
                     pass
 
-            # Ensure caught_fish.chat_id is BIGINT (not 32-bit INTEGER).
-            # Telegram supergroup IDs like -1001234567890 exceed INTEGER range and cause
-            # INSERT failures when the column is INTEGER, resulting in NULL chat_id.
-            try:
-                cursor.execute(
-                    "SELECT data_type FROM information_schema.columns "
-                    "WHERE table_name = 'caught_fish' AND column_name = 'chat_id' AND table_schema = 'public'"
-                )
-                dtype_row = cursor.fetchone()
-                if dtype_row and dtype_row[0] == 'integer':
-                    cursor.execute('ALTER TABLE caught_fish ALTER COLUMN chat_id TYPE BIGINT USING chat_id::bigint')
-                    conn.commit()
-                    logger.info("Migrated caught_fish.chat_id from INTEGER to BIGINT")
-            except Exception as _e:
-                logger.warning("Failed to upgrade caught_fish.chat_id to BIGINT: %s", _e)
+            # Force caught_fish.chat_id to BIGINT unconditionally.
+            # Telegram supergroup IDs like -1001234567890 exceed 32-bit INTEGER range.
+            # ALTER TABLE ... TYPE BIGINT is a no-op if column is already BIGINT.
+            for _tbl, _col in [
+                ('caught_fish', 'chat_id'),
+                ('players', 'chat_id'),
+                ('players', 'user_id'),
+                ('player_rods', 'chat_id'),
+                ('player_rods', 'user_id'),
+                ('player_nets', 'chat_id'),
+                ('player_nets', 'user_id'),
+                ('star_transactions', 'chat_id'),
+                ('star_transactions', 'user_id'),
+            ]:
                 try:
-                    conn.rollback()
-                except Exception:
-                    pass
+                    cursor.execute(
+                        f'ALTER TABLE {_tbl} ALTER COLUMN {_col} TYPE BIGINT USING {_col}::bigint'
+                    )
+                    conn.commit()
+                    logger.info("Ensured %s.%s is BIGINT", _tbl, _col)
+                except Exception as _e:
+                    logger.warning("ALTER %s.%s BIGINT skipped: %s", _tbl, _col, _e)
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
 
             # Populate chat_id in player_rods and player_nets and caught_fish
             # Use p.chat_id directly — the old regex '^[0-9]+$' incorrectly excluded
@@ -1954,33 +1961,26 @@ class Database:
             normalized_name, weight, length, location
         )
 
-        inserted_id = None
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                'INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, length, location) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id',
+                'INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, length, location)'
+                ' VALUES (%s, %s, %s, %s, %s, %s)'
+                ' RETURNING id, user_id, chat_id, fish_name, weight, length, location, caught_at',
                 (user_id, chat_id_to_store, normalized_name, float(weight), float(length), location)
             )
-            row = cursor.fetchone()
-            inserted_id = row[0] if row else None
+            saved = cursor.fetchone()
 
-        if inserted_id is not None:
-            with self._connect() as conn2:
-                cursor2 = conn2.cursor()
-                cursor2.execute(
-                    'SELECT id, user_id, chat_id, fish_name, weight, length, location, caught_at FROM caught_fish WHERE id = %s',
-                    (inserted_id,)
-                )
-                saved = cursor2.fetchone()
-            if saved:
-                logger.info(
-                    "add_caught_fish SAVED IN DB: id=%s user_id=%s chat_id=%s fish=%s weight=%s length=%s location=%s caught_at=%s",
-                    saved[0], saved[1], saved[2], saved[3], saved[4], saved[5], saved[6], saved[7]
-                )
-            else:
-                logger.warning("add_caught_fish: INSERT reported id=%s but SELECT returned nothing!", inserted_id)
+        if saved:
+            logger.info(
+                "add_caught_fish SAVED IN DB: id=%s user_id=%s chat_id=%s fish=%s weight=%s length=%s location=%s caught_at=%s",
+                saved[0], saved[1], saved[2], saved[3], saved[4], saved[5], saved[6], saved[7]
+            )
         else:
-            logger.warning("add_caught_fish: INSERT did not return an id (RETURNING clause failed?)")
+            logger.warning(
+                "add_caught_fish: INSERT returned no row — possible constraint violation. user_id=%s chat_id=%s fish=%s",
+                user_id, chat_id_to_store, normalized_name
+            )
     
     def remove_caught_fish(self, fish_id: int):
         """Удалить пойманную рыбу по ID"""
