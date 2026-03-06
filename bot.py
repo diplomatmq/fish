@@ -4313,7 +4313,9 @@ class FishBot:
     
     async def leaderboard_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /leaderboard - таблица лидеров"""
+        import logging as _logging
         from datetime import datetime, timedelta
+        _lb_logger = _logging.getLogger(__name__)
 
         chat_id = update.effective_chat.id
         now = datetime.now()
@@ -4324,23 +4326,16 @@ class FishBot:
             if not rows:
                 body = "Нет уловов"
             else:
-                filtered = []
-                for player in rows:
+                lines = []
+                for i, player in enumerate(rows, 1):
                     raw_username = str(player.get('username') or '').strip()
-                    if not raw_username or raw_username == 'Неизвестно':
-                        continue
-                    filtered.append((raw_username, player.get('total_weight', 0)))
-
-                if not filtered:
-                    body = "Нет уловов"
-                else:
-                    lines = []
-                    for i, (raw_username, total_weight) in enumerate(filtered, 1):
-                        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-                        username = html.escape(raw_username)
-                        weight_value = float(total_weight or 0)
-                        lines.append(f"{medal} {username}: {weight_value:.2f} кг")
-                    body = "\n".join(lines)
+                    # Используем user_id как запасное отображение
+                    display = raw_username if raw_username else f"id{player.get('user_id', '?')}"
+                    medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+                    username = html.escape(display)
+                    weight_value = float(player.get('total_weight') or 0)
+                    lines.append(f"{medal} {username}: {weight_value:.2f} кг")
+                body = "\n".join(lines) if lines else "Нет уловов"
             return f"{title}\n<blockquote><span class=\"tg-spoiler\">{body}</span></blockquote>"
 
         global_week = db.get_leaderboard_period(limit=10, since=week_since)
@@ -4348,15 +4343,17 @@ class FishBot:
 
         is_group = update.effective_chat.type in ('group', 'supergroup', 'channel')
         if is_group:
+            _lb_logger.info('leaderboard_command: chat_id=%s type=%s, querying chat leaderboard', chat_id, update.effective_chat.type)
             chat_week = db.get_chat_leaderboard_period(chat_id=chat_id, limit=10, since=week_since)
             chat_day = db.get_chat_leaderboard_period(chat_id=chat_id, limit=10, since=day_since)
+            _lb_logger.info('leaderboard_command: chat_week=%d rows, chat_day=%d rows', len(chat_week), len(chat_day))
         else:
             chat_week = []
             chat_day = []
 
         message = "🏆 Таблица лидеров\n\n"
 
-        if is_group and (chat_week or chat_day):
+        if is_group:
             message += "💬 Топ этого чата\n"
             message += format_leaderboard("За неделю", chat_week)
             message += "\n"
