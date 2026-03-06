@@ -4346,7 +4346,23 @@ class FishBot:
         global_week = db.get_leaderboard_period(limit=10, since=week_since)
         global_day = db.get_leaderboard_period(limit=10, since=day_since)
 
+        is_group = update.effective_chat.type in ('group', 'supergroup', 'channel')
+        if is_group:
+            chat_week = db.get_chat_leaderboard_period(chat_id=chat_id, limit=10, since=week_since)
+            chat_day = db.get_chat_leaderboard_period(chat_id=chat_id, limit=10, since=day_since)
+        else:
+            chat_week = []
+            chat_day = []
+
         message = "🏆 Таблица лидеров\n\n"
+
+        if is_group and (chat_week or chat_day):
+            message += "💬 Топ этого чата\n"
+            message += format_leaderboard("За неделю", chat_week)
+            message += "\n"
+            message += format_leaderboard("За день", chat_day)
+            message += "\n\n"
+
         message += "🌍 Глобальный топ\n"
         message += format_leaderboard("За неделю", global_week)
         message += "\n"
