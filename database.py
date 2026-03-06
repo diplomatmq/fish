@@ -2534,11 +2534,15 @@ class Database:
         return self.get_leaderboard_period(limit=limit)
 
     def get_chat_leaderboard_period(self, chat_id: int, limit: int = 10, since: Optional[datetime] = None, until: Optional[datetime] = None) -> List[Dict[str, Any]]:
-        """Получить топ по общему весу улова в конкретном чате за период"""
+        """Получить топ по общему весу улова в конкретном чате за период.
+        Считает только НЕпроданную рыбу (sold = 0), chat_id берётся строго из caught_fish.
+        Без JOIN на таблицу fish — чтобы не терять записи из-за расхождения имён.
+        """
         with self._connect() as conn:
             cursor = conn.cursor()
 
-            where_clauses: List[str] = ['cf.chat_id = %s']
+            # Фильтруем строго по chat_id из таблицы caught_fish
+            where_clauses: List[str] = ['cf.chat_id = %s', 'cf.sold = 0']
             params: List = [chat_id]
 
             if since is not None:
@@ -2547,8 +2551,6 @@ class Database:
             if until is not None:
                 where_clauses.append('cf.caught_at <= %s')
                 params.append(until.strftime('%Y-%m-%d %H:%M:%S'))
-
-            where_clauses.append('cf.sold = 0')
 
             where_sql = 'WHERE ' + ' AND '.join(where_clauses)
 
@@ -2559,7 +2561,6 @@ class Database:
                     COUNT(cf.id) as total_fish,
                     COALESCE(SUM(cf.weight), 0) as total_weight
                 FROM caught_fish cf
-                JOIN fish f ON TRIM(cf.fish_name) = f.name
                 LEFT JOIN players p ON p.user_id = cf.user_id AND p.chat_id = cf.chat_id
                 {where_sql}
                 GROUP BY cf.user_id
