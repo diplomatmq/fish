@@ -1948,16 +1948,39 @@ class Database:
         except (TypeError, ValueError):
             chat_id_to_store = None
 
+        logger.info(
+            "add_caught_fish INPUT: user_id=%s chat_id=%s (raw=%s, type=%s) fish=%s weight=%s length=%s location=%s",
+            user_id, chat_id_to_store, chat_id, type(chat_id).__name__,
+            normalized_name, weight, length, location
+        )
+
+        inserted_id = None
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                'INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, length, location) VALUES (%s, %s, %s, %s, %s, %s)',
+                'INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, length, location) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id',
                 (user_id, chat_id_to_store, normalized_name, float(weight), float(length), location)
             )
-        logger.info(
-            "Caught fish saved: user=%s chat_id=%s fish=%s weight=%.2fkg length=%.1fcm location=%s",
-            user_id, chat_id_to_store, normalized_name, float(weight or 0), float(length or 0), location
-        )
+            row = cursor.fetchone()
+            inserted_id = row[0] if row else None
+
+        if inserted_id is not None:
+            with self._connect() as conn2:
+                cursor2 = conn2.cursor()
+                cursor2.execute(
+                    'SELECT id, user_id, chat_id, fish_name, weight, length, location, caught_at FROM caught_fish WHERE id = %s',
+                    (inserted_id,)
+                )
+                saved = cursor2.fetchone()
+            if saved:
+                logger.info(
+                    "add_caught_fish SAVED IN DB: id=%s user_id=%s chat_id=%s fish=%s weight=%s length=%s location=%s caught_at=%s",
+                    saved[0], saved[1], saved[2], saved[3], saved[4], saved[5], saved[6], saved[7]
+                )
+            else:
+                logger.warning("add_caught_fish: INSERT reported id=%s but SELECT returned nothing!", inserted_id)
+        else:
+            logger.warning("add_caught_fish: INSERT did not return an id (RETURNING clause failed?)")
     
     def remove_caught_fish(self, fish_id: int):
         """Удалить пойманную рыбу по ID"""
