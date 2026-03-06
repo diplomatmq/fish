@@ -2464,13 +2464,12 @@ class Database:
 
     def get_chat_leaderboard_period(self, chat_id: int, limit: int = 10, since: Optional[datetime] = None, until: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """Получить топ по общему весу улова в конкретном чате за период.
-        Считает только НЕпроданную рыбу (sold = 0), chat_id берётся строго из caught_fish.
-        Без JOIN на таблицу fish — чтобы не терять записи из-за расхождения имён.
+        Логика идентична get_leaderboard_period (sold=0, JOIN fish),
+        но с обязательным фильтром cf.chat_id = chat_id.
         """
         with self._connect() as conn:
             cursor = conn.cursor()
 
-            # Фильтруем строго по chat_id из таблицы caught_fish
             where_clauses: List[str] = ['cf.chat_id = %s', 'cf.sold = 0']
             params: List = [chat_id]
 
@@ -2490,7 +2489,8 @@ class Database:
                     COUNT(cf.id) as total_fish,
                     COALESCE(SUM(cf.weight), 0) as total_weight
                 FROM caught_fish cf
-                LEFT JOIN players p ON p.user_id = cf.user_id AND p.chat_id = cf.chat_id
+                JOIN fish f ON TRIM(cf.fish_name) = f.name
+                LEFT JOIN players p ON p.user_id = cf.user_id
                 {where_sql}
                 GROUP BY cf.user_id
                 ORDER BY total_weight DESC, total_fish DESC
@@ -2498,9 +2498,22 @@ class Database:
             '''
 
             params.append(limit)
+            logger.info(
+                'get_chat_leaderboard_period QUERY: chat_id=%s since=%s until=%s limit=%s',
+                chat_id, since, until, limit
+            )
             try:
                 cursor.execute(query, params)
                 rows = cursor.fetchall()
+                logger.info(
+                    'get_chat_leaderboard_period RESULT: %d rows for chat_id=%s',
+                    len(rows), chat_id
+                )
+                for row in rows:
+                    logger.info(
+                        '  row: username=%s user_id=%s total_fish=%s total_weight=%s',
+                        row[0], row[1], row[2], row[3]
+                    )
                 return [
                     {
                         'username': row[0],
