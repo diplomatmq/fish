@@ -374,8 +374,6 @@ class FishingGame:
                 })
                 level_info = db.add_player_xp(user_id, chat_id, xp_earned)
 
-                db.add_caught_fish(user_id, chat_id, trash['name'], trash.get('weight', 0), location, 0)
-
                 db.update_player(user_id, chat_id,
                                 coins=player['coins'] + trash['price'],
                                 last_fish_time=datetime.now().isoformat())
@@ -675,8 +673,6 @@ class FishingGame:
                     'is_trash': True,
                 })
                 level_info = db.add_player_xp(user_id, chat_id, xp_earned)
-
-                db.add_caught_fish(user_id, chat_id, trash['name'], trash.get('weight', 0), location, 0)
 
                 db.update_player(user_id, chat_id,
                                 coins=player['coins'] + trash['price'],
