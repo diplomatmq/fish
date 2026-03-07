@@ -403,15 +403,16 @@ class FishBot:
 
         chat_id = None
 
-        # 1) Прямой числовой chat_id (например: -1001234567890)
-        m = re.search(r'-?\d{9,}', chat_link)
-        if m:
-            chat_id = int(m.group(0))
+        # 1) t.me/c/<id>/<msg_id> -> преобразуем в -100<id> (проверяем первым,
+        #    иначе regex на числа выхватит голый id из URL без -100)
+        m_c = re.search(r't\.me/c/(\d+)', chat_link, flags=re.IGNORECASE)
+        if m_c:
+            chat_id = int(f"-100{m_c.group(1)}")
         else:
-            # 2) t.me/c/<id>/<msg_id> -> преобразуем в -100<id>
-            m_c = re.search(r't\.me/c/(\d+)', chat_link, flags=re.IGNORECASE)
-            if m_c:
-                chat_id = int(f"-100{m_c.group(1)}")
+            # 2) Прямой числовой chat_id (например: -1001234567890 или просто число)
+            m = re.search(r'-?\d{9,}', chat_link)
+            if m:
+                chat_id = int(m.group(0))
 
         # 3) username / @username / t.me/username[/msg_id] -> resolve через get_chat
         if chat_id is None:
