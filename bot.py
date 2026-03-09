@@ -442,6 +442,82 @@ class FishBot:
             await update.message.reply_text(f"Ошибка при сохранении: {e}")
         context.user_data.pop('waiting_new_ref', None)
 
+    async def check_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /check — топ пользователей по весу улова за период (только для владельца)."""
+        user_id = update.effective_user.id
+        if not self._is_owner(user_id):
+            await update.message.reply_text("Команда доступна только владельцу бота.")
+            return
+        context.user_data['check_step'] = 'ids'
+        await update.message.reply_text(
+            "Введите ID пользователей через запятую:\n"
+            "Пример: 123456789, 987654321"
+        )
+
+    async def handle_check_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Пошаговый ввод для /check."""
+        step = context.user_data.get('check_step')
+        if not step:
+            return
+        text = update.message.text.strip()
+
+        if step == 'ids':
+            try:
+                ids = [int(x.strip()) for x in text.split(',') if x.strip()]
+            except ValueError:
+                await update.message.reply_text("Ошибка: все ID должны быть числами. Попробуйте ещё раз.")
+                return
+            if not ids:
+                await update.message.reply_text("Список ID пуст. Попробуйте ещё раз.")
+                return
+            context.user_data['check_ids'] = ids
+            context.user_data['check_step'] = 'since'
+            await update.message.reply_text(
+                "Введите дату/время начала:\n"
+                "Формат: ДД.ММ.ГГГГ ЧЧ:ММ  или  ГГГГ-ММ-ДД ЧЧ:ММ"
+            )
+
+        elif step == 'since':
+            dt = self._parse_datetime_input(text)
+            if dt is None:
+                await update.message.reply_text("Не удалось распознать дату. Используйте формат ДД.ММ.ГГГГ ЧЧ:ММ")
+                return
+            context.user_data['check_since'] = dt
+            context.user_data['check_step'] = 'until'
+            await update.message.reply_text(
+                "Введите дату/время конца:\n"
+                "Формат: ДД.ММ.ГГГГ ЧЧ:ММ  или  ГГГГ-ММ-ДД ЧЧ:ММ"
+            )
+
+        elif step == 'until':
+            dt = self._parse_datetime_input(text)
+            if dt is None:
+                await update.message.reply_text("Не удалось распознать дату. Используйте формат ДД.ММ.ГГГГ ЧЧ:ММ")
+                return
+            ids = context.user_data.pop('check_ids', [])
+            since = context.user_data.pop('check_since', None)
+            context.user_data.pop('check_step', None)
+
+            rows = db.get_users_weight_leaderboard(user_ids=ids, since=since, until=dt)
+
+            since_str = since.strftime('%d.%m.%Y %H:%M') if since else '?'
+            until_str = dt.strftime('%d.%m.%Y %H:%M')
+            lines = [f"📊 Топ по весу улова\n🕐 {since_str} — {until_str}\n"]
+            if not rows:
+                lines.append("Нет уловов за указанный период.")
+            else:
+                for i, r in enumerate(rows, 1):
+                    medal = '🥇' if i == 1 else '🥈' if i == 2 else '🥉' if i == 3 else f'{i}.'
+                    name = html.escape(str(r.get('username') or '').strip() or f"id{r['user_id']}")
+                    lines.append(f"{medal} {name}: {r['total_weight']:.2f} кг ({r['total_fish']} шт.)")
+            # Добавляем тех, кого нет в результатах — у них 0
+            found_ids = {r['user_id'] for r in rows}
+            for uid in ids:
+                if uid not in found_ids:
+                    lines.append(f"— id{uid}: 0.00 кг (0 шт.)")  # id как fallback если username неизвестен
+
+            await update.message.reply_text('\n'.join(lines), parse_mode='HTML')
+
     async def new_tour_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Создание турнира: выбор типа и ввод параметров."""
         user_id = update.effective_user.id
@@ -6421,6 +6497,7 @@ def main():
     application.add_handler(CommandHandler("chatstar", chatstar_command))
     application.add_handler(CommandHandler("ref", bot_instance.ref_command))
     application.add_handler(CommandHandler("new_ref", bot_instance.new_ref_command))
+    application.add_handler(CommandHandler("check", bot_instance.check_command))
     application.add_handler(CommandHandler("new_tour", bot_instance.new_tour_command))
     application.add_handler(CommandHandler("tour", bot_instance.tour_command))
     application.add_handler(CommandHandler("ozero", bot_instance.ozero_command))
@@ -6463,9 +6540,10 @@ def main():
     # поэтому разносим обработчики по группам: сценарные -> общий текстовый.
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_withdraw_stars_input), group=0)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_new_ref_input), group=1)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_check_input), group=2)
 
     # Обработчик сообщений о рыбалке и покупке наживки
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_fish_message), group=2)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_fish_message), group=3)
     
     # Обработчик стикеров
     application.add_handler(MessageHandler(filters.Sticker.ALL, bot_instance.handle_sticker))
