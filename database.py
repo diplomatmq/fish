@@ -2527,6 +2527,55 @@ class Database:
                 logger.exception('get_chat_leaderboard_period failed')
                 return []
 
+    def get_users_weight_leaderboard(
+        self,
+        user_ids: List[int],
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """Топ по общему весу непроданной рыбы для заданного списка user_id за период."""
+        if not user_ids:
+            return []
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            placeholders = ','.join(['%s'] * len(user_ids))
+            where_clauses = [f'cf.user_id IN ({placeholders})', 'cf.sold = 0']
+            params: List = list(user_ids)
+            if since is not None:
+                where_clauses.append('cf.caught_at >= %s')
+                params.append(since.strftime('%Y-%m-%d %H:%M:%S'))
+            if until is not None:
+                where_clauses.append('cf.caught_at <= %s')
+                params.append(until.strftime('%Y-%m-%d %H:%M:%S'))
+            where_sql = 'WHERE ' + ' AND '.join(where_clauses)
+            query = f'''
+                SELECT
+                    cf.user_id,
+                    COALESCE(MAX(p.username), 'Неизвестно') AS username,
+                    COUNT(cf.id) AS total_fish,
+                    COALESCE(SUM(cf.weight), 0) AS total_weight
+                FROM caught_fish cf
+                LEFT JOIN players p ON p.user_id = cf.user_id
+                {where_sql}
+                GROUP BY cf.user_id
+                ORDER BY total_weight DESC, total_fish DESC
+            '''
+            try:
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+                return [
+                    {
+                        'user_id': row[0],
+                        'username': row[1],
+                        'total_fish': row[2],
+                        'total_weight': float(row[3]),
+                    }
+                    for row in rows
+                ]
+            except Exception:
+                logger.exception('get_users_weight_leaderboard failed')
+                return []
+
     def get_level_leaderboard(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Получить топ по уровню (глобально)"""
         with self._connect() as conn:
