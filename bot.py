@@ -4329,7 +4329,7 @@ class FishBot:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        message = "💎 <b>Клад</b>\n\nВаши сокровища:"
+    message = "💎 <b>Клад</b>\n\nВаши сокровища:"
         
         try:
             await query.edit_message_text(message, reply_markup=reply_markup, parse_mode="HTML")
