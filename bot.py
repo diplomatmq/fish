@@ -4279,6 +4279,64 @@ class FishBot:
             logger.error(f"Error editing treasures message: {e}")
             await query.edit_message_text(f"Ошибка при показе клада: {e}")
     
+    async def handle_inventory_treasures(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать сокровища в инвентаре"""
+        query = update.callback_query
+        try:
+            user_id = update.effective_user.id
+            chat_id = update.effective_chat.id
+        except (AttributeError, TypeError):
+            logger.error("Failed to get user_id in handle_inventory_treasures")
+            return
+        
+        # Проверка прав доступа
+        if not query.data.endswith(f"_{user_id}"):
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+        
+        await query.answer()
+        
+        from treasures import get_treasure_name
+        
+        # Получаем все сокровища игрока
+        treasures = db.get_player_treasures(user_id, chat_id)
+        
+        if not treasures:
+            message = "🏴‍☠️ Клад\n\nУ вас нет сокровищ."
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(message, reply_markup=reply_markup)
+            return
+        
+        # Создаем кнопки для каждого сокровища
+        keyboard = []
+        for treasure in treasures:
+            treasure_name = treasure.get('treasure_name', '')
+            quantity = treasure.get('quantity', 0)
+            if quantity > 0:
+                display_name = get_treasure_name(treasure_name)
+                button_text = f"{display_name} ({quantity})"
+                callback_data = f"sell_treasure_{treasure_name.replace(' ', '_')}_{user_id}"
+                keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+        
+        if not keyboard:
+            message = "🏴‍☠️ Клад\n\nУ вас нет сокровищ."
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(message, reply_markup=reply_markup)
+            return
+        
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        message = "🏴‍☠️ <b>Клад</b>\n\nВаши сокровища:"
+        
+        try:
+            await query.edit_message_text(message, reply_markup=reply_markup, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Error editing treasures inventory message: {e}")
+            await query.edit_message_text(f"Ошибка при показе клада: {e}")
+    
     async def handle_sell_treasure(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Продажа предмета из клада"""
         query = update.callback_query
