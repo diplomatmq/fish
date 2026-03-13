@@ -488,7 +488,7 @@ class FishBot:
                 if uid not in found_ids:
                     lines.append(f"— id{uid}: 0.00 кг (0 шт.)")  # id как fallback если username неизвестен
 
-            await update.message.reply_text('\n'.join(lines), parse_mode='HTML')
+            await update.message.reply_text('\n'.join(lines))
 
     async def new_tour_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Создание турнира: выбор типа и ввод параметров."""
@@ -716,7 +716,7 @@ class FishBot:
                     weight = round(float(r['total_weight']), 2)
                     lines.append(f"{medal} {name} — {weight} кг")
 
-        await update.message.reply_text("\n".join(lines), parse_mode='HTML')
+        await update.message.reply_text("\n".join(lines))
 
     async def _location_leaderboard_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, location_name: str):
         """Топ-10 по самой длинной рыбе на локации в рамках активного турнира."""
@@ -1534,7 +1534,7 @@ class FishBot:
                     "• 60+ забросов: -15%"
                 )
                 try:
-                    await update.message.reply_text(warning_msg, parse_mode='HTML')
+                    await update.message.reply_text(warning_msg)
                 except Exception as e:
                     logger.error(f"Error sending population warning: {e}")
             
@@ -1942,17 +1942,16 @@ class FishBot:
         if player_rod and rod_name == BAMBOO_ROD:
             durability_line = f"🔧 Прочность: {player_rod['current_durability']}/{player_rod['max_durability']}\n"
 
-        coin_emoji = '<tg-emoji emoji-id="5379600444098093058">⭐</tg-emoji>'
         diamond_count = player.get('diamonds', 0)
         menu_text = f"""
-    🎣 Меню рыбалки
+🎣 Меню рыбалки
 
-    {coin_emoji} Монеты: {html.escape(str(player['coins']))} {html.escape(COIN_NAME)}
-    💍 Бриллианты: {html.escape(str(diamond_count))}
-    🎣 Удочка: {html.escape(str(player['current_rod']))}
-    📍 Локация: {html.escape(str(player['current_location']))}
-    🪱 Наживка: {html.escape(str(player['current_bait']))}
-    {durability_line}
+⭐ Монеты: {player['coins']} {COIN_NAME}
+💍 Бриллианты: {diamond_count}
+🎣 Удочка: {player['current_rod']}
+📍 Локация: {player['current_location']}
+🪱 Наживка: {player['current_bait']}
+{durability_line}
         """
 
         keyboard = [
@@ -1966,9 +1965,9 @@ class FishBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         if update.message:
-            await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode="HTML")
+            await update.message.reply_text(menu_text, reply_markup=reply_markup)
         else:
-            await update.callback_query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode="HTML")
+            await update.callback_query.edit_message_text(menu_text, reply_markup=reply_markup)
     
     async def handle_change_location(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка смены локации"""
@@ -6355,8 +6354,8 @@ def main():
 
     # NOTE: DB fixer run removed. Manual fixes should be performed with tools/fix_caught_fish_chatid.py
     
-    # Создаем приложение
-    defaults = Defaults(parse_mode="HTML")
+    # Создаем приложение (без глобального parse_mode чтобы не конфликтовал с <tg-emoji> тегами)
+    defaults = Defaults()
     # Таймауты сети для предотвращения зависания бота.
     # Передаём их в HTTPXRequest, т.к. при использовании .bot() в builder'е
     # нельзя задавать таймауты через builder — они должны быть на уровне Request.
