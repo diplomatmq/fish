@@ -880,6 +880,9 @@ class Database:
             ensure_column('chat_configs', 'chat_invite_link', 'TEXT')
             ensure_column('user_ref_links', 'chat_invite_link', 'TEXT')
             ensure_column('caught_fish', 'chat_id', 'INTEGER')
+            ensure_column('players', 'consecutive_casts_at_location', 'INTEGER DEFAULT 0')
+            ensure_column('players', 'last_fishing_location', 'TEXT')
+            ensure_column('players', 'population_penalty', 'REAL DEFAULT 0.0')
 
             # Ensure unique index for ON CONFLICT targets that expect (user_id, chat_id)
             try:
@@ -3672,6 +3675,95 @@ class Database:
             rows = cursor.fetchall()
             cols = [d[0] for d in cursor.description] if cursor.description else []
             return [dict(zip(cols, row)) for row in rows]
+
+    def update_population_state(self, user_id: int, current_location: str) -> tuple:
+        """
+        Обновить состояние популяции рыб на локации.
+        Отслеживает, сколько раз подряд игрок ловит на одной локации.
+        Возвращает (location_changed, consecutive_casts, show_warning)
+        """
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            
+            # Получаем текущее состояние игрока
+            cursor.execute('''
+                SELECT consecutive_casts_at_location, last_fishing_location, population_penalty
+                FROM players
+                WHERE user_id = %s AND chat_id = -1
+            ''', (user_id,))
+            row = cursor.fetchone()
+            
+            if not row:
+                # Новый игрок
+                location_changed = True
+                consecutive_casts = 1
+                population_penalty = 0.0
+            else:
+                last_casts, last_location, population_penalty = row
+                last_casts = last_casts or 0
+                population_penalty = population_penalty or 0.0
+                
+                # Проверяем, изменилась ли локация
+                location_changed = (last_location != current_location)
+                
+                if location_changed:
+                    # Игрок переместился на новую локацию
+                    consecutive_casts = 1
+                    population_penalty = 0.0  # Штраф сбрасывается при смене локации
+                else:
+                    # Остался на той же локации
+                    consecutive_casts = last_casts + 1
+                    
+                    # Рассчитываем штраф на основе количества забросов
+                    if consecutive_casts >= 60:
+                        population_penalty = 15.0
+                    elif consecutive_casts >= 50:
+                        population_penalty = 11.0
+                    elif consecutive_casts >= 40:
+                        population_penalty = 8.0
+                    elif consecutive_casts >= 30:
+                        population_penalty = 5.0
+                    else:
+                        population_penalty = 0.0
+            
+            # Обновляем состояние в базе
+            cursor.execute('''
+                UPDATE players
+                SET consecutive_casts_at_location = %s,
+                    last_fishing_location = %s,
+                    population_penalty = %s
+                WHERE user_id = %s AND chat_id = -1
+            ''', (consecutive_casts, current_location, population_penalty, user_id))
+            conn.commit()
+            
+            # show_warning если достигли 30 забросов
+            show_warning = (consecutive_casts == 30 and not location_changed)
+            
+            return (location_changed, consecutive_casts, show_warning)
+    
+    def get_consecutive_casts(self, user_id: int) -> int:
+        """Получить количество консекутивных забросов на текущей локации"""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT consecutive_casts_at_location
+                FROM players
+                WHERE user_id = %s AND chat_id = -1
+            ''', (user_id,))
+            row = cursor.fetchone()
+            return row[0] if (row and row[0]) else 0
+    
+    def get_population_penalty(self, user_id: int) -> float:
+        """Получить текущий штраф на популяцию рыб для игрока"""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT population_penalty
+                FROM players
+                WHERE user_id = %s AND chat_id = -1
+            ''', (user_id,))
+            row = cursor.fetchone()
+            return row[0] if (row and row[0]) else 0.0
 
 
 # Экземпляр базы данных для импорта в других модулях
