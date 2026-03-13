@@ -712,7 +712,7 @@ class FishBot:
             else:
                 for i, r in enumerate(rows, 1):
                     medal = medals[i - 1] if i <= 3 else f"{i}."
-                    name = r.get('username') or str(r['user_id'])
+                    name = html.escape(r.get('username') or str(r['user_id']))
                     weight = round(float(r['total_weight']), 2)
                     lines.append(f"{medal} {name} — {weight} кг")
 
@@ -740,8 +740,8 @@ class FishBot:
         else:
             for i, r in enumerate(rows, 1):
                 medal = medals[i - 1] if i <= 3 else f"{i}."
-                name = r.get('username') or str(r['user_id'])
-                fish = r.get('fish_name', '?')
+                name = html.escape(r.get('username') or str(r['user_id']))
+                fish = html.escape(r.get('fish_name', '?'))
                 length = round(float(r['best_length']), 1)
                 lines.append(f"{medal} {name} — {fish} — {length} см")
 
@@ -1947,11 +1947,11 @@ class FishBot:
         menu_text = f"""
     🎣 Меню рыбалки
 
-    {coin_emoji} Монеты: {player['coins']} {COIN_NAME}
-    💍 Бриллианты: {diamond_count}
-    🎣 Удочка: {player['current_rod']}
-    📍 Локация: {player['current_location']}
-    🪱 Наживка: {player['current_bait']}
+    {coin_emoji} Монеты: {html.escape(str(player['coins']))} {html.escape(COIN_NAME)}
+    💍 Бриллианты: {html.escape(str(diamond_count))}
+    🎣 Удочка: {html.escape(str(player['current_rod']))}
+    📍 Локация: {html.escape(str(player['current_location']))}
+    🪱 Наживка: {html.escape(str(player['current_bait']))}
     {durability_line}
         """
 
@@ -4303,7 +4303,7 @@ class FishBot:
         treasures = db.get_player_treasures(user_id, chat_id)
         
         if not treasures:
-            message = "🏴‍☠️ Клад\n\nУ вас нет сокровищ."
+            message = "💎 Клад\n\nУ вас нет сокровищ."
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(message, reply_markup=reply_markup)
@@ -4321,7 +4321,7 @@ class FishBot:
                 keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
         
         if not keyboard:
-            message = "🏴‍☠️ Клад\n\nУ вас нет сокровищ."
+            message = "💎 Клад\n\nУ вас нет сокровищ."
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(message, reply_markup=reply_markup)
@@ -4330,13 +4330,13 @@ class FishBot:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        message = "🏴‍☠️ <b>Клад</b>\n\nВаши сокровища:"
+        message = "💎 <b>Клад</b>\n\nВаши сокровища:"
         
         try:
             await query.edit_message_text(message, reply_markup=reply_markup, parse_mode="HTML")
         except Exception as e:
             logger.error(f"Error editing treasures inventory message: {e}")
-            await query.edit_message_text(f"Ошибка при показе клада: {e}")
+            await query.edit_message_text("💎 Клад\n\nВаши сокровища:")
     
     async def handle_sell_treasure(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Продажа предмета из клада"""
