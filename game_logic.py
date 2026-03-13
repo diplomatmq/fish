@@ -415,7 +415,7 @@ class FishingGame:
                         logger.info(f"   💎 Treasure caught: {treasure_key} ({treasure_info['probability']}%)")
                         
                         # Добавляем драгоценность игроку
-                        db.add_treasure(user_id, treasure_key, 1)
+                        db.add_treasure(user_id, treasure_key, 1, chat_id)
                         break
                 
                 return {
@@ -747,7 +747,7 @@ class FishingGame:
                         logger.info(f"   💎 Treasure caught: {treasure_key} ({treasure_info['probability']}%)")
                         
                         # Добавляем драгоценность игроку
-                        db.add_treasure(user_id, treasure_key, 1)
+                        db.add_treasure(user_id, treasure_key, 1, chat_id)
                         break
 
                 return {
