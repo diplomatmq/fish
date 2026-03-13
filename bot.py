@@ -111,6 +111,7 @@ FISH_EMOJI_TAGS = [
 STAR_EMOJI_TAG = '<tg-emoji emoji-id="5463289097336405244">⭐</tg-emoji>'
 LOCATION_EMOJI_TAG = '<tg-emoji emoji-id="5821128296217185461">📍</tg-emoji>'
 PARTY_EMOJI_TAG = '<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji>'
+DIAMOND_EMOJI_TAG = '<tg-emoji emoji-id="5347855243556129844">💎</tg-emoji>'
 
 def replace_coin_emoji(text: str) -> str:
     if not text:
