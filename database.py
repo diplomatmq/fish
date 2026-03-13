@@ -686,6 +686,19 @@ class Database:
                     value TEXT
                 )
             ''')
+
+            # Таблица сокровищ игроков
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS player_treasures (
+                    id INTEGER PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    chat_id BIGINT DEFAULT -1,
+                    treasure_name TEXT NOT NULL,
+                    quantity INTEGER DEFAULT 1,
+                    obtained_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, chat_id, treasure_name)
+                )
+            ''')
             
             conn.commit()
         
@@ -3764,6 +3777,55 @@ class Database:
             ''', (user_id,))
             row = cursor.fetchone()
             return row[0] if (row and row[0]) else 0.0
+
+    def add_treasure(self, user_id: int, treasure_name: str, quantity: int = 1, chat_id: int = -1):
+        """Добавить сокровище игроку"""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute('''
+                    INSERT INTO player_treasures (user_id, chat_id, treasure_name, quantity)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (user_id, chat_id, treasure_name) DO UPDATE
+                    SET quantity = quantity + %s
+                ''', (user_id, chat_id, treasure_name, quantity, quantity))
+                conn.commit()
+            except Exception as e:
+                logger.error(f"Error adding treasure: {e}")
+                conn.rollback()
+
+    def get_player_treasures(self, user_id: int, chat_id: int) -> List[Dict[str, Any]]:
+        """Получить все сокровища игрока"""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute('''
+                    SELECT treasure_name, quantity, obtained_at
+                    FROM player_treasures
+                    WHERE user_id = %s AND chat_id = %s AND quantity > 0
+                    ORDER BY obtained_at DESC
+                ''', (user_id, chat_id))
+                rows = cursor.fetchall()
+                cols = [d[0] for d in cursor.description] if cursor.description else []
+                return [dict(zip(cols, row)) for row in rows]
+            except Exception as e:
+                logger.error(f"Error getting player treasures: {e}")
+                return []
+
+    def remove_treasure(self, user_id: int, chat_id: int, treasure_name: str, quantity: int = 1):
+        """Удалить сокровище у игрока"""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute('''
+                    UPDATE player_treasures
+                    SET quantity = quantity - %s
+                    WHERE user_id = %s AND chat_id = %s AND treasure_name = %s
+                ''', (quantity, user_id, chat_id, treasure_name))
+                conn.commit()
+            except Exception as e:
+                logger.error(f"Error removing treasure: {e}")
+                conn.rollback()
 
 
 # Экземпляр базы данных для импорта в других модулях
