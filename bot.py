@@ -111,40 +111,6 @@ FISH_EMOJI_TAGS = [
 STAR_EMOJI_TAG = '<tg-emoji emoji-id="5463289097336405244">⭐</tg-emoji>'
 LOCATION_EMOJI_TAG = '<tg-emoji emoji-id="5821128296217185461">📍</tg-emoji>'
 PARTY_EMOJI_TAG = '<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji>'
-DIAMOND_EMOJI_TAG = '<tg-emoji emoji-id="5235630047959727475">💎</tg-emoji>'
-
-HARPOON_NAME = "Гарпун"
-HARPOON_COOLDOWN_MINUTES = 20
-HARPOON_SKIP_COST_STARS = 2
-ECHOSOUNDER_CODE = "echosounder"
-ECHOSOUNDER_COST_STARS = 20
-ECHOSOUNDER_DURATION_HOURS = 24
-FEEDER_ITEMS = [
-    {
-        "code": "feeder_5",
-        "name": "Кормушка базовая",
-        "bonus": 3,
-        "duration_minutes": 60,
-        "price_coins": 3000,
-        "price_stars": 0,
-    },
-    {
-        "code": "feeder_7",
-        "name": "Кормушка усиленная",
-        "bonus": 5,
-        "duration_minutes": 60,
-        "price_coins": 5000,
-        "price_stars": 0,
-    },
-    {
-        "code": "feeder_10",
-        "name": "Кормушка звёздная",
-        "bonus": 7,
-        "duration_minutes": 60,
-        "price_coins": 0,
-        "price_stars": 10,
-    },
-]
 
 def replace_coin_emoji(text: str) -> str:
     if not text:
@@ -3742,10 +3708,8 @@ class FishBot:
         keyboard = [
             [InlineKeyboardButton("🎣 Удочки", callback_data=f"shop_rods_{user_id}")],
             [InlineKeyboardButton("🪱 Наживки", callback_data=f"shop_baits_{user_id}")],
-            [InlineKeyboardButton("🕸️ Сети", callback_data=f"shop_nets_{user_id}")],
-            [InlineKeyboardButton("🧺 Кормушки", callback_data=f"shop_feeders_{user_id}")],
-            [InlineKeyboardButton("💎 Обменник", callback_data=f"shop_exchange_{user_id}")],
-            [InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")]
+            [InlineKeyboardButton("�️ Сети", callback_data=f"shop_nets_{user_id}")],
+            [InlineKeyboardButton("�🔙 Назад", callback_data=f"back_to_menu_{user_id}")]
         ]
         
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -4178,13 +4142,7 @@ class FishBot:
             fish_count = len(locations[location])
             button_text = f"📍 {location} ({fish_count} рыб)"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"inv_location_{location.replace(' ', '_')}_{user_id}")])
-
-        # Добавляем кнопку для клада
-        treasures = db.get_player_treasures(user_id, chat_id)
-        treasure_count = sum(t.get('quantity', 0) for t in treasures)
-        if treasure_count > 0:
-            keyboard.append([InlineKeyboardButton(f"💎 Клад ({treasure_count})", callback_data=f"inv_treasures_{user_id}")])
-
+        
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -4305,72 +4263,15 @@ class FishBot:
         location_text = html.escape(str(location))
         message = (
             f"📍 {location_text}\n\n"
-            f"Рыба на этой локации: {len(location_fish)} шт.\n"
-            f"Показано: {start+1}-{min(end, len(location_fish))} из {len(location_fish)}"
+            "Рыба, поймана на этой локации:\n\n"
+            f"<blockquote><span class=\"tg-spoiler\">{fish_list}</span></blockquote>\n\n"
+            f"Всего рыбы: {len(location_fish)}"
         )
-        try:
-            await query.edit_message_text(message, reply_markup=reply_markup, parse_mode="HTML")
-        except Exception as e:
-            logger.error(f"Error editing inventory message: {e}")
-            await query.edit_message_text(f"Ошибка при показе инвентаря: {e}")
-    
-    async def handle_inventory_treasures(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать клад в инвентаре"""
-        query = update.callback_query
-        try:
-            user_id = update.effective_user.id
-            chat_id = update.effective_chat.id
-        except (AttributeError, TypeError):
-            logger.error("Failed to get user_id in handle_inventory_treasures")
-            return
         
-        if not query.data.endswith(f"_{user_id}"):
-            await query.answer("Эта кнопка не для вас", show_alert=True)
-            return
-        
-        await query.answer()
-        
-        from treasures import TREASURES, get_treasure_name, get_treasure_sell_price, get_treasure_sell_xp
-        
-        treasures = db.get_player_treasures(user_id, chat_id)
-        
-        if not treasures:
-            message = "💎 Клад\n\nУ вас нет предметов клада."
-            keyboard = [[InlineKeyboardButton("◀️ Назад к инвентарю", callback_data=f"inventory_{user_id}")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(message, reply_markup=reply_markup)
-            return
-        
-        # Создаем кнопки для каждого найденного предмета
-        keyboard = []
-        message_lines = ["💎 <b>Ваш клад</b>\n"]
-        
-        for idx, treasure in enumerate(treasures):
-            treasure_key = treasure.get('treasure_name', '')
-            quantity = treasure.get('quantity', 0)
-            
-            if treasure_key in TREASURES:
-                display_name = get_treasure_name(treasure_key)
-                sell_price = get_treasure_sell_price(treasure_key)
-                sell_xp = get_treasure_sell_xp(treasure_key)
-                
-                message_lines.append(
-                    f"\n{display_name}\n"
-                    f"  Шт.: {quantity}\n"
-                    f"  За продажу: {sell_price} 🪙 + {sell_xp} ✨"
-                )
-                
-                keyboard.append([
-                    InlineKeyboardButton(
-                        f"Продать {display_name}",
-                        callback_data=f"sell_treasure_{treasure_key.replace(' ', '_')}_{user_id}"
-                    )
-                ])
-        
-        keyboard.append([InlineKeyboardButton("◀️ Назад к инвентарю", callback_data=f"inventory_{user_id}")])
-        
+        keyboard = [
+            [InlineKeyboardButton("◀️ Назад к локациям", callback_data=f"inventory_{user_id}")]
+        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        message = "\n".join(message_lines)
         
         try:
             await query.edit_message_text(message, reply_markup=reply_markup, parse_mode="HTML")
@@ -6980,10 +6881,6 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_baits_location, pattern="^shop_baits_loc_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_baits, pattern="^shop_baits_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_nets, pattern="^shop_nets_"))
-    application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_feeders, pattern="^shop_feeders_"))
-    application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_exchange, pattern="^shop_exchange_"))
-    application.add_handler(CallbackQueryHandler(bot_instance.handle_exchange_buy_diamond, pattern="^exchange_buy_diamond_"))
-    application.add_handler(CallbackQueryHandler(bot_instance.handle_exchange_sell_diamond, pattern="^exchange_sell_diamond_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_buy_rod, pattern="^buy_rod_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_buy_net, pattern="^buy_net_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_buy_feeder_coins, pattern="^buy_feeder_coins_"))
