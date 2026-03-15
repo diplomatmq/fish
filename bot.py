@@ -1961,7 +1961,18 @@ class FishBot:
             
             if result.get('guaranteed'):
                 message += "\n⭐ Гарантированный улов!"
-            
+            # Добавляем примечание о популяции (дебафф при частых забросах на одной локации)
+            try:
+                population_penalty = db.get_population_penalty(user_id)
+                consecutive_casts_count = db.get_consecutive_casts(user_id)
+                if consecutive_casts_count >= 30 and population_penalty > 0:
+                    penalty_info = (
+                        f"\n⚠️ <b>Популяция рыб снижена на {population_penalty:.0f}%</b>\n"
+                        f"Забросов подряд: {consecutive_casts_count}/∞"
+                    )
+                    message += penalty_info
+            except Exception:
+                logger.exception("Failed to append population penalty info for user=%s", user_id)
             # Добавляем примечание о популяции если штраф активен
             population_penalty = db.get_population_penalty(user_id)
             consecutive_casts_count = db.get_consecutive_casts(user_id)
@@ -5890,6 +5901,24 @@ class FishBot:
                 for key, qty in sorted(treasure_totals.items(), key=lambda item: item[0])
             ]
             message += "\n\n💎 Итог по драгоценностям:\n" + "\n".join(treasure_lines)
+        # Добавляем информацию о дебаффах (популяция и динамит), если есть
+        try:
+            population_penalty = db.get_population_penalty(user_id)
+        except Exception:
+            population_penalty = 0.0
+        try:
+            dynamite_penalty = db.get_dynamite_penalty(user_id)
+        except Exception:
+            dynamite_penalty = 0.0
+
+        penalty_lines = []
+        if population_penalty and population_penalty > 0:
+            penalty_lines.append(f"⚠️ Популяция рыб снижена на {int(population_penalty)}% (много забросов на одной локации)")
+        if dynamite_penalty and dynamite_penalty > 0:
+            penalty_lines.append(f"⚠️ Штраф к динамиту: -{int(dynamite_penalty)}% к шансам (частые взрывы)")
+
+        if penalty_lines:
+            message += "\n\n" + "\n".join(penalty_lines)
 
         await self._safe_send_sticker(
             chat_id=chat_id,
