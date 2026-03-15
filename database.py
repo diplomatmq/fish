@@ -2813,14 +2813,14 @@ class Database:
             cursor = conn.cursor()
             cursor.execute(
                 '''
-                SELECT *
-                FROM tournaments
-                WHERE tournament_type = 'longest_fish'
-                  AND target_location = ?
-                  AND starts_at <= CURRENT_TIMESTAMP
-                  AND ends_at >= CURRENT_TIMESTAMP
-                ORDER BY starts_at DESC
-                LIMIT 1
+                                SELECT *
+                                FROM tournaments
+                                WHERE tournament_type IN ('longest_fish', 'biggest_weight')
+                                    AND target_location = ?
+                                    AND starts_at <= CURRENT_TIMESTAMP
+                                    AND ends_at >= CURRENT_TIMESTAMP
+                                ORDER BY starts_at DESC
+                                LIMIT 1
                 ''',
                 (location_name,),
             )
