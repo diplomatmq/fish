@@ -869,34 +869,56 @@ class FishBot:
 
     async def _location_leaderboard_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, location_name: str):
         """Топ-10 по самой длинной рыбе на локации в рамках активного турнира."""
-        tour = db.get_active_tournament_for_location(location_name)
-        if not tour:
-            await update.message.reply_text(f"🏁 Нет активного турнира по длине рыбы для локации {location_name}.")
-            return
+        try:
+            tour = db.get_active_tournament_for_location(location_name)
+            if not tour:
+                await update.message.reply_text(f"🏁 Нет активного турнира для локации {location_name}.")
+                return
 
-        top_limit = int(tour.get('prize_places') or 10)
-        rows = db.get_location_leaderboard_length(location_name, tour['starts_at'], tour['ends_at'], limit=top_limit)
-        medals = ['🥇', '🥈', '🥉']
-        starts_str = tour['starts_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['starts_at'], 'strftime') else str(tour['starts_at'])[:16]
-        ends_str = tour['ends_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['ends_at'], 'strftime') else str(tour['ends_at'])[:16]
+            top_limit = int(tour.get('prize_places') or 10)
+            t_type = tour.get('tournament_type')
+            medals = ['🥇', '🥈', '🥉']
+            starts_str = tour['starts_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['starts_at'], 'strftime') else str(tour['starts_at'])[:16]
+            ends_str = tour['ends_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['ends_at'], 'strftime') else str(tour['ends_at'])[:16]
 
-        lines = [
-            f"🕸️ <b>Топ локации: {location_name}</b>",
-            f"📅 {starts_str} — {ends_str}",
-            f"🏅 Призовых мест: {top_limit}",
-            "",
-        ]
-        if not rows:
-            lines.append("Пока никто не поймал рыбу на этой локации.")
-        else:
-            for i, r in enumerate(rows, 1):
-                medal = medals[i - 1] if i <= 3 else f"{i}."
-                name = html.escape(r.get('username') or str(r['user_id']))
-                fish = html.escape(r.get('fish_name', '?'))
-                length = round(float(r['best_length']), 1)
-                lines.append(f"{medal} {name} — {fish} — {length} см")
+            lines = [
+                f"🕸️ <b>Топ локации: {location_name}</b>",
+                f"📅 {starts_str} — {ends_str}",
+                f"🏅 Призовых мест: {top_limit}",
+                "",
+            ]
 
-        await update.message.reply_text("\n".join(lines), parse_mode='HTML')
+            if t_type == 'longest_fish':
+                rows = db.get_location_leaderboard_length(location_name, tour['starts_at'], tour['ends_at'], limit=top_limit)
+                if not rows:
+                    lines.append("Пока никто не поймал рыбу на этой локации.")
+                else:
+                    for i, r in enumerate(rows, 1):
+                        medal = medals[i - 1] if i <= 3 else f"{i}."
+                        name = html.escape(r.get('username') or str(r['user_id']))
+                        fish = html.escape(r.get('fish_name', '?'))
+                        length = round(float(r.get('best_length') or 0), 1)
+                        lines.append(f"{medal} {name} — {fish} — {length} см")
+
+            elif t_type == 'biggest_weight':
+                rows = db.get_location_leaderboard_weight(location_name, tour['starts_at'], tour['ends_at'], limit=top_limit)
+                if not rows:
+                    lines.append("Пока никто не поймал рыбу на этой локации.")
+                else:
+                    for i, r in enumerate(rows, 1):
+                        medal = medals[i - 1] if i <= 3 else f"{i}."
+                        name = html.escape(r.get('username') or str(r['user_id']))
+                        fish = html.escape(r.get('fish_name', '?'))
+                        weight = round(float(r.get('best_weight') or 0), 2)
+                        lines.append(f"{medal} {name} — {fish} — {weight} кг")
+
+            else:
+                lines.append("Тип турнира для этой локации не поддерживается отображением.")
+
+            await update.message.reply_text("\n".join(lines), parse_mode='HTML')
+        except Exception as e:
+            logger.exception("_location_leaderboard_command failed for %s: %s", location_name, e)
+            await update.message.reply_text("⚠️ Произошла ошибка. Попробуйте позже.")
 
     async def ozero_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await self._location_leaderboard_command(update, context, "Озеро")
