@@ -5660,11 +5660,13 @@ class FishBot:
         feeder_bonus = db.get_active_feeder_bonus(user_id, chat_id)
         population_penalty = db.get_population_penalty(user_id)
         # Update dynamite usage state and get dynamite-specific penalty
+        # Update dynamite usage state (returns new penalty and consecutive count)
         try:
-            db.update_dynamite_state(user_id, location)
+            _loc_changed, consecutive_dynamite, dynamite_penalty, _recovery = db.update_dynamite_state(user_id, location)
+            logger.info("[DYNAMITE] user=%s consecutive_dynamite=%s dynamite_penalty=%.2f", user_id, consecutive_dynamite, dynamite_penalty)
         except Exception:
             logger.exception("Failed to update dynamite state for user=%s", user_id)
-        dynamite_penalty = db.get_dynamite_penalty(user_id)
+            dynamite_penalty = 0.0
 
         if guaranteed:
             roll_max = 20000
