@@ -4759,7 +4759,6 @@ class FishBot:
             'Легендарная': '🟡',
             'Мифическая': '🔴'
         }
-        fish_lines = []
         for fish in page_fish:
             fish_name = fish.get('fish_name', '')
             weight = fish.get('weight', 0)
@@ -4770,7 +4769,6 @@ class FishBot:
             btn_text = f"🗑️ {fish_name} ({weight} кг)" if trash else f"{rarity_emoji.get(rarity, '⚪')} {fish_name} ({weight} кг{length_str})"
             # Можно добавить callback для подробностей или продажи одной рыбы
             keyboard.append([InlineKeyboardButton(btn_text, callback_data="noop")])
-            fish_lines.append(btn_text)
 
         # Стрелки пагинации
         nav_buttons = []
@@ -4787,11 +4785,9 @@ class FishBot:
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         location_text = html.escape(str(location))
-        fish_list = "\n".join(html.escape(str(line)) for line in fish_lines)
         message = (
             f"📍 {location_text}\n\n"
-            "Рыба, поймана на этой локации:\n\n"
-            f"<blockquote><span class=\"tg-spoiler\">{fish_list}</span></blockquote>\n\n"
+            "Рыба на этой локации показана кнопками ниже.\n\n"
             f"Страница: {page+1}/{total_pages}\n"
             f"Всего рыбы: {len(location_fish)}"
         )
