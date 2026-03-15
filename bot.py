@@ -1961,34 +1961,19 @@ class FishBot:
             
             if result.get('guaranteed'):
                 message += "\n⭐ Гарантированный улов!"
+
             # Добавляем примечание о популяции (дебафф при частых забросах на одной локации)
             try:
                 population_penalty = db.get_population_penalty(user_id)
                 consecutive_casts_count = db.get_consecutive_casts(user_id)
                 if consecutive_casts_count >= 30 and population_penalty > 0:
                     penalty_info = (
-                        f"\n⚠️ <b>Популяция рыб снижена на {population_penalty:.0f}%</b>\n"
+                        f"\n⚠️ Популяция рыб снижена на {int(population_penalty)}%\n"
                         f"Забросов подряд: {consecutive_casts_count}/∞"
                     )
                     message += penalty_info
             except Exception:
                 logger.exception("Failed to append population penalty info for user=%s", user_id)
-            # Добавляем примечание о популяции если штраф активен
-            population_penalty = db.get_population_penalty(user_id)
-            consecutive_casts_count = db.get_consecutive_casts(user_id)
-            if consecutive_casts_count >= 30 and population_penalty > 0:
-                penalty_info = (
-                    f"\n⚠️ <b>Популяция рыб снижена на {population_penalty:.0f}%</b>\n"
-                    f"Забросов подряд: {consecutive_casts_count}/∞"
-                )
-                # Конвертируем message в HTML если нужно
-                if '<b>' not in message:
-                    # Заменяем ** на <b> для HTML форматирования
-                    message = message.replace('**', '<b>').replace('**', '</b>')
-                    # Или просто добавляем Info в конец
-                    message += penalty_info
-                else:
-                    message += penalty_info
             
             # Отправляем фото рыбы если оно есть
             if fish['name'] in FISH_STICKERS:
