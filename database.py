@@ -4170,6 +4170,24 @@ class Database:
                 logger.error(f"Error getting player treasures: {e}")
                 return []
 
+    def get_player_treasures_all_chats(self, user_id: int) -> List[Dict[str, Any]]:
+        """Получить все сокровища игрока по всем чатам"""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute('''
+                    SELECT chat_id, treasure_name, quantity, obtained_at
+                    FROM player_treasures
+                    WHERE user_id = %s AND quantity > 0
+                    ORDER BY obtained_at DESC
+                ''', (user_id,))
+                rows = cursor.fetchall()
+                cols = [d[0] for d in cursor.description] if cursor.description else []
+                return [dict(zip(cols, row)) for row in rows]
+            except Exception as e:
+                logger.error(f"Error getting player treasures across chats: {e}")
+                return []
+
     def remove_treasure(self, user_id: int, chat_id: int, treasure_name: str, quantity: int = 1):
         """Удалить сокровище у игрока"""
         with self._connect() as conn:

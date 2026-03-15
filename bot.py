@@ -4084,6 +4084,85 @@ class FishBot:
             removed += take
 
         return removed
+
+    def _get_all_player_treasures(self, user_id: int, chat_id: int) -> List[Dict[str, Any]]:
+        """Get user treasures across all chats, merged by treasure name."""
+        merged: Dict[str, Dict[str, Any]] = {}
+        for item in db.get_player_treasures_all_chats(user_id):
+            name = str(item.get('treasure_name', '') or '').strip()
+            qty = int(item.get('quantity', 0) or 0)
+            scope_chat_id = int(item.get('chat_id', -1) or -1)
+            if not name or qty <= 0:
+                continue
+
+            if name not in merged:
+                merged[name] = {
+                    'treasure_name': name,
+                    'quantity': 0,
+                    'sources': []
+                }
+            merged[name]['quantity'] += qty
+            merged[name]['sources'].append({'chat_id': scope_chat_id, 'quantity': qty})
+
+        # Stable order in UI
+        return sorted(merged.values(), key=lambda t: str(t.get('treasure_name', '')))
+
+    def _consume_treasure_total_all_scopes(self, user_id: int, treasures: List[Dict[str, Any]], canonical_name: str, amount: int) -> int:
+        """Remove amount from matching treasure variants across all scopes."""
+        remaining = int(amount)
+        removed = 0
+
+        for item in treasures:
+            if remaining <= 0:
+                break
+
+            name = item.get('treasure_name', '')
+            qty = int(item.get('quantity', 0) or 0)
+            if qty <= 0:
+                continue
+            if self._canonical_treasure_name(name) != canonical_name:
+                continue
+
+            for source in item.get('sources', []):
+                if remaining <= 0:
+                    break
+                source_chat_id = int(source.get('chat_id', -1))
+                source_qty = int(source.get('quantity', 0) or 0)
+                if source_qty <= 0:
+                    continue
+
+                take = min(source_qty, remaining)
+                db.remove_treasure(user_id, source_chat_id, name, take)
+                remaining -= take
+                removed += take
+
+        return removed
+
+    def _remove_treasure_any_scope(self, user_id: int, treasures: List[Dict[str, Any]], treasure_name: str, quantity: int) -> int:
+        """Remove exact treasure name from merged treasures across scopes."""
+        remaining = int(quantity)
+        removed = 0
+
+        for item in treasures:
+            if remaining <= 0:
+                break
+            if item.get('treasure_name') != treasure_name:
+                continue
+
+            for source in item.get('sources', []):
+                if remaining <= 0:
+                    break
+                source_chat_id = int(source.get('chat_id', -1))
+                source_qty = int(source.get('quantity', 0) or 0)
+                if source_qty <= 0:
+                    continue
+
+                take = min(source_qty, remaining)
+                db.remove_treasure(user_id, source_chat_id, treasure_name, take)
+                remaining -= take
+                removed += take
+
+        return removed
     
     async def handle_shop_exchange(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обменник драгоценностей и монет"""
@@ -4105,7 +4184,7 @@ class FishBot:
         # Получаем количество бриллиантов и монет
         diamonds = int(player.get('diamonds') or 0)
         coins = player.get('coins', 0)
-        treasures = db.get_player_treasures(user_id, chat_id)
+        treasures = self._get_all_player_treasures(user_id, chat_id)
 
         shells_count = self._get_treasure_total(treasures, 'Ракушка')
         pearls_count = self._get_treasure_total(treasures, 'Жемчуг')
@@ -4266,7 +4345,7 @@ class FishBot:
             [InlineKeyboardButton("🔙 К обменнику", callback_data=f"shop_exchange_{user_id}")]
         ])
 
-        treasures = db.get_player_treasures(user_id, chat_id)
+        treasures = self._get_all_player_treasures(user_id, chat_id)
         shells = self._get_treasure_total(treasures, 'Ракушка')
 
         if shells < 10:
@@ -4278,7 +4357,7 @@ class FishBot:
             )
             return
 
-        removed_shells = self._consume_treasure_total(user_id, chat_id, treasures, 'Ракушка', 10)
+        removed_shells = self._consume_treasure_total_all_scopes(user_id, treasures, 'Ракушка', 10)
         if removed_shells < 10:
             await query.edit_message_text(
                 "❌ Не удалось списать нужное количество ракушек. Попробуйте снова.",
@@ -4311,7 +4390,7 @@ class FishBot:
             [InlineKeyboardButton("🔙 К обменнику", callback_data=f"shop_exchange_{user_id}")]
         ])
 
-        treasures = db.get_player_treasures(user_id, chat_id)
+        treasures = self._get_all_player_treasures(user_id, chat_id)
         pearls = self._get_treasure_total(treasures, 'Жемчуг')
 
         if pearls < 100:
@@ -4323,7 +4402,7 @@ class FishBot:
             )
             return
 
-        removed_pearls = self._consume_treasure_total(user_id, chat_id, treasures, 'Жемчуг', 100)
+        removed_pearls = self._consume_treasure_total_all_scopes(user_id, treasures, 'Жемчуг', 100)
         if removed_pearls < 100:
             await query.edit_message_text(
                 "❌ Не удалось списать нужное количество жемчуга. Попробуйте снова.",
@@ -4486,7 +4565,7 @@ class FishBot:
         # Получаем все пойманные рыбы и их локации (только непроданные)
         caught_fish = db.get_caught_fish(user_id, chat_id)
         unsold_fish = [f for f in caught_fish if f.get('sold', 0) == 0]
-        treasures = db.get_player_treasures(user_id, chat_id)
+        treasures = self._get_all_player_treasures(user_id, chat_id)
         total_treasures = sum(int(t.get('quantity', 0) or 0) for t in treasures)
 
         if not unsold_fish and total_treasures <= 0:
@@ -4704,7 +4783,7 @@ class FishBot:
         from treasures import get_treasure_name
         
         # Получаем все сокровища игрока
-        treasures = db.get_player_treasures(user_id, chat_id)
+        treasures = self._get_all_player_treasures(user_id, chat_id)
         
         if not treasures:
             message = "💎 Клад\n\nУ вас нет сокровищ."
@@ -4771,7 +4850,7 @@ class FishBot:
             return
         
         # Получаем информацию о сокровище
-        treasures = db.get_player_treasures(user_id, chat_id)
+        treasures = self._get_all_player_treasures(user_id, chat_id)
         treasure_obj = None
         for t in treasures:
             if t.get('treasure_name') == treasure_key:
@@ -4790,9 +4869,13 @@ class FishBot:
         # Выполняем продажу
         coins = player.get('coins', 0)
         xp = player.get('xp', 0)
-        
+
+        removed = self._remove_treasure_any_scope(user_id, treasures, treasure_key, 1)
+        if removed < 1:
+            await query.edit_message_text("❌ Не удалось продать сокровище. Попробуйте снова.")
+            return
+
         db.update_player(user_id, chat_id, coins=coins + sell_price, xp=xp + sell_xp)
-        db.remove_treasure(user_id, chat_id, treasure_key, 1)  # Удаляем 1 предмет
         
         # Получаем обновленные данные
         remaining = treasure_obj.get('quantity', 0) - 1
