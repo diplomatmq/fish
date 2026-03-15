@@ -5634,6 +5634,12 @@ class FishBot:
         weather_bonus = weather_system.get_weather_bonus(weather['condition']) if weather else 0
         feeder_bonus = db.get_active_feeder_bonus(user_id, chat_id)
         population_penalty = db.get_population_penalty(user_id)
+        # Update dynamite usage state and get dynamite-specific penalty
+        try:
+            db.update_dynamite_state(user_id, location)
+        except Exception:
+            logger.exception("Failed to update dynamite state for user=%s", user_id)
+        dynamite_penalty = db.get_dynamite_penalty(user_id)
 
         if guaranteed:
             roll_max = 20000
@@ -5677,16 +5683,19 @@ class FishBot:
             adjusted_roll = roll + (weather_bonus * 50) + (feeder_bonus * 250)
             adjusted_roll = max(0, min(roll_max, adjusted_roll))
 
-            penalty_points = int((population_penalty / 100) * roll_max)
+            total_penalty = float(population_penalty or 0.0) + float(dynamite_penalty or 0.0)
+            penalty_points = int((total_penalty / 100) * roll_max)
             adjusted_roll = max(0, adjusted_roll - penalty_points)
 
             logger.info(
-                "[DYNAMITE] roll=%s raw=%s/%s weather_points=%+d feeder_points=%+d penalty_points=-%d adjusted=%s/%s",
+                "[DYNAMITE] roll=%s raw=%s/%s weather_points=%+d feeder_points=%+d population_penalty=%.2f dynamite_penalty=%.2f penalty_points=-%d adjusted=%s/%s",
                 idx,
                 roll,
                 roll_max,
                 weather_bonus * 50,
                 feeder_bonus * 250,
+                population_penalty,
+                dynamite_penalty,
                 penalty_points,
                 adjusted_roll,
                 roll_max,

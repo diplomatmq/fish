@@ -920,6 +920,10 @@ class Database:
             ensure_column('players', 'last_fishing_location', 'TEXT')
             ensure_column('players', 'population_penalty', 'REAL DEFAULT 0.0')
             ensure_column('players', 'penalty_recovery_casts', 'INTEGER DEFAULT 0')
+            ensure_column('players', 'consecutive_dynamite_at_location', 'INTEGER DEFAULT 0')
+            ensure_column('players', 'last_dynamite_location', 'TEXT')
+            ensure_column('players', 'dynamite_penalty', 'REAL DEFAULT 0.0')
+            ensure_column('players', 'dynamite_recovery_explosions', 'INTEGER DEFAULT 0')
             ensure_column('players', 'last_dynamite_use_time', 'TEXT')
             ensure_column('players', 'diamonds', 'INTEGER DEFAULT 0')
             ensure_column('players', 'dynamite_ban_until', 'TEXT')
@@ -4181,6 +4185,98 @@ class Database:
             return 0
 
         return int((ban_until - now).total_seconds())
+
+    def update_dynamite_state(self, user_id: int, current_location: str) -> tuple:
+        """Update dynamite usage state for the player and return
+        (location_changed, consecutive_explosions, dynamite_penalty, recovery_explosions).
+        Rules:
+        - If last use >60 minutes -> reset counters.
+        - If changed location -> set consecutive=1 and start recovery (1 explosion to clear penalty).
+        - If remained on same location -> increment consecutive; when consecutive >=3 set a 5% penalty,
+          for >=4 set 10% penalty. Recovery on location change clears penalty after one explosion there.
+        """
+        from datetime import datetime, timedelta
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT consecutive_dynamite_at_location, last_dynamite_location, dynamite_penalty, last_dynamite_use_time, dynamite_recovery_explosions
+                FROM players
+                WHERE user_id = %s AND chat_id = -1
+            ''', (user_id,))
+            row = cursor.fetchone()
+
+            if not row:
+                location_changed = True
+                consecutive = 1
+                dynamite_penalty = 0.0
+                recovery = 0
+            else:
+                last_consecutive, last_location, dynamite_penalty, last_use_time, recovery = row
+                last_consecutive = int(last_consecutive or 0)
+                dynamite_penalty = float(dynamite_penalty or 0.0)
+                recovery = int(recovery or 0)
+
+                # Idle timer: 60+ minutes resets counters
+                if last_use_time:
+                    try:
+                        last_dt = datetime.fromisoformat(str(last_use_time))
+                        now_dt = datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.now()
+                        if now_dt - last_dt >= timedelta(minutes=60):
+                            last_consecutive = 0
+                            dynamite_penalty = 0.0
+                            recovery = 0
+                    except Exception:
+                        pass
+
+                location_changed = (last_location != current_location)
+
+                if location_changed:
+                    consecutive = 1
+                    recovery = 1 if dynamite_penalty > 0 else 0
+                else:
+                    consecutive = last_consecutive + 1
+
+                    if recovery > 0 and dynamite_penalty > 0:
+                        # After one explosion on new location, clear penalty
+                        recovery += 1
+                        if recovery >= 1:
+                            dynamite_penalty = 0.0
+                            recovery = 0
+
+                    if recovery == 0:
+                        if consecutive >= 4:
+                            dynamite_penalty = 10.0
+                        elif consecutive >= 3:
+                            dynamite_penalty = 5.0
+                        else:
+                            dynamite_penalty = 0.0
+
+            # persist new state and update last_dynamite_use_time
+            now_iso = datetime.now().isoformat()
+            cursor.execute('''
+                UPDATE players
+                SET consecutive_dynamite_at_location = %s,
+                    last_dynamite_location = %s,
+                    dynamite_penalty = %s,
+                    dynamite_recovery_explosions = %s,
+                    last_dynamite_use_time = %s
+                WHERE user_id = %s
+            ''', (consecutive, current_location, dynamite_penalty, recovery, now_iso, user_id))
+            conn.commit()
+
+            return (location_changed, consecutive, dynamite_penalty, recovery)
+
+    def get_dynamite_penalty(self, user_id: int) -> float:
+        """Return current dynamite penalty percentage for a user."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT dynamite_penalty
+                FROM players
+                WHERE user_id = %s AND chat_id = -1
+            ''', (user_id,))
+            row = cursor.fetchone()
+            return float(row[0]) if (row and row[0]) else 0.0
 
     def set_dynamite_ban(self, user_id: int, chat_id: int, hours: int = 24) -> None:
         """Установить арест рыбохраной для динамита."""
