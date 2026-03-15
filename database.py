@@ -2863,7 +2863,7 @@ class Database:
                 SELECT
                     COALESCE(MAX(p.username), 'Неизвестно') AS username,
                     cf.user_id,
-                    COALESCE(MAX(cf.fish_name), '?') AS fish_name,
+                    COALESCE(MAX(cf.fish_name), 'Неизвестно') AS fish_name,
                     COALESCE(MAX(cf.length), 0) AS best_length
                 FROM caught_fish cf
                 LEFT JOIN players p ON p.user_id = cf.user_id
@@ -2885,21 +2885,30 @@ class Database:
         """Leaderboard of single best (max) fish weight per user for a location."""
         with self._connect() as conn:
             cursor = conn.cursor()
+            # Use a CTE to find max weight per user, then join back to caught_fish
+            # to get the fish name corresponding to that max weight. This avoids
+            # taking an arbitrary MAX(fish_name) unrelated to the weight.
             cursor.execute(
                 '''
+                WITH best AS (
+                    SELECT user_id, MAX(weight) AS best_weight
+                    FROM caught_fish
+                    WHERE location = ?
+                      AND caught_at >= ?
+                      AND caught_at <= ?
+                      AND COALESCE(sold, 0) = 0
+                    GROUP BY user_id
+                )
                 SELECT
                     COALESCE(MAX(p.username), 'Неизвестно') AS username,
-                    cf.user_id,
-                    COALESCE(MAX(cf.fish_name), '?') AS fish_name,
-                    COALESCE(MAX(cf.weight), 0) AS best_weight
-                FROM caught_fish cf
-                LEFT JOIN players p ON p.user_id = cf.user_id
-                WHERE cf.location = ?
-                  AND cf.caught_at >= ?
-                  AND cf.caught_at <= ?
-                  AND COALESCE(cf.sold, 0) = 0
-                GROUP BY cf.user_id
-                ORDER BY best_weight DESC
+                    b.user_id,
+                    COALESCE(MAX(cf.fish_name), 'Неизвестно') AS fish_name,
+                    b.best_weight
+                FROM best b
+                LEFT JOIN caught_fish cf ON cf.user_id = b.user_id AND cf.weight = b.best_weight
+                LEFT JOIN players p ON p.user_id = b.user_id
+                GROUP BY b.user_id, b.best_weight
+                ORDER BY b.best_weight DESC
                 LIMIT ?
                 ''',
                 (location_name, starts_at, ends_at, max(1, int(limit or 10))),
