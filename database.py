@@ -2025,6 +2025,18 @@ class Database:
     def add_caught_fish(self, user_id: int, chat_id: int, fish_name: str, weight: float, location: str, length: float = 0):
         """Добавить пойманную рыбу"""
         normalized_name = fish_name.strip() if isinstance(fish_name, str) else fish_name
+        # Normalize fish_name to canonical name from `fish` table when possible
+        try:
+            with self._connect() as conn:
+                cur = conn.cursor()
+                # Try exact match on trimmed lowercase name
+                cur.execute("SELECT name FROM fish WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1", (normalized_name,))
+                r = cur.fetchone()
+                if r:
+                    normalized_name = r[0]
+        except Exception:
+            # If normalization fails, continue with provided name
+            pass
         try:
             chat_id_to_store = int(chat_id) if chat_id is not None else None
         except (TypeError, ValueError):
