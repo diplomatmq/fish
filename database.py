@@ -2710,6 +2710,17 @@ class Database:
             cursor = conn.cursor()
             try:
                 safe_places = max(1, min(int(prize_places or 10), 100))
+
+                # Normalize datetime parameters to strings for cross-DB compatibility
+                if isinstance(starts_at, datetime):
+                    starts_val = starts_at.strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    starts_val = starts_at
+                if isinstance(ends_at, datetime):
+                    ends_val = ends_at.strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    ends_val = ends_at
+
                 cursor.execute(
                     '''
                     INSERT INTO tournaments (
@@ -2725,17 +2736,41 @@ class Database:
                         created_by,
                         title,
                         tournament_type,
-                        starts_at,
-                        ends_at,
+                        starts_val,
+                        ends_val,
                         target_fish,
                         int(prize_pool or 50),
                         target_location,
                         safe_places,
                     ),
                 )
-                row = cursor.fetchone()
+                row = None
+                try:
+                    row = cursor.fetchone()
+                except Exception:
+                    # Some DB drivers may not return from RETURNING with this wrapper
+                    row = None
+
+                # Commit regardless; if RETURNING didn't work, try to find the inserted row
                 conn.commit()
-                return int(row[0]) if row else None
+
+                if row and row[0] is not None:
+                    return int(row[0])
+
+                # Fallback: query for the inserted tournament by unique-ish fields
+                try:
+                    cursor.execute(
+                        'SELECT id FROM tournaments WHERE chat_id = ? AND created_by = ? AND title = ? AND starts_at = ? ORDER BY id DESC LIMIT 1',
+                        (chat_id, created_by, title, starts_val),
+                    )
+                    found = cursor.fetchone()
+                    if found:
+                        return int(found[0])
+                except Exception:
+                    # ignore and fall through
+                    pass
+
+                return None
             except Exception:
                 logger.exception("create_tournament failed")
                 try:
