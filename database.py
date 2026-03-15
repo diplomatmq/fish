@@ -1883,7 +1883,7 @@ class Database:
         # Allow only specific fields to be updated to avoid SQL injection
         allowed_fields = {
             'username', 'coins', 'stars', 'xp', 'level', 'current_rod', 'current_bait',
-            'current_location', 'last_fish_time', 'last_dynamite_use_time', 'dynamite_ban_until', 'is_banned', 'ban_until', 'ref', 'ref_link', 'last_net_use_time'
+            'current_location', 'last_fish_time', 'last_dynamite_use_time', 'dynamite_ban_until', 'is_banned', 'ban_until', 'ref', 'ref_link', 'last_net_use_time', 'diamonds'
         }
 
         # Prevent passing chat_id as a kwarg (it is a positional arg here)
@@ -1932,6 +1932,41 @@ class Database:
                              user_id, chat_id, sql, params, cursor.rowcount)
             except Exception:
                 logger.debug("update_player executed")
+
+    def add_diamonds(self, user_id: int, chat_id: int, amount: int = 1):
+        """Увеличить количество бриллиантов у игрока на amount (без отрицательных значений)"""
+        try:
+            amount = int(amount)
+        except Exception:
+            return
+        if amount == 0:
+            return
+
+        player = self.get_player(user_id, chat_id)
+        current = int(player.get('diamonds', 0)) if player else 0
+        new = current + amount
+        # Use update_player which respects global/per-chat rows
+        try:
+            self.update_player(user_id, chat_id, diamonds=new)
+        except Exception:
+            logger.exception('add_diamonds failed for user=%s chat=%s amount=%s', user_id, chat_id, amount)
+
+    def subtract_diamonds(self, user_id: int, chat_id: int, amount: int = 1):
+        """Уменьшить количество бриллиантов у игрока на amount; не допускает отрицательных значений"""
+        try:
+            amount = int(amount)
+        except Exception:
+            return
+        if amount == 0:
+            return
+
+        player = self.get_player(user_id, chat_id)
+        current = int(player.get('diamonds', 0)) if player else 0
+        new = max(0, current - amount)
+        try:
+            self.update_player(user_id, chat_id, diamonds=new)
+        except Exception:
+            logger.exception('subtract_diamonds failed for user=%s chat=%s amount=%s', user_id, chat_id, amount)
 
     def get_fish_by_location(self, location: str, season: str = "Лето", min_level: Optional[int] = None) -> List[Dict[str, Union[str, int, float]]]:
         """Получить список рыб для локации"""
