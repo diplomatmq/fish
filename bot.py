@@ -1754,6 +1754,58 @@ class FishBot:
         
         if result['success']:
             if result.get('is_trash'):
+                # If second roll produced a treasure, show only treasure output.
+                if result.get('treasure_caught') and result.get('treasure_name'):
+                    from treasures import get_treasure_name, get_treasure_price
+                    from treasures_stickers import TREASURES_STICKERS
+
+                    treasure_name = result['treasure_name']
+                    treasure_display_name = get_treasure_name(treasure_name)
+                    treasure_price = get_treasure_price(treasure_name)
+
+                    treasure_message_text = f"""
+✨ Чудо случилось! Между мусором ты нашёл драгоценность! ✨
+
+{treasure_display_name}
+
+💎 Стоимость: {treasure_price} 🪙
+📍 Место: {result['location']}
+                    """
+
+                    if treasure_name in TREASURES_STICKERS:
+                        try:
+                            treasure_images = TREASURES_STICKERS[treasure_name]
+                            treasure_image = random.choice(treasure_images) if isinstance(treasure_images, list) else treasure_images
+                            image_path = Path(__file__).parent / treasure_image
+                            if image_path.exists():
+                                with open(image_path, 'rb') as f:
+                                    treasure_sticker = await self.application.bot.send_document(
+                                        chat_id=update.effective_chat.id,
+                                        document=f,
+                                        reply_to_message_id=update.message.message_id
+                                    )
+                                if treasure_sticker:
+                                    await update.message.reply_text(
+                                        treasure_message_text,
+                                        reply_to_message_id=treasure_sticker.message_id
+                                    )
+                                else:
+                                    await update.message.reply_text(treasure_message_text)
+                            else:
+                                await update.message.reply_text(treasure_message_text)
+                        except Exception as e:
+                            logger.warning(f"Could not send treasure image for {treasure_name}: {e}")
+                            await update.message.reply_text(treasure_message_text)
+                    else:
+                        await update.message.reply_text(treasure_message_text)
+
+                    if result.get('temp_rod_broken'):
+                        await update.message.reply_text(
+                            "💥 Временная удочка сломалась после удачного улова.\n"
+                            "Теперь активна бамбуковая. Купить новую можно в магазине."
+                        )
+                    return
+
                 trash = result['trash']
                 xp_line = ""
                 progress_line = ""
@@ -1790,57 +1842,6 @@ class FishBot:
                     await update.message.reply_text(message, reply_to_message_id=sticker_message.message_id)
                 else:
                     await update.message.reply_text(message)
-                
-                # ===== ДРАГОЦЕННОСТИ =====
-                if result.get('treasure_caught') and result.get('treasure_name'):
-                    from treasures import get_treasure_name, get_treasure_price
-                    from treasures_stickers import TREASURES_STICKERS
-                    
-                    treasure_name = result['treasure_name']
-                    treasure_info = result['treasure_caught']
-                    treasure_display_name = get_treasure_name(treasure_name)
-                    treasure_price = get_treasure_price(treasure_name)
-                    
-                    # Формируем сообщение о драгоценности
-                    treasure_message_text = f"""
-✨ Чудо случилось! Между мусором ты нашёл драгоценность! ✨
-
-{treasure_display_name}
-
-💎 Стоимость: {treasure_price} 🪙
-📍 Место: {result['location']}
-                    """
-                    
-                    # Отправляем стикер драгоценности если он есть
-                    if treasure_name in TREASURES_STICKERS:
-                        try:
-                            treasure_images = TREASURES_STICKERS[treasure_name]
-                            # Если это список, выбираем случайный стикер
-                            if isinstance(treasure_images, list):
-                                treasure_image = random.choice(treasure_images)
-                            else:
-                                treasure_image = treasure_images
-                            image_path = Path(__file__).parent / treasure_image
-                            if image_path.exists():
-                                with open(image_path, 'rb') as f:
-                                    treasure_sticker = await self.application.bot.send_document(
-                                        chat_id=update.effective_chat.id,
-                                        document=f,
-                                        reply_to_message_id=update.message.message_id
-                                    )
-                                if treasure_sticker:
-                                    # Отправляем текст ответом на стикер
-                                    await update.message.reply_text(
-                                        treasure_message_text,
-                                        reply_to_message_id=treasure_sticker.message_id
-                                    )
-                            else:
-                                await update.message.reply_text(treasure_message_text)
-                        except Exception as e:
-                            logger.warning(f"Could not send treasure image for {treasure_name}: {e}")
-                            await update.message.reply_text(treasure_message_text)
-                    else:
-                        await update.message.reply_text(treasure_message_text)
 
                 if result.get('temp_rod_broken'):
                     await update.message.reply_text(
