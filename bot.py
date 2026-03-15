@@ -2141,9 +2141,9 @@ class FishBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         if update.message:
-            await update.message.reply_text(menu_text, reply_markup=reply_markup)
+            await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode="HTML")
         else:
-            await update.callback_query.edit_message_text(menu_text, reply_markup=reply_markup)
+            await update.callback_query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode="HTML")
     
     async def handle_change_location(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка смены локации"""
@@ -7221,8 +7221,8 @@ def main():
 
     # NOTE: DB fixer run removed. Manual fixes should be performed with tools/fix_caught_fish_chatid.py
     
-    # Создаем приложение (без глобального parse_mode чтобы не конфликтовал с <tg-emoji> тегами)
-    defaults = Defaults()
+    # Создаем приложение
+    defaults = Defaults(parse_mode="HTML")
     # Таймауты сети для предотвращения зависания бота.
     # Передаём их в HTTPXRequest, т.к. при использовании .bot() в builder'е
     # нельзя задавать таймауты через builder — они должны быть на уровне Request.
