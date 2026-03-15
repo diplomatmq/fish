@@ -424,17 +424,23 @@ class FishingGame:
                         accumulated_probability,
                     )
                     if treasure_roll <= accumulated_probability:
-                        treasure_caught = treasure_info
-                        treasure_name = treasure_key
-                        logger.info(
-                            "   💎 Treasure roll #2 result: TREASURE item=%s roll=%.2f threshold=%.2f",
-                            treasure_key,
-                            treasure_roll,
-                            accumulated_probability,
-                        )
-                        
-                        # Добавляем драгоценность игроку
-                        db.add_treasure(user_id, treasure_key, 1, chat_id)
+                        # Treasure is considered caught only after successful DB save.
+                        if db.add_treasure(user_id, treasure_key, 1, chat_id):
+                            treasure_caught = treasure_info
+                            treasure_name = treasure_key
+                            logger.info(
+                                "   💎 Treasure roll #2 result: TREASURE item=%s roll=%.2f threshold=%.2f",
+                                treasure_key,
+                                treasure_roll,
+                                accumulated_probability,
+                            )
+                        else:
+                            logger.error(
+                                "   💎 Treasure roll #2 result: SAVE_FAILED item=%s user=%s chat=%s",
+                                treasure_key,
+                                user_id,
+                                chat_id,
+                            )
                         break
 
                 if treasure_name is None:
@@ -782,17 +788,23 @@ class FishingGame:
                         accumulated_probability,
                     )
                     if treasure_roll <= accumulated_probability:
-                        treasure_caught = treasure_info
-                        treasure_name = treasure_key
-                        logger.info(
-                            "   💎 Treasure roll #2 result: TREASURE item=%s roll=%.2f threshold=%.2f",
-                            treasure_key,
-                            treasure_roll,
-                            accumulated_probability,
-                        )
-                        
-                        # Добавляем драгоценность игроку
-                        db.add_treasure(user_id, treasure_key, 1, chat_id)
+                        # Treasure is considered caught only after successful DB save.
+                        if db.add_treasure(user_id, treasure_key, 1, chat_id):
+                            treasure_caught = treasure_info
+                            treasure_name = treasure_key
+                            logger.info(
+                                "   💎 Treasure roll #2 result: TREASURE item=%s roll=%.2f threshold=%.2f",
+                                treasure_key,
+                                treasure_roll,
+                                accumulated_probability,
+                            )
+                        else:
+                            logger.error(
+                                "   💎 Treasure roll #2 result: SAVE_FAILED item=%s user=%s chat=%s",
+                                treasure_key,
+                                user_id,
+                                chat_id,
+                            )
                         break
 
                 if treasure_name is None:

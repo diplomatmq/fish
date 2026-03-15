@@ -5525,7 +5525,17 @@ class FishBot:
                 roll_index,
             )
             if treasure_roll <= accumulated_probability:
-                db.add_treasure(user_id, treasure_key, 1, chat_id)
+                saved = db.add_treasure(user_id, treasure_key, 1, chat_id)
+                if not saved:
+                    logger.error(
+                        "[%s] treasure_roll#2 DB_SAVE_FAILED item=%s user=%s chat=%s roll_index=%s",
+                        source_tag,
+                        treasure_key,
+                        user_id,
+                        chat_id,
+                        roll_index,
+                    )
+                    return None
                 logger.info(
                     "[%s] treasure_roll#2 result TREASURE item=%s roll=%.2f threshold=%.2f roll_index=%s",
                     source_tag,

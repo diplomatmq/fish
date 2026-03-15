@@ -4136,8 +4136,8 @@ class Database:
             row = cursor.fetchone()
             return row[0] if (row and row[0]) else 0.0
 
-    def add_treasure(self, user_id: int, treasure_name: str, quantity: int = 1, chat_id: int = -1):
-        """Добавить сокровище игроку"""
+    def add_treasure(self, user_id: int, treasure_name: str, quantity: int = 1, chat_id: int = -1) -> bool:
+        """Добавить сокровище игроку. Возвращает True при успешной записи."""
         with self._connect() as conn:
             cursor = conn.cursor()
             try:
@@ -4148,9 +4148,60 @@ class Database:
                     SET quantity = quantity + %s
                 ''', (user_id, chat_id, treasure_name, quantity, quantity))
                 conn.commit()
+                return True
             except Exception as e:
-                logger.error(f"Error adding treasure: {e}")
-                conn.rollback()
+                logger.exception(
+                    "Error adding treasure user_id=%s chat_id=%s treasure=%s qty=%s",
+                    user_id,
+                    chat_id,
+                    treasure_name,
+                    quantity,
+                )
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+                # Self-heal: if table was missing in a stale database, create and retry once.
+                try:
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS player_treasures (
+                            id INTEGER PRIMARY KEY,
+                            user_id BIGINT NOT NULL,
+                            chat_id BIGINT DEFAULT -1,
+                            treasure_name TEXT NOT NULL,
+                            quantity INTEGER DEFAULT 1,
+                            obtained_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(user_id, chat_id, treasure_name)
+                        )
+                    ''')
+                    cursor.execute('''
+                        INSERT INTO player_treasures (user_id, chat_id, treasure_name, quantity)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (user_id, chat_id, treasure_name) DO UPDATE
+                        SET quantity = quantity + %s
+                    ''', (user_id, chat_id, treasure_name, quantity, quantity))
+                    conn.commit()
+                    logger.warning(
+                        "Recovered treasure insert after auto-ensuring table: user_id=%s chat_id=%s treasure=%s",
+                        user_id,
+                        chat_id,
+                        treasure_name,
+                    )
+                    return True
+                except Exception:
+                    logger.exception(
+                        "Retry add_treasure failed user_id=%s chat_id=%s treasure=%s qty=%s",
+                        user_id,
+                        chat_id,
+                        treasure_name,
+                        quantity,
+                    )
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    return False
 
     def get_player_treasures(self, user_id: int, chat_id: int) -> List[Dict[str, Any]]:
         """Получить все сокровища игрока"""
