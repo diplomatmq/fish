@@ -114,6 +114,10 @@ PARTY_EMOJI_TAG = '<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji>'
 DIAMOND_EMOJI_TAG = '<tg-emoji emoji-id="5366124516055487969">💎</tg-emoji>'
 TG_EMOJI_TAG_RE = re.compile(r'<tg-emoji\s+emoji-id="[^"]+">(.*?)</tg-emoji>')
 
+HARPOON_NAME = "Гарпун"
+HARPOON_COOLDOWN_MINUTES = 20
+HARPOON_SKIP_COST_STARS = 2
+
 # Booster catalog used by the feeders/echosounder shop.
 FEEDER_ITEMS = [
     {

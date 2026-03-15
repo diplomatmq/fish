@@ -3743,6 +3743,56 @@ class Database:
             )
             conn.commit()
 
+    def mark_harpoon_used(self, user_id: int, chat_id: int) -> None:
+        """Сохранить время последнего использования гарпуна."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                now_iso = datetime.utcnow().isoformat()
+                # Пишем метку в запись гарпуна в player_rods.
+                cursor.execute(
+                    '''
+                    UPDATE player_rods
+                    SET last_repair_time = ?
+                    WHERE user_id = ?
+                      AND (chat_id = ? OR chat_id IS NULL OR chat_id < 1)
+                      AND rod_name = 'Гарпун'
+                    ''',
+                    (now_iso, user_id, chat_id),
+                )
+                conn.commit()
+        except Exception:
+            logger.exception("mark_harpoon_used failed user=%s chat=%s", user_id, chat_id)
+
+    def get_harpoon_cooldown_remaining(self, user_id: int, chat_id: int, cooldown_minutes: int) -> int:
+        """Вернуть оставшееся время КД гарпуна в секундах (0 — гарпун готов)."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT last_repair_time
+                    FROM player_rods
+                    WHERE user_id = ?
+                      AND (chat_id = ? OR chat_id IS NULL OR chat_id < 1)
+                      AND rod_name = 'Гарпун'
+                    ORDER BY CASE WHEN chat_id = ? THEN 0 ELSE 1 END
+                    LIMIT 1
+                    ''',
+                    (user_id, chat_id, chat_id),
+                )
+                row = cursor.fetchone()
+                if not row or not row[0]:
+                    return 0
+
+                last_used = datetime.fromisoformat(str(row[0]))
+                end_time = last_used + timedelta(minutes=int(cooldown_minutes))
+                remaining = (end_time - datetime.utcnow()).total_seconds()
+                return max(0, int(remaining))
+        except Exception:
+            logger.exception("get_harpoon_cooldown_remaining failed user=%s chat=%s", user_id, chat_id)
+            return 0
+
     def get_dynamite_cooldown_remaining(self, user_id: int, chat_id: int, cooldown_hours: int = 8) -> int:
         """Получить оставшееся время КД динамита в секундах."""
         player = self.get_player(user_id, chat_id)
