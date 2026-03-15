@@ -749,6 +749,37 @@ class FishBot:
                 await update.message.reply_text("Дата окончания должна быть позже даты начала.")
                 return True
 
+            draft['ends_at'] = ends_at
+            draft['step'] = 'prize_places'
+            context.user_data['new_tour'] = draft
+            await update.message.reply_text(
+                "Введите количество призовых мест (по умолчанию 10):\n"
+                "Пример: 5\n"
+                "Или отправьте '-' чтобы оставить 10"
+            )
+            return True
+
+        if step == 'prize_places':
+            prize_places = 10
+            lowered = (text or "").strip().lower()
+            if lowered not in {"", "-", "default", "дефолт", "по умолчанию"}:
+                try:
+                    prize_places = int(text)
+                except Exception:
+                    await update.message.reply_text("Введите целое число от 1 до 100, либо '-' для значения 10.")
+                    return True
+
+            if prize_places < 1 or prize_places > 100:
+                await update.message.reply_text("Количество призовых мест должно быть от 1 до 100.")
+                return True
+
+            starts_at = draft.get('starts_at')
+            ends_at = draft.get('ends_at')
+            if not starts_at or not ends_at:
+                await update.message.reply_text("Сессия создания турнира повреждена. Запустите /new_tour заново.")
+                context.user_data.pop('new_tour', None)
+                return True
+
             tournament_id = db.create_tournament(
                 chat_id=int(draft['chat_id']),
                 created_by=int(draft['created_by']),
@@ -757,7 +788,8 @@ class FishBot:
                 starts_at=starts_at,
                 ends_at=ends_at,
                 target_fish=draft.get('target_fish'),
-                target_location=draft.get('target_location')
+                target_location=draft.get('target_location'),
+                prize_places=prize_places,
             )
 
             if tournament_id:
@@ -768,10 +800,12 @@ class FishBot:
                 fish_name = created.get('target_fish') or draft.get('target_fish')
                 if fish_name:
                     fish_line = f"\n🎯 Рыба: {fish_name}"
+                places_count = int(created.get('prize_places') or prize_places or 10)
                 await update.message.reply_text(
                     f"✅ Турнир создан (ID: {tournament_id})\n"
                     f"🏆 {created.get('title') or draft.get('title')}\n"
                     f"📌 Тип: {t_type_name}{fish_line}\n"
+                    f"🏅 Призовых мест: {places_count}\n"
                     f"🕒 {starts_at.strftime('%d.%m.%Y %H:%M')} — {ends_at.strftime('%d.%m.%Y %H:%M')}"
                 )
             else:
@@ -794,15 +828,17 @@ class FishBot:
         ends_str = tour['ends_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['ends_at'], 'strftime') else str(tour['ends_at'])[:16]
         t_type = tour.get('tournament_type', 'total_weight')
         target_location = tour.get('target_location')
+        top_limit = int(tour.get('prize_places') or 10)
 
         lines = [
             f"🏆 <b>Турнир: {tour['title']}</b>",
             f"📅 {starts_str} — {ends_str}",
+            f"🏅 Призовых мест: {top_limit}",
             "",
         ]
 
         if t_type == 'longest_fish' and target_location:
-            rows = db.get_location_leaderboard_length(target_location, tour['starts_at'], tour['ends_at'])
+            rows = db.get_location_leaderboard_length(target_location, tour['starts_at'], tour['ends_at'], limit=top_limit)
             lines.insert(1, f"📍 Локация: {target_location}")
             if not rows:
                 lines.append("Пока никто не поймал рыбу на этой локации.")
@@ -814,7 +850,7 @@ class FishBot:
                     length = round(float(r['best_length']), 1)
                     lines.append(f"{medal} {name} — {fish} — {length} см")
         else:
-            rows = db.get_tour_leaderboard_weight(tour['starts_at'], tour['ends_at'])
+            rows = db.get_tour_leaderboard_weight(tour['starts_at'], tour['ends_at'], limit=top_limit)
             if not rows:
                 lines.append("Пока никто не поймал рыбу.")
             else:
@@ -833,7 +869,8 @@ class FishBot:
             await update.message.reply_text(f"🏁 Нет активного турнира по длине рыбы для локации {location_name}.")
             return
 
-        rows = db.get_location_leaderboard_length(location_name, tour['starts_at'], tour['ends_at'])
+        top_limit = int(tour.get('prize_places') or 10)
+        rows = db.get_location_leaderboard_length(location_name, tour['starts_at'], tour['ends_at'], limit=top_limit)
         medals = ['🥇', '🥈', '🥉']
         starts_str = tour['starts_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['starts_at'], 'strftime') else str(tour['starts_at'])[:16]
         ends_str = tour['ends_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['ends_at'], 'strftime') else str(tour['ends_at'])[:16]
@@ -841,6 +878,7 @@ class FishBot:
         lines = [
             f"🕸️ <b>Топ локации: {location_name}</b>",
             f"📅 {starts_str} — {ends_str}",
+            f"🏅 Призовых мест: {top_limit}",
             "",
         ]
         if not rows:

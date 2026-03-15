@@ -681,6 +681,27 @@ class Database:
                 )
             ''')
 
+            # Доступ к реф-статистике по чатам (кому какой чат разрешено смотреть)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ref_access (
+                    user_id BIGINT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, chat_id)
+                )
+            ''')
+
+            # История подтвержденных выводов звёзд
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS star_withdrawals (
+                    id INTEGER PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    chat_id BIGINT,
+                    amount INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             # Таблица системных флагов/миграций
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS system_flags (
@@ -1162,6 +1183,7 @@ class Database:
                         target_fish TEXT,
                         prize_pool INTEGER DEFAULT 50,
                         target_location TEXT,
+                        prize_places INTEGER DEFAULT 10,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )'''
                 )
@@ -1177,6 +1199,35 @@ class Database:
                 pass
             try:
                 cursor.execute("ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS target_location TEXT")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS prize_places INTEGER DEFAULT 10")
+            except Exception:
+                pass
+
+            # Ensure /ref auxiliary tables exist on old deployments
+            try:
+                cursor.execute(
+                    '''CREATE TABLE IF NOT EXISTS ref_access (
+                        user_id BIGINT NOT NULL,
+                        chat_id BIGINT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(user_id, chat_id)
+                    )'''
+                )
+            except Exception:
+                pass
+            try:
+                cursor.execute(
+                    '''CREATE TABLE IF NOT EXISTS star_withdrawals (
+                        id INTEGER PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        chat_id BIGINT,
+                        amount INTEGER NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )'''
+                )
             except Exception:
                 pass
 
@@ -2592,6 +2643,160 @@ class Database:
                 }
                 for row in rows
             ]
+
+    def create_tournament(
+        self,
+        chat_id: int,
+        created_by: int,
+        title: str,
+        tournament_type: str,
+        starts_at: datetime,
+        ends_at: datetime,
+        target_fish: Optional[str] = None,
+        target_location: Optional[str] = None,
+        prize_pool: int = 50,
+        prize_places: int = 10,
+    ) -> Optional[int]:
+        """Создать турнир и вернуть его ID."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            try:
+                safe_places = max(1, min(int(prize_places or 10), 100))
+                cursor.execute(
+                    '''
+                    INSERT INTO tournaments (
+                        chat_id, created_by, title, tournament_type,
+                        starts_at, ends_at, target_fish, prize_pool,
+                        target_location, prize_places
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                    ''',
+                    (
+                        chat_id,
+                        created_by,
+                        title,
+                        tournament_type,
+                        starts_at,
+                        ends_at,
+                        target_fish,
+                        int(prize_pool or 50),
+                        target_location,
+                        safe_places,
+                    ),
+                )
+                row = cursor.fetchone()
+                conn.commit()
+                return int(row[0]) if row else None
+            except Exception:
+                logger.exception("create_tournament failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return None
+
+    def get_tournament(self, tournament_id: int) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM tournaments WHERE id = ? LIMIT 1', (tournament_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+
+    def get_active_tournament(self) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM tournaments
+                WHERE starts_at <= CURRENT_TIMESTAMP
+                  AND ends_at >= CURRENT_TIMESTAMP
+                ORDER BY starts_at DESC
+                LIMIT 1
+                '''
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+
+    def get_active_tournament_for_location(self, location_name: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM tournaments
+                WHERE tournament_type = 'longest_fish'
+                  AND target_location = ?
+                  AND starts_at <= CURRENT_TIMESTAMP
+                  AND ends_at >= CURRENT_TIMESTAMP
+                ORDER BY starts_at DESC
+                LIMIT 1
+                ''',
+                (location_name,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+
+    def get_tour_leaderboard_weight(self, starts_at: datetime, ends_at: datetime, limit: int = 10) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    COALESCE(MAX(p.username), 'Неизвестно') AS username,
+                    cf.user_id,
+                    COUNT(cf.id) AS total_fish,
+                    COALESCE(SUM(cf.weight), 0) AS total_weight
+                FROM caught_fish cf
+                LEFT JOIN players p ON p.user_id = cf.user_id
+                WHERE cf.caught_at >= ?
+                  AND cf.caught_at <= ?
+                  AND COALESCE(cf.sold, 0) = 0
+                GROUP BY cf.user_id
+                ORDER BY total_weight DESC, total_fish DESC
+                LIMIT ?
+                ''',
+                (starts_at, ends_at, max(1, int(limit or 10))),
+            )
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, r)) for r in rows]
+
+    def get_location_leaderboard_length(self, location_name: str, starts_at: datetime, ends_at: datetime, limit: int = 10) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    COALESCE(MAX(p.username), 'Неизвестно') AS username,
+                    cf.user_id,
+                    COALESCE(MAX(cf.fish_name), '?') AS fish_name,
+                    COALESCE(MAX(cf.length), 0) AS best_length
+                FROM caught_fish cf
+                LEFT JOIN players p ON p.user_id = cf.user_id
+                WHERE cf.location = ?
+                  AND cf.caught_at >= ?
+                  AND cf.caught_at <= ?
+                  AND COALESCE(cf.sold, 0) = 0
+                GROUP BY cf.user_id
+                ORDER BY best_length DESC
+                LIMIT ?
+                ''',
+                (location_name, starts_at, ends_at, max(1, int(limit or 10))),
+            )
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, r)) for r in rows]
 
     def get_leaderboard_period(self, limit: int = 10, since: Optional[datetime] = None, until: Optional[datetime] = None, chat_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Получить таблицу лидеров за период (с фильтром по началу и концу) и/или по чату"""
@@ -4018,6 +4223,168 @@ class Database:
             rows = cursor.fetchall()
             cols = [d[0] for d in cursor.description] if cursor.description else []
             return [dict(zip(cols, row)) for row in rows]
+
+    def add_ref_access(self, user_id: int, chat_id: int) -> bool:
+        """Выдать пользователю доступ к статистике указанного чата."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    INSERT OR IGNORE INTO ref_access (user_id, chat_id)
+                    VALUES (?, ?)
+                    ''',
+                    (int(user_id), int(chat_id)),
+                )
+                conn.commit()
+                return True
+        except Exception:
+            logger.exception("add_ref_access failed user=%s chat=%s", user_id, chat_id)
+            return False
+
+    def get_ref_access_chats(self, user_id: int) -> List[int]:
+        """Список chat_id, к которым у пользователя есть реф-доступ."""
+        result: List[int] = []
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT chat_id FROM ref_access WHERE user_id = ? ORDER BY chat_id', (int(user_id),))
+                result.extend(int(row[0]) for row in cursor.fetchall() if row and row[0] is not None)
+
+                # Владелец чата (admin_user_id) автоматически имеет доступ к своему чату.
+                cursor.execute(
+                    '''
+                    SELECT chat_id
+                    FROM chat_configs
+                    WHERE admin_user_id = ? AND COALESCE(is_configured, 1) = 1
+                    ''',
+                    (int(user_id),),
+                )
+                result.extend(int(row[0]) for row in cursor.fetchall() if row and row[0] is not None)
+
+            # Deduplicate while preserving order
+            seen = set()
+            ordered = []
+            for chat_id in result:
+                if chat_id in seen:
+                    continue
+                seen.add(chat_id)
+                ordered.append(chat_id)
+            return ordered
+        except Exception:
+            logger.exception("get_ref_access_chats failed user=%s", user_id)
+            return []
+
+    def get_chat_title(self, chat_id: int) -> Optional[str]:
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT chat_title FROM chat_configs WHERE chat_id = ? LIMIT 1', (int(chat_id),))
+                row = cursor.fetchone()
+                return row[0] if row and row[0] else None
+        except Exception:
+            logger.exception("get_chat_title failed chat=%s", chat_id)
+            return None
+
+    def get_chat_stars_total(self, chat_id: int, min_age_days: Optional[int] = None) -> int:
+        """Сумма stars по чату из star_transactions (без рефандов)."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                if min_age_days is not None and int(min_age_days) > 0:
+                    cutoff = datetime.utcnow() - timedelta(days=int(min_age_days))
+                    cursor.execute(
+                        '''
+                        SELECT COALESCE(SUM(total_amount), 0)
+                        FROM star_transactions
+                        WHERE chat_id = ?
+                          AND COALESCE(refund_status, 'none') = 'none'
+                          AND created_at <= ?
+                        ''',
+                        (int(chat_id), cutoff.strftime('%Y-%m-%d %H:%M:%S')),
+                    )
+                else:
+                    cursor.execute(
+                        '''
+                        SELECT COALESCE(SUM(total_amount), 0)
+                        FROM star_transactions
+                        WHERE chat_id = ?
+                          AND COALESCE(refund_status, 'none') = 'none'
+                        ''',
+                        (int(chat_id),),
+                    )
+                row = cursor.fetchone()
+                return int(row[0] or 0) if row else 0
+        except Exception:
+            logger.exception("get_chat_stars_total failed chat=%s min_age_days=%s", chat_id, min_age_days)
+            return 0
+
+    def get_chat_refunds_total(self, chat_id: int) -> int:
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT COALESCE(SUM(total_amount), 0)
+                    FROM star_transactions
+                    WHERE chat_id = ?
+                      AND COALESCE(refund_status, 'none') != 'none'
+                    ''',
+                    (int(chat_id),),
+                )
+                row = cursor.fetchone()
+                return int(row[0] or 0) if row else 0
+        except Exception:
+            logger.exception("get_chat_refunds_total failed chat=%s", chat_id)
+            return 0
+
+    def get_withdrawn_stars(self, user_id: int, chat_id: Optional[int] = None) -> int:
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                if chat_id is None:
+                    cursor.execute(
+                        'SELECT COALESCE(SUM(amount), 0) FROM star_withdrawals WHERE user_id = ?',
+                        (int(user_id),),
+                    )
+                else:
+                    cursor.execute(
+                        'SELECT COALESCE(SUM(amount), 0) FROM star_withdrawals WHERE user_id = ? AND chat_id = ?',
+                        (int(user_id), int(chat_id)),
+                    )
+                row = cursor.fetchone()
+                return int(row[0] or 0) if row else 0
+        except Exception:
+            logger.exception("get_withdrawn_stars failed user=%s chat=%s", user_id, chat_id)
+            return 0
+
+    def mark_stars_withdrawn(self, user_id: int, amount: int, chat_id: Optional[int] = None) -> bool:
+        """Зафиксировать одобренный вывод звёзд."""
+        amt = int(amount or 0)
+        if amt <= 0:
+            return False
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    INSERT INTO star_withdrawals (user_id, chat_id, amount)
+                    VALUES (?, ?, ?)
+                    ''',
+                    (int(user_id), int(chat_id) if chat_id is not None else None, amt),
+                )
+                conn.commit()
+                return True
+        except Exception:
+            logger.exception("mark_stars_withdrawn failed user=%s amount=%s chat=%s", user_id, amount, chat_id)
+            return False
+
+    def get_available_stars_for_withdraw(self, user_id: int, chat_id: int) -> int:
+        """Доступно к выводу = 50% от (85% stars старше 21 дня) минус уже выведенное."""
+        matured = self.get_chat_stars_total(chat_id, min_age_days=21)
+        gross = int((float(matured) * 0.85) / 2)
+        withdrawn = self.get_withdrawn_stars(user_id, chat_id)
+        return max(0, gross - withdrawn)
 
     def update_population_state(self, user_id: int, current_location: str) -> tuple:
         """
