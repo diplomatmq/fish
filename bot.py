@@ -4064,7 +4064,7 @@ class FishBot:
                 total += qty
         return total
 
-    def _consume_treasure_total(self, user_id: int, chat_id: int, treasures: List[Dict[str, Any]], canonical_name: str, amount: int) -> int:
+    def _consume_treasure_total(self, user_id: int, chat_id: int, treasures: List[Dict[str, Any]], canonical_name: str, amount: int, reason: str = 'EXCHANGE') -> int:
         """Remove amount from matching treasure variants. Returns removed quantity."""
         remaining = int(amount)
         removed = 0
@@ -4080,7 +4080,7 @@ class FishBot:
                 continue
 
             take = min(qty, remaining)
-            db.remove_treasure(user_id, chat_id, name, take)
+            db.remove_treasure(user_id, chat_id, name, take, reason=reason)
             remaining -= take
             removed += take
 
@@ -4108,7 +4108,7 @@ class FishBot:
         # Stable order in UI
         return sorted(merged.values(), key=lambda t: str(t.get('treasure_name', '')))
 
-    def _consume_treasure_total_all_scopes(self, user_id: int, treasures: List[Dict[str, Any]], canonical_name: str, amount: int) -> int:
+    def _consume_treasure_total_all_scopes(self, user_id: int, treasures: List[Dict[str, Any]], canonical_name: str, amount: int, reason: str = 'EXCHANGE') -> int:
         """Remove amount from matching treasure variants across all scopes."""
         remaining = int(amount)
         removed = 0
@@ -4133,13 +4133,13 @@ class FishBot:
                     continue
 
                 take = min(source_qty, remaining)
-                db.remove_treasure(user_id, source_chat_id, name, take)
+                db.remove_treasure(user_id, source_chat_id, name, take, reason=reason)
                 remaining -= take
                 removed += take
 
         return removed
 
-    def _remove_treasure_any_scope(self, user_id: int, treasures: List[Dict[str, Any]], treasure_name: str, quantity: int) -> int:
+    def _remove_treasure_any_scope(self, user_id: int, treasures: List[Dict[str, Any]], treasure_name: str, quantity: int, reason: str = 'SOLD') -> int:
         """Remove exact treasure name from merged treasures across scopes."""
         remaining = int(quantity)
         removed = 0
@@ -4159,7 +4159,7 @@ class FishBot:
                     continue
 
                 take = min(source_qty, remaining)
-                db.remove_treasure(user_id, source_chat_id, treasure_name, take)
+                db.remove_treasure(user_id, source_chat_id, treasure_name, take, reason=reason)
                 remaining -= take
                 removed += take
 

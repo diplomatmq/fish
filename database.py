@@ -4141,14 +4141,43 @@ class Database:
         with self._connect() as conn:
             cursor = conn.cursor()
             try:
+                logger.info(
+                    "Treasure write start user_id=%s chat_id=%s treasure=%s delta_qty=%s",
+                    user_id,
+                    chat_id,
+                    treasure_name,
+                    quantity,
+                )
                 cursor.execute('''
                     INSERT INTO player_treasures (user_id, chat_id, treasure_name, quantity)
                     VALUES (%s, %s, %s, %s)
                     ON CONFLICT (user_id, chat_id, treasure_name) DO UPDATE
-                    SET quantity = quantity + %s
+                    SET quantity = player_treasures.quantity + %s
                 ''', (user_id, chat_id, treasure_name, quantity, quantity))
                 conn.commit()
-                return True
+                cursor.execute('''
+                    SELECT quantity
+                    FROM player_treasures
+                    WHERE user_id = %s AND chat_id = %s AND treasure_name = %s
+                ''', (user_id, chat_id, treasure_name))
+                row = cursor.fetchone()
+                if row:
+                    logger.info(
+                        "Treasure write confirmed user_id=%s chat_id=%s treasure=%s stored_qty=%s",
+                        user_id,
+                        chat_id,
+                        treasure_name,
+                        int(row[0] or 0),
+                    )
+                    return True
+
+                logger.error(
+                    "Treasure write missing after commit user_id=%s chat_id=%s treasure=%s",
+                    user_id,
+                    chat_id,
+                    treasure_name,
+                )
+                return False
             except Exception as e:
                 logger.exception(
                     "Error adding treasure user_id=%s chat_id=%s treasure=%s qty=%s",
@@ -4179,14 +4208,29 @@ class Database:
                         INSERT INTO player_treasures (user_id, chat_id, treasure_name, quantity)
                         VALUES (%s, %s, %s, %s)
                         ON CONFLICT (user_id, chat_id, treasure_name) DO UPDATE
-                        SET quantity = quantity + %s
+                        SET quantity = player_treasures.quantity + %s
                     ''', (user_id, chat_id, treasure_name, quantity, quantity))
                     conn.commit()
+                    cursor.execute('''
+                        SELECT quantity
+                        FROM player_treasures
+                        WHERE user_id = %s AND chat_id = %s AND treasure_name = %s
+                    ''', (user_id, chat_id, treasure_name))
+                    row = cursor.fetchone()
+                    if not row:
+                        logger.error(
+                            "Treasure retry write missing after commit user_id=%s chat_id=%s treasure=%s",
+                            user_id,
+                            chat_id,
+                            treasure_name,
+                        )
+                        return False
                     logger.warning(
-                        "Recovered treasure insert after auto-ensuring table: user_id=%s chat_id=%s treasure=%s",
+                        "Recovered treasure insert after auto-ensuring table: user_id=%s chat_id=%s treasure=%s stored_qty=%s",
                         user_id,
                         chat_id,
                         treasure_name,
+                        int(row[0] or 0),
                     )
                     return True
                 except Exception:
@@ -4239,17 +4283,48 @@ class Database:
                 logger.error(f"Error getting player treasures across chats: {e}")
                 return []
 
-    def remove_treasure(self, user_id: int, chat_id: int, treasure_name: str, quantity: int = 1):
-        """Удалить сокровище у игрока"""
+    def remove_treasure(self, user_id: int, chat_id: int, treasure_name: str, quantity: int = 1, reason: str = 'SOLD'):
+        """Удалить сокровище у игрока (уменьшает quantity до 0 минимум)."""
         with self._connect() as conn:
             cursor = conn.cursor()
             try:
+                logger.info(
+                    "Treasure remove start user_id=%s chat_id=%s treasure=%s delta_qty=%s reason=%s",
+                    user_id,
+                    chat_id,
+                    treasure_name,
+                    quantity,
+                    reason,
+                )
                 cursor.execute('''
                     UPDATE player_treasures
-                    SET quantity = quantity - %s
+                    SET quantity = CASE WHEN quantity - %s > 0 THEN quantity - %s ELSE 0 END
                     WHERE user_id = %s AND chat_id = %s AND treasure_name = %s
-                ''', (quantity, user_id, chat_id, treasure_name))
+                ''', (quantity, quantity, user_id, chat_id, treasure_name))
                 conn.commit()
+
+                cursor.execute('''
+                    SELECT quantity
+                    FROM player_treasures
+                    WHERE user_id = %s AND chat_id = %s AND treasure_name = %s
+                ''', (user_id, chat_id, treasure_name))
+                row = cursor.fetchone()
+                if row:
+                    logger.info(
+                        "Treasure remove confirmed user_id=%s chat_id=%s treasure=%s stored_qty=%s reason=%s",
+                        user_id,
+                        chat_id,
+                        treasure_name,
+                        int(row[0] or 0),
+                        reason,
+                    )
+                else:
+                    logger.warning(
+                        "Treasure remove row missing user_id=%s chat_id=%s treasure=%s",
+                        user_id,
+                        chat_id,
+                        treasure_name,
+                    )
             except Exception as e:
                 logger.error(f"Error removing treasure: {e}")
                 conn.rollback()
