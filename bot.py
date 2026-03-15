@@ -2733,26 +2733,6 @@ class FishBot:
             if is_trash and available_trash:
                 # Ловим мусор
                 trash = random.choice(available_trash)
-                db.add_caught_fish(user_id, chat_id, trash['name'], trash['weight'], location, 0)
-
-                logger.info(
-                    "Net catch (trash): user=%s chat_id=%s chat_title=%s item=%s weight=%.2fkg location=%s",
-                    user_id,
-                    chat_id,
-                    update.effective_chat.title or "",
-                    trash['name'],
-                    trash['weight'],
-                    location
-                )
-                
-                catch_results.append({
-                    'type': 'trash',
-                    'name': trash['name'],
-                    'weight': trash['weight'],
-                    'price': trash['price']
-                })
-                total_value += trash['price']
-
                 treasure_key = self._roll_treasure_after_trash(
                     user_id=user_id,
                     chat_id=chat_id,
@@ -2760,7 +2740,43 @@ class FishBot:
                     roll_index=i + 1,
                 )
                 if treasure_key:
+                    from treasures import get_treasure_name
+
                     net_treasure_totals[treasure_key] = int(net_treasure_totals.get(treasure_key, 0) or 0) + 1
+                    catch_results.append({
+                        'type': 'treasure',
+                        'name': get_treasure_name(treasure_key),
+                        'price': 0,
+                    })
+                    logger.info(
+                        "Net catch (trash->treasure): user=%s chat_id=%s chat_title=%s trash=%s treasure=%s location=%s",
+                        user_id,
+                        chat_id,
+                        update.effective_chat.title or "",
+                        trash['name'],
+                        treasure_key,
+                        location,
+                    )
+                else:
+                    db.add_caught_fish(user_id, chat_id, trash['name'], trash['weight'], location, 0)
+
+                    logger.info(
+                        "Net catch (trash): user=%s chat_id=%s chat_title=%s item=%s weight=%.2fkg location=%s",
+                        user_id,
+                        chat_id,
+                        update.effective_chat.title or "",
+                        trash['name'],
+                        trash['weight'],
+                        location
+                    )
+
+                    catch_results.append({
+                        'type': 'trash',
+                        'name': trash['name'],
+                        'weight': trash['weight'],
+                        'price': trash['price']
+                    })
+                    total_value += trash['price']
             elif available_fish:
                 # Ловим рыбу — с весами по редкости (легенда/миф бьётся реже)
                 _RARITY_WEIGHTS = {
@@ -2813,6 +2829,8 @@ class FishBot:
             if item['type'] == 'fish':
                 fish_name_display = format_fish_name(item['name'])
                 message += f"{i}. {fish_name_display} - {item['weight']}кг, {item['length']}см\n"
+            elif item['type'] == 'treasure':
+                message += f"{i}. {item['name']}\n"
             else:
                 message += f"{i}. {item['name']} - {item['weight']}кг\n"
         
@@ -4109,6 +4127,10 @@ class FishBot:
                 "💎 Жемчуг x100 -> Бриллиант x1",
                 callback_data=f"exchange_pearl_to_diamond_{user_id}"
             )],
+            [InlineKeyboardButton(
+                "💼 Продать сокровища",
+                callback_data=f"inv_treasures_{user_id}"
+            )],
             [InlineKeyboardButton("🔙 Магазин", callback_data=f"shop_{user_id}")]
         ]
 
@@ -4464,11 +4486,30 @@ class FishBot:
         # Получаем все пойманные рыбы и их локации (только непроданные)
         caught_fish = db.get_caught_fish(user_id, chat_id)
         unsold_fish = [f for f in caught_fish if f.get('sold', 0) == 0]
+        treasures = db.get_player_treasures(user_id, chat_id)
+        total_treasures = sum(int(t.get('quantity', 0) or 0) for t in treasures)
 
-        if not unsold_fish:
-            message = "🎒 Инвентарь\n\nУ вас нет пойманной рыбы."
+        if not unsold_fish and total_treasures <= 0:
+            message = "🎒 Инвентарь\n\nУ вас нет пойманной рыбы и сокровищ."
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
+            if query:
+                await query.edit_message_text(message, reply_markup=reply_markup)
+            else:
+                await update.message.reply_text(message, reply_markup=reply_markup)
+            return
+
+        if not unsold_fish and total_treasures > 0:
+            keyboard = [
+                [InlineKeyboardButton(f"💎 Сокровища ({total_treasures})", callback_data=f"inv_treasures_{user_id}")],
+                [InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = (
+                "🎒 Инвентарь\n\n"
+                "Рыбы для просмотра нет.\n"
+                "Откройте сокровища для продажи."
+            )
             if query:
                 await query.edit_message_text(message, reply_markup=reply_markup)
             else:
@@ -4504,6 +4545,9 @@ class FishBot:
             fish_count = len(locations[location])
             button_text = f"📍 {location} ({fish_count} рыб)"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"inv_location_{location.replace(' ', '_')}_{user_id}")])
+
+        if total_treasures > 0:
+            keyboard.append([InlineKeyboardButton(f"💎 Сокровища ({total_treasures})", callback_data=f"inv_treasures_{user_id}")])
         
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")])
 
@@ -4597,6 +4641,7 @@ class FishBot:
             'Легендарная': '🟡',
             'Мифическая': '🔴'
         }
+        fish_lines = []
         for fish in page_fish:
             fish_name = fish.get('fish_name', '')
             weight = fish.get('weight', 0)
@@ -4607,6 +4652,7 @@ class FishBot:
             btn_text = f"🗑️ {fish_name} ({weight} кг)" if trash else f"{rarity_emoji.get(rarity, '⚪')} {fish_name} ({weight} кг{length_str})"
             # Можно добавить callback для подробностей или продажи одной рыбы
             keyboard.append([InlineKeyboardButton(btn_text, callback_data="noop")])
+            fish_lines.append(btn_text)
 
         # Стрелки пагинации
         nav_buttons = []
@@ -4623,23 +4669,20 @@ class FishBot:
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         location_text = html.escape(str(location))
+        fish_list = "\n".join(html.escape(str(line)) for line in fish_lines)
         message = (
             f"📍 {location_text}\n\n"
             "Рыба, поймана на этой локации:\n\n"
             f"<blockquote><span class=\"tg-spoiler\">{fish_list}</span></blockquote>\n\n"
+            f"Страница: {page+1}/{total_pages}\n"
             f"Всего рыбы: {len(location_fish)}"
         )
-        
-        keyboard = [
-            [InlineKeyboardButton("◀️ Назад к локациям", callback_data=f"inventory_{user_id}")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         try:
             await query.edit_message_text(message, reply_markup=reply_markup, parse_mode="HTML")
         except Exception as e:
-            logger.error(f"Error editing treasures message: {e}")
-            await query.edit_message_text(f"Ошибка при показе клада: {e}")
+            logger.error(f"Error editing inventory location message: {e}")
+            await query.edit_message_text("❌ Ошибка при показе инвентаря локации.")
     
     async def handle_inventory_treasures(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать сокровища в инвентаре"""
@@ -5505,22 +5548,6 @@ class FishBot:
                 if trash:
                     trash_name = trash.get('name', 'Мусор')
                     trash_price = int(trash.get('price', 0) or 0)
-                    pending_catches.append({
-                        'name': trash_name,
-                        'weight': float(trash.get('weight', 0) or 0),
-                        'length': 0.0,
-                    })
-                    total_trash_coins += trash_price
-                    total_haul_coins += trash_price
-                    trash_count += 1
-                    result_lines.append(f"{idx}. {trash_name}")
-                    logger.info(
-                        "[DYNAMITE] roll=%s branch=TRASH name=%s weight=%skg price=%s",
-                        idx,
-                        trash_name,
-                        trash.get('weight', 0),
-                        trash_price,
-                    )
                     treasure_key = self._roll_treasure_after_trash(
                         user_id=user_id,
                         chat_id=chat_id,
@@ -5532,7 +5559,30 @@ class FishBot:
 
                         treasure_count += 1
                         treasure_totals[treasure_key] = int(treasure_totals.get(treasure_key, 0) or 0) + 1
-                        result_lines.append(f"   + {get_treasure_name(treasure_key)}")
+                        result_lines.append(f"{idx}. {get_treasure_name(treasure_key)}")
+                        logger.info(
+                            "[DYNAMITE] roll=%s branch=TRASH_REPLACED_BY_TREASURE trash=%s treasure=%s",
+                            idx,
+                            trash_name,
+                            treasure_key,
+                        )
+                    else:
+                        pending_catches.append({
+                            'name': trash_name,
+                            'weight': float(trash.get('weight', 0) or 0),
+                            'length': 0.0,
+                        })
+                        total_trash_coins += trash_price
+                        total_haul_coins += trash_price
+                        trash_count += 1
+                        result_lines.append(f"{idx}. {trash_name}")
+                        logger.info(
+                            "[DYNAMITE] roll=%s branch=TRASH name=%s weight=%skg price=%s",
+                            idx,
+                            trash_name,
+                            trash.get('weight', 0),
+                            trash_price,
+                        )
                 else:
                     fail_count += 1
                     result_lines.append(f"{idx}. Срыв")
