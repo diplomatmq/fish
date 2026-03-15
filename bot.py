@@ -122,7 +122,7 @@ HARPOON_SKIP_COST_STARS = 2
 FEEDER_ITEMS = [
     {
         "code": "feeder_3",
-        "name": "Кормашка базовая",
+        "name": "Кормушка базовая",
         "bonus": 3,
         "duration_minutes": 60,
         "price_coins": 3000,
@@ -3652,14 +3652,28 @@ class FishBot:
             )
             return
 
+        # Deduct coins and try to activate feeder; on failure refund coins
         db.update_player(user_id, chat_id, coins=int(player.get("coins", 0)) - price)
-        db.activate_feeder(
-            user_id,
-            chat_id,
-            feeder_type=feeder["code"],
-            bonus_percent=int(feeder["bonus"]),
-            duration_minutes=int(feeder["duration_minutes"]),
-        )
+        try:
+            db.activate_feeder(
+                user_id,
+                chat_id,
+                feeder_type=feeder["code"],
+                bonus_percent=int(feeder["bonus"]),
+                duration_minutes=int(feeder["duration_minutes"]),
+            )
+        except Exception as e:
+            logger.exception("Failed to activate feeder for user=%s chat=%s: %s", user_id, chat_id, e)
+            # Refund coins on failure
+            try:
+                db.update_player(user_id, chat_id, coins=int(player.get("coins", 0)))
+            except Exception:
+                logger.exception("Failed to refund coins after feeder activation failure for user=%s", user_id)
+
+            await query.edit_message_text(
+                "❌ Ошибка при активации кормушки. Денежные средства возвращены. Попробуйте позже."
+            )
+            return
 
         await query.edit_message_text(
             f"✅ {feeder['name']} активирована на 1 час.\n"
@@ -6985,13 +6999,29 @@ class FishBot:
                 await update.message.reply_text("❌ Неизвестный тип кормушки.")
                 return
 
-            db.activate_feeder(
-                user_id,
-                group_chat_id,
-                feeder_type=booster_code,
-                bonus_percent=int(feeder["bonus"]),
-                duration_minutes=int(feeder["duration_minutes"]),
-            )
+            try:
+                db.activate_feeder(
+                    user_id,
+                    group_chat_id,
+                    feeder_type=booster_code,
+                    bonus_percent=int(feeder["bonus"]),
+                    duration_minutes=int(feeder["duration_minutes"]),
+                )
+            except Exception as e:
+                logger.exception("Failed to activate feeder after payment for user=%s chat=%s: %s", user_id, group_chat_id, e)
+                # refund stars if possible
+                try:
+                    await self.refund_star_payment(user_id, telegram_payment_charge_id)
+                except Exception:
+                    logger.exception("Failed to refund stars after feeder activation failure for user=%s", user_id)
+
+                await self._safe_send_message(
+                    chat_id=group_chat_id,
+                    text="❌ Ошибка при активации кормушки после оплаты. Средства возвращены. Попробуйте позже.",
+                    reply_to_message_id=booster_reply_id,
+                )
+                return
+
             await self._safe_send_message(
                 chat_id=group_chat_id,
                 text=(
