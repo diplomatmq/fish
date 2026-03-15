@@ -647,7 +647,7 @@ class FishBot:
             )
             return
 
-        if selected_type == 'longest_fish':
+        if selected_type in ('longest_fish', 'biggest_weight'):
             locations = db.get_locations()
             keyboard = [
                 [InlineKeyboardButton(loc['name'], callback_data=f'tour_location_{loc["name"]}')]
@@ -837,8 +837,11 @@ class FishBot:
             "",
         ]
 
-        if t_type == 'longest_fish' and target_location:
-            rows = db.get_location_leaderboard_length(target_location, tour['starts_at'], tour['ends_at'], limit=top_limit)
+        if t_type in ('longest_fish', 'biggest_weight') and target_location:
+            if t_type == 'longest_fish':
+                rows = db.get_location_leaderboard_length(target_location, tour['starts_at'], tour['ends_at'], limit=top_limit)
+            else:
+                rows = db.get_location_leaderboard_weight(target_location, tour['starts_at'], tour['ends_at'], limit=top_limit)
             lines.insert(1, f"📍 Локация: {target_location}")
             if not rows:
                 lines.append("Пока никто не поймал рыбу на этой локации.")

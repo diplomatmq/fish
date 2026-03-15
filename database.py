@@ -2881,6 +2881,33 @@ class Database:
             cols = [d[0] for d in cursor.description]
             return [dict(zip(cols, r)) for r in rows]
 
+    def get_location_leaderboard_weight(self, location_name: str, starts_at: datetime, ends_at: datetime, limit: int = 10) -> List[Dict[str, Any]]:
+        """Leaderboard of single best (max) fish weight per user for a location."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    COALESCE(MAX(p.username), 'Неизвестно') AS username,
+                    cf.user_id,
+                    COALESCE(MAX(cf.fish_name), '?') AS fish_name,
+                    COALESCE(MAX(cf.weight), 0) AS best_weight
+                FROM caught_fish cf
+                LEFT JOIN players p ON p.user_id = cf.user_id
+                WHERE cf.location = ?
+                  AND cf.caught_at >= ?
+                  AND cf.caught_at <= ?
+                  AND COALESCE(cf.sold, 0) = 0
+                GROUP BY cf.user_id
+                ORDER BY best_weight DESC
+                LIMIT ?
+                ''',
+                (location_name, starts_at, ends_at, max(1, int(limit or 10))),
+            )
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, r)) for r in rows]
+
     def get_leaderboard_period(self, limit: int = 10, since: Optional[datetime] = None, until: Optional[datetime] = None, chat_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Получить таблицу лидеров за период (с фильтром по началу и концу) и/или по чату"""
         with self._connect() as conn:
