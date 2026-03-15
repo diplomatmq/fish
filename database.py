@@ -4231,8 +4231,13 @@ class Database:
                 location_changed = (last_location != current_location)
 
                 if location_changed:
+                    # При переходе на новую локацию — первый взрыв должен снять штраф динамита.
                     consecutive = 1
-                    recovery = 1 if dynamite_penalty > 0 else 0
+                    if dynamite_penalty and float(dynamite_penalty) > 0:
+                        dynamite_penalty = 0.0
+                        recovery = 0
+                    else:
+                        recovery = 0
                 else:
                     consecutive = last_consecutive + 1
 
