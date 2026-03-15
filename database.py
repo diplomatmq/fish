@@ -921,6 +921,7 @@ class Database:
             ensure_column('players', 'population_penalty', 'REAL DEFAULT 0.0')
             ensure_column('players', 'penalty_recovery_casts', 'INTEGER DEFAULT 0')
             ensure_column('players', 'last_dynamite_use_time', 'TEXT')
+            ensure_column('players', 'diamonds', 'INTEGER DEFAULT 0')
             ensure_column('players', 'dynamite_ban_until', 'TEXT')
 
             # Ensure unique index for ON CONFLICT targets that expect (user_id, chat_id)
