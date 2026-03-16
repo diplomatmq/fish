@@ -3473,6 +3473,21 @@ class Database:
             cols = [d[0] for d in cursor.description]
             return [dict(zip(cols, r)) for r in rows]
 
+    def get_all_chat_ids(self) -> List[int]:
+        """Return list of all known chat IDs (from chat_configs).
+
+        Used by admin broadcast commands to iterate over chats.
+        """
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT chat_id FROM chat_configs')
+                rows = cursor.fetchall()
+                return [int(r[0]) for r in rows if r and r[0] is not None]
+        except Exception:
+            logger.exception("get_all_chat_ids failed")
+            return []
+
     def get_chat_occurrences(self, chat_id: int) -> int:
         """Return number of star_transactions rows for a given chat_id."""
         if chat_id is None:
