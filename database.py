@@ -3144,7 +3144,7 @@ class Database:
                     bonus_percent INTEGER NOT NULL,
                     expires_at TIMESTAMP NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(user_id, chat_id)
+                    UNIQUE(user_id, chat_id, feeder_type)
                 )
             ''')
             cursor.execute('''
@@ -3239,8 +3239,7 @@ class Database:
                     '''
                     INSERT INTO player_feeders (user_id, chat_id, feeder_type, bonus_percent, expires_at)
                     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP + (? || ' minutes')::interval)
-                    ON CONFLICT (user_id, chat_id) DO UPDATE SET
-                        feeder_type = EXCLUDED.feeder_type,
+                    ON CONFLICT (user_id, chat_id, feeder_type) DO UPDATE SET
                         bonus_percent = EXCLUDED.bonus_percent,
                         expires_at = EXCLUDED.expires_at
                     ''',
