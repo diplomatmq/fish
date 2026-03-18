@@ -837,25 +837,52 @@ class FishBot:
             "",
         ]
 
+        user_id = update.effective_user.id
+        user_row = None
+        user_place = None
         if target_location:
             if t_type == 'longest_fish':
                 rows = db.get_location_leaderboard_length(target_location, tour['starts_at'], tour['ends_at'], limit=top_limit)
+                all_rows = db.get_location_leaderboard_length(target_location, tour['starts_at'], tour['ends_at'], limit=1000)
             elif t_type == 'biggest_weight':
                 rows = db.get_location_leaderboard_weight(target_location, tour['starts_at'], tour['ends_at'], limit=top_limit)
+                all_rows = db.get_location_leaderboard_weight(target_location, tour['starts_at'], tour['ends_at'], limit=1000)
             else:
                 rows = []
+                all_rows = []
             lines.insert(1, f"📍 Локация: {target_location}")
             if not rows:
                 lines.append("Пока никто не поймал рыбу на этой локации.")
             else:
                 for i, r in enumerate(rows, 1):
                     medal = medals[i - 1] if i <= 3 else f"{i}."
-                    name = r.get('username') or str(r['user_id'])
-                    fish = r.get('fish_name', '?')
-                    length = round(float(r['best_length']), 1)
-                    lines.append(f"{medal} {name} — {fish} — {length} см")
+                    name = html.escape(r.get('username') or str(r['user_id']))
+                    fish = html.escape(r.get('fish_name', '?'))
+                    if t_type == 'longest_fish':
+                        length = round(float(r.get('best_length') or 0), 1)
+                        lines.append(f"{medal} {name} — {fish} — {length} см")
+                    else:
+                        weight = round(float(r.get('best_weight') or 0), 2)
+                        lines.append(f"{medal} {name} — {fish} — {weight} кг")
+                # Поиск пользователя вне топа
+                for idx, r in enumerate(all_rows, 1):
+                    if r.get('user_id') == user_id:
+                        user_row = r
+                        user_place = idx
+                        break
+                if user_row and user_place > top_limit:
+                    name = html.escape(user_row.get('username') or str(user_row['user_id']))
+                    fish = html.escape(user_row.get('fish_name', '?'))
+                    lines.append("")
+                    if t_type == 'longest_fish':
+                        length = round(float(user_row.get('best_length') or 0), 1)
+                        lines.append(f"<i>Ваше место: {user_place}. {name} — {fish} — {length} см</i>")
+                    else:
+                        weight = round(float(user_row.get('best_weight') or 0), 2)
+                        lines.append(f"<i>Ваше место: {user_place}. {name} — {fish} — {weight} кг</i>")
         else:
             rows = db.get_tour_leaderboard_weight(tour['starts_at'], tour['ends_at'], limit=top_limit)
+            all_rows = db.get_tour_leaderboard_weight(tour['starts_at'], tour['ends_at'], limit=1000)
             if not rows:
                 lines.append("Пока никто не поймал рыбу.")
             else:
@@ -864,6 +891,17 @@ class FishBot:
                     name = html.escape(r.get('username') or str(r['user_id']))
                     weight = round(float(r['total_weight']), 2)
                     lines.append(f"{medal} {name} — {weight} кг")
+                # Поиск пользователя вне топа
+                for idx, r in enumerate(all_rows, 1):
+                    if r.get('user_id') == user_id:
+                        user_row = r
+                        user_place = idx
+                        break
+                if user_row and user_place > top_limit:
+                    name = html.escape(user_row.get('username') or str(user_row['user_id']))
+                    weight = round(float(user_row.get('total_weight') or 0), 2)
+                    lines.append("")
+                    lines.append(f"<i>Ваше место: {user_place}. {name} — {weight} кг</i>")
 
         await update.message.reply_text("\n".join(lines))
 
@@ -888,8 +926,13 @@ class FishBot:
                 "",
             ]
 
+            user_id = update.effective_user.id
+            user_row = None
+            user_place = None
+
             if t_type == 'longest_fish':
                 rows = db.get_location_leaderboard_length(location_name, tour['starts_at'], tour['ends_at'], limit=top_limit)
+                all_rows = db.get_location_leaderboard_length(location_name, tour['starts_at'], tour['ends_at'], limit=1000)
                 if not rows:
                     lines.append("Пока никто не поймал рыбу на этой локации.")
                 else:
@@ -899,9 +942,22 @@ class FishBot:
                         fish = html.escape(r.get('fish_name', '?'))
                         length = round(float(r.get('best_length') or 0), 1)
                         lines.append(f"{medal} {name} — {fish} — {length} см")
+                    # Поиск пользователя вне топа
+                    for idx, r in enumerate(all_rows, 1):
+                        if r.get('user_id') == user_id:
+                            user_row = r
+                            user_place = idx
+                            break
+                    if user_row and user_place > top_limit:
+                        name = html.escape(user_row.get('username') or str(user_row['user_id']))
+                        fish = html.escape(user_row.get('fish_name', '?'))
+                        length = round(float(user_row.get('best_length') or 0), 1)
+                        lines.append("")
+                        lines.append(f"<i>Ваше место: {user_place}. {name} — {fish} — {length} см</i>")
 
             elif t_type == 'biggest_weight':
                 rows = db.get_location_leaderboard_weight(location_name, tour['starts_at'], tour['ends_at'], limit=top_limit)
+                all_rows = db.get_location_leaderboard_weight(location_name, tour['starts_at'], tour['ends_at'], limit=1000)
                 if not rows:
                     lines.append("Пока никто не поймал рыбу на этой локации.")
                 else:
@@ -911,6 +967,18 @@ class FishBot:
                         fish = html.escape(r.get('fish_name', '?'))
                         weight = round(float(r.get('best_weight') or 0), 2)
                         lines.append(f"{medal} {name} — {fish} — {weight} кг")
+                    # Поиск пользователя вне топа
+                    for idx, r in enumerate(all_rows, 1):
+                        if r.get('user_id') == user_id:
+                            user_row = r
+                            user_place = idx
+                            break
+                    if user_row and user_place > top_limit:
+                        name = html.escape(user_row.get('username') or str(user_row['user_id']))
+                        fish = html.escape(user_row.get('fish_name', '?'))
+                        weight = round(float(user_row.get('best_weight') or 0), 2)
+                        lines.append("")
+                        lines.append(f"<i>Ваше место: {user_place}. {name} — {fish} — {weight} кг</i>")
 
             else:
                 lines.append("Тип турнира для этой локации не поддерживается отображением.")
