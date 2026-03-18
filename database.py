@@ -3239,6 +3239,10 @@ class Database:
                     '''
                     INSERT INTO player_feeders (user_id, chat_id, feeder_type, bonus_percent, expires_at)
                     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP + (? || ' minutes')::interval)
+                    ON CONFLICT (user_id, chat_id) DO UPDATE SET
+                        feeder_type = EXCLUDED.feeder_type,
+                        bonus_percent = EXCLUDED.bonus_percent,
+                        expires_at = EXCLUDED.expires_at
                     ''',
                     (user_id, chat_id, feeder_type, int(bonus_percent), expires_expr_minutes),
                 )
