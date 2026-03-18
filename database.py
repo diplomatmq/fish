@@ -3144,8 +3144,13 @@ class Database:
                     bonus_percent INTEGER NOT NULL,
                     expires_at TIMESTAMP NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(user_id)
+                    UNIQUE(user_id, chat_id, feeder_type)
                 )
+            ''')
+            # Ensure unique index for ON CONFLICT targets
+            cursor.execute('''
+                CREATE UNIQUE INDEX IF NOT EXISTS player_feeders_user_chat_type_key
+                ON player_feeders (user_id, chat_id, feeder_type)
             ''')
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS player_echosounder (
