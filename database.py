@@ -3232,18 +3232,24 @@ class Database:
         with self._connect() as conn:
             cursor = conn.cursor()
             expires_expr_minutes = int(duration_minutes)
+            # Сначала пробуем обновить существующую кормушку
             cursor.execute(
                 '''
-                INSERT INTO player_feeders (user_id, chat_id, feeder_type, bonus_percent, expires_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP + (? || ' minutes')::interval)
-                ON CONFLICT (user_id) DO UPDATE SET
-                    chat_id = EXCLUDED.chat_id,
-                    feeder_type = EXCLUDED.feeder_type,
-                    bonus_percent = EXCLUDED.bonus_percent,
-                    expires_at = EXCLUDED.expires_at
-                ''',
-                (user_id, chat_id, feeder_type, int(bonus_percent), expires_expr_minutes),
+                UPDATE player_feeders
+                SET chat_id = ?, feeder_type = ?, bonus_percent = ?, expires_at = CURRENT_TIMESTAMP + (? || ' minutes')::interval
+                WHERE user_id = ?
+            ''',
+                (chat_id, feeder_type, int(bonus_percent), expires_expr_minutes, user_id)
             )
+            if cursor.rowcount == 0:
+                # Если не было обновлено — вставляем новую
+                cursor.execute(
+                    '''
+                    INSERT INTO player_feeders (user_id, chat_id, feeder_type, bonus_percent, expires_at)
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP + (? || ' minutes')::interval)
+                ''',
+                    (user_id, chat_id, feeder_type, int(bonus_percent), expires_expr_minutes)
+                )
             conn.commit()
 
     def get_echosounder_remaining_seconds(self, user_id: int, chat_id: int) -> int:
