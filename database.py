@@ -3236,10 +3236,10 @@ class Database:
             cursor.execute(
                 '''
                 UPDATE player_feeders
-                SET chat_id = ?, feeder_type = ?, bonus_percent = ?, expires_at = CURRENT_TIMESTAMP + (? || ' minutes')::interval
-                WHERE user_id = ?
+                SET bonus_percent = ?, expires_at = CURRENT_TIMESTAMP + (? || ' minutes')::interval
+                WHERE user_id = ? AND chat_id = ? AND feeder_type = ?
             ''',
-                (chat_id, feeder_type, int(bonus_percent), expires_expr_minutes, user_id)
+                (int(bonus_percent), expires_expr_minutes, user_id, chat_id, feeder_type)
             )
             if cursor.rowcount == 0:
                 # Если не было обновлено — вставляем новую
