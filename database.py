@@ -3144,7 +3144,7 @@ class Database:
                     bonus_percent INTEGER NOT NULL,
                     expires_at TIMESTAMP NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(user_id, chat_id, feeder_type)
+                    UNIQUE(user_id)
                 )
             ''')
             cursor.execute('''
@@ -3225,26 +3225,16 @@ class Database:
             expires_expr_minutes = int(duration_minutes)
             cursor.execute(
                 '''
-                UPDATE player_feeders
-                SET feeder_type = ?,
-                    bonus_percent = ?,
-                    expires_at = CURRENT_TIMESTAMP + (? || ' minutes')::interval
-                WHERE user_id = ? AND chat_id = ?
+                INSERT INTO player_feeders (user_id, chat_id, feeder_type, bonus_percent, expires_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP + (? || ' minutes')::interval)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    chat_id = EXCLUDED.chat_id,
+                    feeder_type = EXCLUDED.feeder_type,
+                    bonus_percent = EXCLUDED.bonus_percent,
+                    expires_at = EXCLUDED.expires_at
                 ''',
-                (feeder_type, int(bonus_percent), expires_expr_minutes, user_id, chat_id),
+                (user_id, chat_id, feeder_type, int(bonus_percent), expires_expr_minutes),
             )
-
-            if cursor.rowcount == 0:
-                cursor.execute(
-                    '''
-                    INSERT INTO player_feeders (user_id, chat_id, feeder_type, bonus_percent, expires_at)
-                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP + (? || ' minutes')::interval)
-                    ON CONFLICT (user_id, chat_id, feeder_type) DO UPDATE SET
-                        bonus_percent = EXCLUDED.bonus_percent,
-                        expires_at = EXCLUDED.expires_at
-                    ''',
-                    (user_id, chat_id, feeder_type, int(bonus_percent), expires_expr_minutes),
-                )
             conn.commit()
 
     def get_echosounder_remaining_seconds(self, user_id: int, chat_id: int) -> int:
