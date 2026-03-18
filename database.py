@@ -3148,10 +3148,14 @@ class Database:
                 )
             ''')
             # Ensure unique index for ON CONFLICT targets
-            cursor.execute('''
-                CREATE UNIQUE INDEX IF NOT EXISTS player_feeders_user_chat_type_key
-                ON player_feeders (user_id, chat_id, feeder_type)
-            ''')
+            try:
+                cursor.execute('''
+                    CREATE UNIQUE INDEX IF NOT EXISTS player_feeders_user_chat_type_key
+                    ON player_feeders (user_id, chat_id, feeder_type)
+                ''')
+            except Exception as e:
+                # Ignore if index already exists or not supported
+                pass
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS player_echosounder (
                     id INTEGER PRIMARY KEY,
