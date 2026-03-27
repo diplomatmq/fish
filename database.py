@@ -487,6 +487,7 @@ class Database:
                 # Просто завершить плавание
                 from datetime import datetime, timedelta, timezone
                 cd_until = datetime.now(timezone.utc) + timedelta(hours=12)
+                cursor.execute('DELETE FROM boat_members WHERE boat_id = ? AND is_owner = 0', (boat_id,))
                 cursor.execute('''
                     UPDATE boats 
                     SET is_active = 0, current_weight = 0, cooldown_until = ? 
@@ -530,8 +531,9 @@ class Database:
                 results.append((uid, usernames[uid], count, total_weight))
             from datetime import datetime, timedelta, timezone
             cd_until = datetime.now(timezone.utc) + timedelta(hours=12)
-            # Очистить boat_catch и сбросить лодку
+            # Очистить улов и выгнать всех, кроме владельца
             cursor.execute('DELETE FROM boat_catch WHERE boat_id = ?', (boat_id,))
+            cursor.execute('DELETE FROM boat_members WHERE boat_id = ? AND is_owner = 0', (boat_id,))
             cursor.execute('''
                 UPDATE boats 
                 SET is_active = 0, current_weight = 0, cooldown_until = ? 

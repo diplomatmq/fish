@@ -6051,17 +6051,6 @@ class FishBot:
             return
 
         location = player.get('current_location', 'Городской пруд')
-        
-        # Нельзя использовать динамит во время плавания на лодке
-        active_boat = db.get_active_boat_by_user(user_id)
-        if active_boat:
-             await self._safe_send_message(
-                 chat_id=chat_id,
-                 text="❌ Нельзя использовать динамит во время плавания на лодке!",
-                 reply_to_message_id=reply_to_message_id,
-             )
-             return
-
         season = get_current_season()
         player_level = int(player.get('level') or 0)
         weather = db.get_or_update_weather(location)
@@ -6305,15 +6294,26 @@ class FishBot:
             )
             return
 
+        # Проверяем, находится ли игрок на лодке
+        active_boat = db.get_active_boat_by_user(user_id)
+        is_on_boat_dyn = active_boat is not None
+
         for item in pending_catches:
-            db.add_caught_fish(
-                user_id,
-                chat_id,
-                item['name'],
-                float(item['weight']),
-                location,
-                float(item['length']),
-            )
+            if is_on_boat_dyn:
+                # На лодке рыба идёт в общий садок (boat_catch)
+                # Находим fish_id по имени
+                f_data = db.get_fish_by_name(item['name'])
+                if f_data:
+                    db.add_fish_to_boat(user_id, f_data['id'], float(item['weight']))
+            else:
+                db.add_caught_fish(
+                    user_id,
+                    chat_id,
+                    item['name'],
+                    float(item['weight']),
+                    location,
+                    float(item['length']),
+                )
 
         logger.info(
             "[DYNAMITE] finish user=%s chat=%s fish=%s trash=%s fail=%s treasures=%s catches_saved=%s total_trash_coins=%s total_haul_coins=%s",
