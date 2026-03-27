@@ -562,6 +562,12 @@ class Database:
         boat = self.get_user_boat(from_user)
         if not boat or not boat['is_active']:
             return False
+            
+        # Проверка вместимости
+        current_members = self.get_boat_members_count(boat['id'])
+        if current_members >= boat['capacity']:
+            return False
+            
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -589,19 +595,37 @@ class Database:
         with self._connect() as conn:
             cursor = conn.cursor()
             status = 'accepted' if accept else 'declined'
-            cursor.execute('''
-                UPDATE boat_invites SET status = ? WHERE id = ?
-            ''', (status, invite_id))
+            
             if accept:
-                # Добавить пользователя в boat_members
-                cursor.execute('SELECT boat_id, to_user FROM boat_invites WHERE id = ?', (invite_id,))
+                # Найти лодку и проверить вместимость
+                cursor.execute('SELECT b.id, b.capacity FROM boats b JOIN boat_invites bi ON bi.boat_id = b.id WHERE bi.id = ?', (invite_id,))
                 row = cursor.fetchone()
-                if row:
-                    boat_id, user_id = row
+                if not row:
+                    return False
+                boat_id, capacity = row
+                
+                # Посчитать текущих участников
+                cursor.execute('SELECT COUNT(*) FROM boat_members WHERE boat_id = ?', (boat_id,))
+                current_members = cursor.fetchone()[0]
+                if current_members >= capacity:
+                    # Принудительно отклоняем, так как лодка полна
+                    cursor.execute('UPDATE boat_invites SET status = ? WHERE id = ?', ('declined', invite_id))
+                    conn.commit()
+                    return False
+
+                # Добавить пользователя в boat_members
+                cursor.execute('SELECT to_user FROM boat_invites WHERE id = ?', (invite_id,))
+                row_user = cursor.fetchone()
+                if row_user:
+                    user_id = row_user[0]
                     cursor.execute('''
                         INSERT OR IGNORE INTO boat_members (boat_id, user_id, is_owner)
                         VALUES (?, ?, 0)
                     ''', (boat_id, user_id))
+            
+            cursor.execute('''
+                UPDATE boat_invites SET status = ? WHERE id = ?
+            ''', (status, invite_id))
             conn.commit()
         return True
     def buy_paid_boat(self, user_id: int, name: str = 'Платная лодка', price: int = 50, capacity: int = 3, max_weight: float = 1500.0, durability: int = 150) -> bool:

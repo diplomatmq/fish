@@ -400,7 +400,7 @@ class FishBot:
         # Создать приглашение
         ok = db.create_boat_invite(user_id, to_user_id)
         if not ok:
-            await update.message.reply_text("Ошибка: нельзя пригласить (вы не в плавании или нет лодки).")
+            await update.message.reply_text("Ошибка: нельзя пригласить (вы не в плавании, нет лодки или она переполнена).")
             return
         # Отправить приглашённому сообщение с кнопками
         username = update.effective_user.username or update.effective_user.first_name
@@ -427,8 +427,11 @@ class FishBot:
         if not invite_id:
             await update.callback_query.answer("Нет активного приглашения.", show_alert=True)
             return
-        db.respond_boat_invite(invite_id, accept=True)
-        await update.callback_query.answer("Вы присоединились к лодке!")
+        success = db.respond_boat_invite(invite_id, accept=True)
+        if success:
+            await update.callback_query.answer("Вы присоединились к лодке!")
+        else:
+            await update.callback_query.answer("❌ Не удалось присоединиться: лодка полна или недоступна.", show_alert=True)
         await self.show_fishing_menu(update, context)
 
     async def handle_boat_invite_decline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
