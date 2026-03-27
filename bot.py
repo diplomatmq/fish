@@ -1403,6 +1403,28 @@ class FishBot:
             [InlineKeyboardButton(f"⭐ Оплатить {GUARANTEED_CATCH_COST} Telegram Stars", url=invoice_url)]
         ])
 
+    async def _create_skip_boat_cd_invoice_url(self, user_id: int, chat_id: int) -> Optional[str]:
+        """Создать ссылку инвойса для сброса КД лодки."""
+        from config import BOT_TOKEN, STAR_NAME
+        tg_api = TelegramBotAPI(BOT_TOKEN)
+        return await tg_api.create_invoice_link(
+            title="Сброс КД лодки",
+            description=f"Мгновенный сброс КД лодки (20 {STAR_NAME})",
+            payload=f"skip_boat_cd_{user_id}_{chat_id}_{int(datetime.now().timestamp())}",
+            currency="XTR",
+            prices=[{"label": "Сброс КД", "amount": 20}],
+        )
+
+    async def _build_skip_boat_cd_invoice_markup(self, user_id: int, chat_id: int) -> Optional[InlineKeyboardMarkup]:
+        """Собрать inline-кнопку со ссылкой на оплату сброса КД."""
+        try:
+            invoice_url = await self._create_skip_boat_cd_invoice_url(user_id, chat_id)
+        except Exception as e:
+            logger.error(f"[INVOICE] Failed to create boat cd skip invoice: {e}")
+            return None
+        if not invoice_url: return None
+        return InlineKeyboardMarkup([[InlineKeyboardButton(f"⭐ Сбросить КД за 20 Stars", url=invoice_url)]])
+
     async def handle_pay_invoice_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         user_id = update.effective_user.id
@@ -2518,13 +2540,25 @@ class FishBot:
     async def handle_boat_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка кнопки Выплыть"""
         user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
         can_start, cd = db.can_start_boat_trip(user_id)
         if can_start:
             db.start_boat_trip(user_id)
             await update.callback_query.answer("Вы отправились в плавание!")
+            await self.show_fishing_menu(update, context)
         else:
-            await update.callback_query.answer(f"КД: ещё {int(cd//3600)}ч {int((cd%3600)//60)}м. Можно обойти за 20⭐.", show_alert=True)
-        await self.show_fishing_menu(update, context)
+            # Вместо алерта шлем сообщение с инвойсом, как просит пользователь
+            hours = int(cd // 3600)
+            minutes = int((cd % 3600) // 60)
+            reply_markup = await self._build_skip_boat_cd_invoice_markup(user_id, chat_id)
+            
+            # Предлагаем сбросить КД через инвойс
+            await update.callback_query.edit_message_text(
+                f"⏳ Следующий бесплатный выплыв через: {hours}ч {minutes}м.\n\n"
+                f"💸 Хотите выплыть прямо сейчас за 20 ⭐?",
+                reply_markup=reply_markup,
+                parse_mode="HTML"
+            )
 
     async def handle_boat_return(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка кнопки Вернуться (делёж улова)"""
@@ -7323,6 +7357,14 @@ class FishBot:
                 chat_id=accounting_chat_id,
                 text="✅ Кулдаун всех сетей сброшен! Используйте /net чтобы закинуть сети снова.",
                 reply_to_message_id=skip_reply_id,
+            )
+            return
+        elif payload and payload.startswith("skip_boat_cd_"):
+            # Сброс КД лодки
+            db.skip_boat_cooldown(user_id, 0)
+            await self._safe_send_message(
+                chat_id=accounting_chat_id,
+                text="✅ КД лодки сброшен! Теперь вы снова можете выплыть в море. 🚤",
             )
             return
         elif payload and payload.startswith("dynamite_skip_cd_"):
