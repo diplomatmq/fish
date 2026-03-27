@@ -335,7 +335,7 @@ class FishingGame:
         population_penalty = db.get_population_penalty(user_id)
         penalty_points = int((population_penalty / 100) * ROLL_MAX)  # Конвертируем % в points
         adjusted_roll = adjusted_roll - penalty_points
-        adjusted_roll = max(0, adjusted_roll)  # Не может быть меньше 0
+        adjusted_roll = max(0, min(ROLL_MAX - 1, adjusted_roll))  # Ограничиваем до 14999 для обычных расчетов
         
         logger.info(f"   🌍 Population penalty: {population_penalty:.1f}% ({penalty_points} points)")
         logger.info(f"   📊 Final adjusted roll: {adjusted_roll}/15000")
@@ -364,7 +364,7 @@ class FishingGame:
         )
         logger.info("   📊 Ranges: 0-3749=NO_BITE, 3750-7499=TRASH, 7500-11999=COMMON, 12000-14849=RARE, 14850-14997=LEGENDARY, 14998-14999=MYTHIC, 15000=NFT")
         
-        if roll == ROLL_MAX or adjusted_roll >= NFT_MAX:
+        if roll == ROLL_MAX: # NFT win only on exact raw roll 15000
             db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
             return {
                 "success": False,
