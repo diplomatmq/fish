@@ -14,6 +14,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS baits_name_key ON baits (name);
 CREATE UNIQUE INDEX IF NOT EXISTS locations_name_key ON locations (name);
 CREATE UNIQUE INDEX IF NOT EXISTS weather_location_key ON weather (location);
 CREATE UNIQUE INDEX IF NOT EXISTS system_flags_key ON system_flags (key);
+CREATE UNIQUE INDEX IF NOT EXISTS player_feeders_user_chat_type_key ON player_feeders (user_id, chat_id, feeder_type);
 
 -- 2) Adjust all serial sequences so nextval will not collide with existing ids
 DO $$

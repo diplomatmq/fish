@@ -338,7 +338,109 @@ def format_fish_name(name: str) -> str:
         return f"{WHITE_SHARK_EMOJI_TAG} {name}"
     return f"{random.choice(FISH_EMOJI_TAGS)} {name}"
 
+
 class FishBot:
+    async def skip_boat_cooldown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /skip_boat_cd — сбросить КД лодки за звёзды."""
+        user_id = update.effective_user.id
+        price = 20  # Цена сброса КД (пример)
+        ok = db.skip_boat_cooldown(user_id, price)
+        if ok:
+            await update.message.reply_text(f"⏩ КД лодки сброшен за {price} ⭐! Можно выплывать снова.")
+        else:
+            await update.message.reply_text("❌ Не удалось сбросить КД лодки. Возможно, нет КД или не хватает звёзд.")
+    async def cure_seasick_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /cure_seasick — вылечить морскую болезнь за звёзды."""
+        user_id = update.effective_user.id
+        price = 10  # Цена лечения (пример)
+        ok = db.cure_seasick(user_id, price)
+        if ok:
+            await update.message.reply_text(f"🚑 Морская болезнь вылечена за {price} ⭐!")
+        else:
+            await update.message.reply_text("❌ Не удалось вылечить морскую болезнь. Возможно, нет болезни или не хватает звёзд.")
+
+    async def buy_paid_boat_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /buy_boat — купить платную лодку за звёзды."""
+        user_id = update.effective_user.id
+        price = 50  # Цена платной лодки (пример)
+        ok = db.buy_paid_boat(user_id, price)
+        if ok:
+            await update.message.reply_text(f"⛵ Платная лодка куплена за {price} ⭐! Теперь вы можете выплывать без ограничений.")
+        else:
+            await update.message.reply_text("❌ Не удалось купить лодку. Возможно, не хватает звёзд или лодка уже есть.")
+
+    async def handle_buy_paid_boat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка покупки платной лодки по кнопке в меню."""
+        user_id = update.effective_user.id
+        price = 50  # Цена платной лодки (пример)
+        ok = db.buy_paid_boat(user_id, price)
+        if ok:
+            await update.callback_query.answer(f"⛵ Платная лодка куплена за {price} ⭐!", show_alert=True)
+            await self.show_fishing_menu(update, context)
+        else:
+            await update.callback_query.answer("❌ Не удалось купить лодку. Возможно, не хватает звёзд или лодка уже есть.", show_alert=True)
+
+    async def invite_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /invite <id или username> — приглашение в лодку."""
+        user_id = update.effective_user.id
+        args = context.args
+        if not args:
+            await update.message.reply_text("Укажите id или username для приглашения.")
+            return
+        to_user = args[0]
+        # Попробуем найти пользователя по username или id
+        if to_user.isdigit():
+            to_user_id = int(to_user)
+        else:
+            # Поиск по username среди игроков
+            to_user_id = db.get_user_id_by_username(to_user)
+            if not to_user_id:
+                await update.message.reply_text("Пользователь не найден.")
+                return
+        # Создать приглашение
+        ok = db.create_boat_invite(user_id, to_user_id)
+        if not ok:
+            await update.message.reply_text("Ошибка: нельзя пригласить (вы не в плавании или нет лодки).")
+            return
+        # Отправить приглашённому сообщение с кнопками
+        username = update.effective_user.username or update.effective_user.first_name
+        keyboard = [
+            [InlineKeyboardButton("✅ Принять", callback_data=f"boat_invite_accept_{user_id}"),
+             InlineKeyboardButton("❌ Отклонить", callback_data=f"boat_invite_decline_{user_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
+            await self.application.bot.send_message(
+                chat_id=to_user_id,
+                text=f"Вас приглашает в лодку @{username}",
+                reply_markup=reply_markup
+            )
+            await update.message.reply_text("Приглашение отправлено!")
+        except Exception as e:
+            await update.message.reply_text("Не удалось отправить приглашение: пользователь не найден или не писал боту.")
+
+    async def handle_boat_invite_accept(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка принятия приглашения в лодку."""
+        user_id = update.effective_user.id
+        # Найти последнее приглашение к этому пользователю
+        invite_id = db.get_last_pending_invite_id(user_id)
+        if not invite_id:
+            await update.callback_query.answer("Нет активного приглашения.", show_alert=True)
+            return
+        db.respond_boat_invite(invite_id, accept=True)
+        await update.callback_query.answer("Вы присоединились к лодке!")
+        await self.show_fishing_menu(update, context)
+
+    async def handle_boat_invite_decline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка отклонения приглашения в лодку."""
+        user_id = update.effective_user.id
+        invite_id = db.get_last_pending_invite_id(user_id)
+        if not invite_id:
+            await update.callback_query.answer("Нет активного приглашения.", show_alert=True)
+            return
+        db.respond_boat_invite(invite_id, accept=False)
+        await update.callback_query.answer("Приглашение отклонено.")
+
     async def ref_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /ref: показать статистику и обработать вывод звёзд"""
         user_id = update.effective_user.id
@@ -1855,7 +1957,65 @@ class FishBot:
                 await update.message.reply_text(error_text, parse_mode=None)
             return
         
-        # Начинаем рыбалку на текущей локации
+
+        # --- ЛОДОЧНАЯ ЛОГИКА ---
+        if db.is_user_on_boat_trip(user_id):
+            # Игрок в плавании — рыба идёт в лодку
+            try:
+                location_changed, consecutive_casts, show_warning = db.update_population_state(
+                    user_id, 
+                    player['current_location']
+                )
+                if show_warning:
+                    warning_msg = (
+                        "⚠️ <b>ВАЖНО! РЫБЫ ОСТАЛОСЬ МАЛО!</b>\n\n"
+                        "Вы 30 раз подряд ловили на одной локации.\n"
+                        "Рыба испугалась и её осталось мало в этом месте.\n\n"
+                        "🗺️ <b>Смените локацию!</b>\n"
+                        "Используйте /menu для выбора другого места.\n\n"
+                        "Как снять штраф:\n"
+                        "• Не ловить 60 минут\n"
+                        "• Или сменить локацию и сделать 10 забросов на новой\n\n"
+                        "Если продолжите ловить на одной локации, шансы будут падать:\n"
+                        "• 30 забросов: -5%\n"
+                        "• 40 забросов: -8%\n"
+                        "• 50 забросов: -11%\n"
+                        "• 60+ забросов: -15%"
+                    )
+                    try:
+                        await update.message.reply_text(warning_msg)
+                    except Exception as e:
+                        logger.error(f"Error sending population warning: {e}")
+                # Получаем результат ловли
+                result = game.fish(user_id, chat_id, player['current_location'])
+                if result['success'] and not result.get('is_trash'):
+                    fish = result['fish']
+                    fish_id = fish.get('id')
+                    weight = result.get('weight', 0)
+                    # Добавить рыбу в лодку
+                    db.add_fish_to_boat(user_id, fish_id, weight)
+                    await update.message.reply_text(
+                        f"🐟 Рыба {fish['name']} весом {weight} кг добавлена в лодку!\n\nВернуться на берег — только по кнопке владельца лодки."
+                    )
+                    # Проверка на крушение
+                    if db.check_boat_crash(user_id):
+                        await update.message.reply_text("💥 Крушение! Лодка сломалась из-за перегруза. Все теряют улов.")
+                    else:
+                        # Предупреждение о малом весе
+                        left = db.check_boat_weight_warning(user_id)
+                        if left is not None:
+                            await update.message.reply_text(f"⚠️ Осталось места в лодке: {left:.1f} кг")
+                    return
+                else:
+                    # Мусор или неудача — обычная обработка
+                    await update.message.reply_text("В этот раз ничего ценного не поймано. Попробуйте ещё!")
+                    return
+            except Exception as e:
+                logger.exception("Ошибка при ловле на лодке: %s", e)
+                await update.message.reply_text("❌ Ошибка при ловле на лодке. Обратитесь в поддержку.")
+            return
+
+        # --- Обычная рыбалка ---
         try:
             # Обновляем состояние популяции рыб (отслеживаем забросы на локации)
             location_changed, consecutive_casts, show_warning = db.update_population_state(
@@ -2259,6 +2419,8 @@ class FishBot:
 
     async def show_fishing_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать главное меню рыбалки"""
+        if self._is_restricted_and_block(update.effective_chat.id):
+            return
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
 
@@ -2298,6 +2460,15 @@ class FishBot:
     {durability_line}
         """
 
+
+        # --- ЛОДОЧНОЕ МЕНЮ ---
+        boat = db.get_user_boat(user_id)
+        is_active = boat.get('is_active', 0) if boat else 0
+        members_count = db.get_boat_members_count(boat['id']) if boat else 1
+        capacity = boat.get('capacity', 1) if boat else 1
+        boat_line = f"\n⛵ Лодка: {boat['name']} ({members_count}/{capacity})\nВес: {boat.get('current_weight', 0):.1f}/{boat.get('max_weight', 0):.1f} кг" if boat else ""
+        menu_text += boat_line
+
         keyboard = [
             [InlineKeyboardButton("🎣 Начать рыбалку", callback_data=f"start_fishing_{user_id}")],
             [InlineKeyboardButton("📍 Сменить локацию", callback_data=f"change_location_{user_id}")],
@@ -2305,6 +2476,55 @@ class FishBot:
             [InlineKeyboardButton("🧺 Лавка", callback_data=f"sell_fish_{user_id}"), InlineKeyboardButton("🛒 Магазин", callback_data=f"shop_{user_id}")],
             [InlineKeyboardButton("📊 Статистика", callback_data=f"stats_{user_id}"), InlineKeyboardButton("🎒 Инвентарь", callback_data=f"inventory_{user_id}")]
         ]
+        # Кнопка Выплыть/Вернуться/Пригласить
+        if not is_active:
+            keyboard.insert(0, [
+                InlineKeyboardButton(f"▶️ Выплыть ({members_count}/{capacity})", callback_data=f"boat_start_{user_id}")
+            ])
+            keyboard.insert(1, [
+                InlineKeyboardButton("⛵ Лодка 'Стандарт' (50💎)", callback_data=f"buy_boat_diamonds1_{user_id}")
+            ])
+            keyboard.insert(2, [
+                InlineKeyboardButton("⛵ Лодка 'Премиум' (150💎)", callback_data=f"buy_boat_diamonds2_{user_id}")
+            ])
+            keyboard.insert(3, [
+                InlineKeyboardButton("⛵ Лодка 'Элитная' (500💎)", callback_data=f"buy_boat_diamonds3_{user_id}")
+            ])
+        # Если есть КД лодки — добавить кнопку сброса КД
+        if db.has_boat_cooldown(user_id):
+            keyboard.insert(1, [InlineKeyboardButton("⏩ Сбросить КД лодки", callback_data=f"skip_boat_cd_{user_id}")])
+        # Если есть морская болезнь — добавить кнопку лечения
+        if db.is_user_seasick(user_id):
+            keyboard.insert(1, [InlineKeyboardButton("🚑 Вылечить морскую болезнь", callback_data=f"cure_seasick_{user_id}")])
+
+    async def handle_skip_boat_cooldown(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка сброса КД лодки по кнопке в меню."""
+        user_id = update.effective_user.id
+        price = 20  # Цена сброса КД (пример)
+        ok = db.skip_boat_cooldown(user_id, price)
+        if ok:
+            await update.callback_query.answer(f"⏩ КД лодки сброшен за {price} ⭐!", show_alert=True)
+            await self.show_fishing_menu(update, context)
+        else:
+            await update.callback_query.answer("❌ Не удалось сбросить КД лодки. Возможно, нет КД или не хватает звёзд.", show_alert=True)
+
+    async def handle_cure_seasick(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка лечения морской болезни по кнопке в меню."""
+        user_id = update.effective_user.id
+        price = 10  # Цена лечения (пример)
+        ok = db.cure_seasick(user_id, price)
+        if ok:
+            await update.callback_query.answer(f"🚑 Морская болезнь вылечена за {price} ⭐!", show_alert=True)
+            await self.show_fishing_menu(update, context)
+        else:
+            await update.callback_query.answer("❌ Не удалось вылечить морскую болезнь. Возможно, нет болезни или не хватает звёзд.", show_alert=True)
+        if boat.get('user_id') == user_id:
+            keyboard.insert(0, [
+                InlineKeyboardButton("⏹️ Вернуться", callback_data=f"boat_return_{user_id}"),
+                InlineKeyboardButton("👥 Пригласить", callback_data=f"boat_invite_{user_id}")
+            ])
+        else:
+            keyboard.insert(0, [InlineKeyboardButton("⛵ В плавании", callback_data=f"boat_in_trip_{user_id}", disabled=True)])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -2312,6 +2532,30 @@ class FishBot:
             await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode="HTML")
         else:
             await update.callback_query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode="HTML")
+
+    async def handle_boat_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка кнопки Выплыть"""
+        user_id = update.effective_user.id
+        can_start, cd = db.can_start_boat_trip(user_id)
+        if can_start:
+            db.start_boat_trip(user_id)
+            await update.callback_query.answer("Вы отправились в плавание!")
+        else:
+            await update.callback_query.answer(f"КД: ещё {int(cd//3600)}ч {int((cd%3600)//60)}м. Можно обойти за 20⭐.", show_alert=True)
+        await self.show_fishing_menu(update, context)
+
+    async def handle_boat_return(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка кнопки Вернуться (делёж улова)"""
+        user_id = update.effective_user.id
+        results = db.return_boat_trip_and_split_catch(user_id)
+        if not results:
+            await update.callback_query.answer("Нет улова или вы не владелец лодки.", show_alert=True)
+            await self.show_fishing_menu(update, context)
+            return
+        msg = "\n".join([f"@{username} — получил {count} рыб, общий вес — {weight:.1f} кг" for _, username, count, weight in results])
+        await update.callback_query.answer("Плавание завершено! Делим улов.")
+        await update.effective_chat.send_message(f"⛵ Итоги плавания:\n{msg}")
+        await self.show_fishing_menu(update, context)
     
     async def handle_change_location(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка смены локации"""
@@ -2947,7 +3191,9 @@ class FishBot:
                     'Обычная':    100,
                     'Редкая':      20,
                     'Легендарная':  0.5,
-                    'Мифическая':   0.001,
+                    'Аквариумная': 0.0007,
+                    'Мифическая':  0.0005,
+                    'Аномалия':    0.0002,
                 }
                 _weights = [_RARITY_WEIGHTS.get(f.get('rarity', 'Обычная'), 100) for f in available_fish]
                 fish = random.choices(available_fish, weights=_weights, k=1)[0]
@@ -4102,6 +4348,9 @@ class FishBot:
             [InlineKeyboardButton("🪱 Наживки", callback_data=f"shop_baits_{user_id}")],
             [InlineKeyboardButton("🕸️ Сети", callback_data=f"shop_nets_{user_id}")],
             [InlineKeyboardButton("🧺 Кормушки и эхолот", callback_data=f"shop_feeders_{user_id}")],
+            [InlineKeyboardButton("⛵ Лодка 'Стандарт' (50💎)", callback_data=f"buy_boat_diamonds1_{user_id}")],
+            [InlineKeyboardButton("⛵ Лодка 'Премиум' (150💎)", callback_data=f"buy_boat_diamonds2_{user_id}")],
+            [InlineKeyboardButton("⛵ Лодка 'Элитная' (500💎)", callback_data=f"buy_boat_diamonds3_{user_id}")],
             [InlineKeyboardButton("💎 Обменник", callback_data=f"shop_exchange_{user_id}")],
             [InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")]
         ]
@@ -4192,6 +4441,39 @@ class FishBot:
                 await query.edit_message_text(f"✅ Наживка {bait_name} куплена!")
             else:
                 await query.edit_message_text("❌ Недостаточно монет!")
+        elif callback_data.startswith("buy_boat_diamonds1_"):
+            price = 50
+            name = "Лодка 'Стандарт'"
+            capacity = 3
+            max_weight = 300.0
+            durability = 150
+            ok = db.buy_paid_boat(user_id, name=name, price=price, capacity=capacity, max_weight=max_weight, durability=durability)
+            if ok:
+                await query.edit_message_text(f"⛵ {name} куплена за {price} 💎! Вместимость: {capacity}, грузоподъёмность: {max_weight} кг, прочность: {durability}.")
+            else:
+                await query.edit_message_text(f"❌ Не удалось купить {name}. Возможно, не хватает бриллиантов или лодка уже есть.")
+        elif callback_data.startswith("buy_boat_diamonds2_"):
+            price = 150
+            name = "Лодка 'Премиум'"
+            capacity = 5
+            max_weight = 600.0
+            durability = 300
+            ok = db.buy_paid_boat(user_id, name=name, price=price, capacity=capacity, max_weight=max_weight, durability=durability)
+            if ok:
+                await query.edit_message_text(f"⛵ {name} куплена за {price} 💎! Вместимость: {capacity}, грузоподъёмность: {max_weight} кг, прочность: {durability}.")
+            else:
+                await query.edit_message_text(f"❌ Не удалось купить {name}. Возможно, не хватает бриллиантов или лодка уже есть.")
+        elif callback_data.startswith("buy_boat_diamonds3_"):
+            price = 500
+            name = "Лодка 'Элитная'"
+            capacity = 8
+            max_weight = 2000.0
+            durability = 1000
+            ok = db.buy_paid_boat(user_id, name=name, price=price, capacity=capacity, max_weight=max_weight, durability=durability)
+            if ok:
+                await query.edit_message_text(f"⛵ {name} куплена за {price} 💎! Вместимость: {capacity}, грузоподъёмность: {max_weight} кг, прочность: {durability}.")
+            else:
+                await query.edit_message_text(f"❌ Не удалось купить {name}. Возможно, не хватает бриллиантов или лодка уже есть.")
         else:
             await query.edit_message_text("❌ Неизвестный товар!")
     
@@ -5764,10 +6046,15 @@ class FishBot:
         else:
             roll_max = 15000
             no_bite_max = 3749
+            # Новые диапазоны для динамита (аналогично обычной ловле, аномалия реже мифической)
             trash_max = 7499
-            common_max = 11999
-            rare_max = 14849
-            legendary_max = 14997
+            common_max = 11399
+            rare_max = 14599
+            legendary_max = 14949
+            aquarium_max = 14979
+            mythic_max = 14999
+            anomaly_max = 15009
+            nft_max = 15010
 
         logger.info(
             "[DYNAMITE] start user=%s chat=%s location=%s guaranteed=%s season=%s level=%s weather_bonus=%+d feeder_bonus=%+d population_penalty=%.2f%%",
@@ -5867,12 +6154,19 @@ class FishBot:
                     logger.info("[DYNAMITE] roll=%s branch=TRASH but no trash in location -> NO_BITE", idx)
                 continue
 
+
             if adjusted_roll <= common_max:
                 target_rarity = "Обычная"
             elif adjusted_roll <= rare_max:
                 target_rarity = "Редкая"
             elif adjusted_roll <= legendary_max:
                 target_rarity = "Легендарная"
+            elif adjusted_roll <= aquarium_max:
+                target_rarity = "Аквариумная"
+            elif adjusted_roll <= mythic_max:
+                target_rarity = "Мифическая"
+            elif adjusted_roll <= anomaly_max:
+                target_rarity = "Аномалия"
             else:
                 # Для динамита NFT отключен: верхний ролл тоже считается мификом.
                 target_rarity = "Мифическая"
@@ -5884,34 +6178,57 @@ class FishBot:
                 logger.info("[DYNAMITE] roll=%s branch=FISH rarity=%s but pool empty -> NO_BITE", idx, target_rarity)
                 continue
 
-            weight = round(random.uniform(float(fish['min_weight']), float(fish['max_weight'])), 2)
-            length = round(random.uniform(float(fish['min_length']), float(fish['max_length'])), 1)
-            rarity_circle = {
-                'Обычная': '⚪',
-                'Редкая': '🔵',
-                'Легендарная': '🟡',
-                'Мифическая': '🔴',
-            }.get(target_rarity, '⚪')
-            pending_catches.append({
-                'name': fish['name'],
-                'weight': weight,
-                'length': length,
-            })
-            fish_value = int(db.calculate_fish_price(fish, weight, length))
-            total_haul_coins += fish_value
-            fish_count += 1
-            result_lines.append(
-                f"{idx}. {rarity_circle} {format_fish_name(fish['name'])} ({length} см, {weight} кг)"
-            )
-            logger.info(
-                "[DYNAMITE] roll=%s branch=FISH rarity=%s name=%s length=%scm weight=%skg price=%s",
-                idx,
-                target_rarity,
-                fish['name'],
-                length,
-                weight,
-                fish_value,
-            )
+            # --- Ограничение веса рыбы при ловле динамитом ---
+            max_fish_weight = 550.0
+            rarity_order = ['Обычная', 'Редкая', 'Легендарная', 'Мифическая']
+            rarity_idx = rarity_order.index(target_rarity) if target_rarity in rarity_order else 0
+            found = False
+            search_rarity = target_rarity
+            search_attempts = 0
+            fish_candidate = fish
+            while not found and rarity_idx >= 0:
+                available_fish = db.get_fish_by_location(location, season, min_level=player_level)
+                pool = [f for f in available_fish if f.get('rarity') == search_rarity and float(f.get('max_weight', 0)) <= max_fish_weight and float(f.get('min_weight', 0)) <= max_fish_weight]
+                if pool:
+                    fish_candidate = random.choice(pool)
+                    weight = round(random.uniform(float(fish_candidate['min_weight']), min(float(fish_candidate['max_weight']), max_fish_weight)), 2)
+                    length = round(random.uniform(float(fish_candidate['min_length']), float(fish_candidate['max_length'])), 1)
+                    found = True
+                else:
+                    rarity_idx -= 1
+                    if rarity_idx >= 0:
+                        search_rarity = rarity_order[rarity_idx]
+            if found:
+                rarity_circle = {
+                    'Обычная': '⚪',
+                    'Редкая': '🔵',
+                    'Легендарная': '🟡',
+                    'Мифическая': '🔴',
+                }.get(fish_candidate['rarity'], '⚪')
+                pending_catches.append({
+                    'name': fish_candidate['name'],
+                    'weight': weight,
+                    'length': length,
+                })
+                fish_value = int(db.calculate_fish_price(fish_candidate, weight, length))
+                total_haul_coins += fish_value
+                fish_count += 1
+                result_lines.append(
+                    f"{idx}. {rarity_circle} {format_fish_name(fish_candidate['name'])} ({length} см, {weight} кг)"
+                )
+                logger.info(
+                    "[DYNAMITE] roll=%s branch=FISH rarity=%s name=%s length=%scm weight=%skg price=%s",
+                    idx,
+                    fish_candidate['rarity'],
+                    fish_candidate['name'],
+                    length,
+                    weight,
+                    fish_value,
+                )
+            else:
+                fail_count += 1
+                result_lines.append(f"{idx}. Срыв (нет подходящей рыбы)")
+                logger.info("[DYNAMITE] roll=%s branch=FISH no suitable fish found", idx)
 
         # Очень редкая отдельная механика для динамита: рыбохрана.
         if random.random() < DYNAMITE_GUARD_CHANCE:
@@ -8095,6 +8412,12 @@ def main():
     # debug handlers removed
     application.add_handler(CommandHandler("fish", bot_instance.fish_command))
     application.add_handler(CommandHandler("menu", bot_instance.menu_command))
+    application.add_handler(CommandHandler("buy_boat", bot_instance.buy_paid_boat_command))
+    application.add_handler(CommandHandler("cure_seasick", bot_instance.cure_seasick_command))
+    application.add_handler(CommandHandler("skip_boat_cd", bot_instance.skip_boat_cooldown_command))
+            application.add_handler(CallbackQueryHandler(bot_instance.handle_skip_boat_cooldown, pattern=r"^skip_boat_cd_\\d+$"))
+        application.add_handler(CallbackQueryHandler(bot_instance.handle_cure_seasick, pattern=r"^cure_seasick_\\d+$"))
+    application.add_handler(CommandHandler("invite", bot_instance.invite_command))
     application.add_handler(CommandHandler("shop", bot_instance.handle_shop))
     application.add_handler(CommandHandler("net", bot_instance.net_command))
     application.add_handler(CommandHandler("dynamite", bot_instance.dynamite_command))
@@ -8155,6 +8478,11 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_use_harpoon, pattern="^use_harpoon_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_use_net, pattern="^use_net_"))  # Использование сетей
     application.add_handler(CallbackQueryHandler(bot_instance.handle_net_skip_cd, pattern="^net_skip_cd_"))  # Сброс КД сетей
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_boat_invite_accept, pattern="^boat_invite_accept_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_boat_invite_decline, pattern="^boat_invite_decline_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_boat_start, pattern="^boat_start_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_boat_return, pattern="^boat_return_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_buy_paid_boat, pattern="^buy_paid_boat_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_back_to_menu, pattern="^back_to_menu_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_sell_fish, pattern=r"^sell_fish_\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_sell_fish, pattern=r"^sell_page_\d+_\d+$"))

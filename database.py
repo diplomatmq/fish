@@ -424,6 +424,424 @@ RARITY_XP_MULTIPLIERS = {
 }
 
 class Database:
+    def skip_boat_cooldown(self, user_id: int, price: int = 20) -> bool:
+                                            """Обойти КД лодки за звёзды. Списывает звёзды, сбрасывает КД, активирует лодку."""
+                                            self._ensure_boat_tables()
+                                            player = self.get_player(user_id, 0)
+                                            stars = int(player.get('stars', 0)) if player else 0
+                                            if stars < price:
+                                                return False
+                                            self.increment_chat_stars(0, -price)
+                                            with self._connect() as conn:
+                                                cursor = conn.cursor()
+                                                cursor.execute('''
+                                                    UPDATE boats SET cooldown_until = NULL, is_active = 1 WHERE user_id = ? AND type = 'free'
+                                                ''', (user_id,))
+                                                conn.commit()
+                                            return True
+
+    def cure_seasick(self, user_id: int, price: int = 10) -> bool:
+                                            """Вылечить морскую болезнь за звёзды. Списывает звёзды, удаляет эффект."""
+                                            self._ensure_user_effects_table()
+                                            player = self.get_player(user_id, 0)
+                                            stars = int(player.get('stars', 0)) if player else 0
+                                            if stars < price:
+                                                return False
+                                            self.increment_chat_stars(0, -price)
+                                            with self._connect() as conn:
+                                                cursor = conn.cursor()
+                                                cursor.execute('''
+                                                    DELETE FROM user_effects WHERE user_id = ? AND effect_type = 'seasick'
+                                                ''', (user_id,))
+                                                conn.commit()
+                                            return True
+    def return_boat_trip_and_split_catch(self, user_id: int) -> list:
+                                        """Возврат лодки: делит улов между участниками, добавляет в caught_fish, возвращает список результатов [(user_id, username, count, total_weight)]. Только владелец может вызвать."""
+                                        self._ensure_boat_tables()
+                                        self._ensure_boat_catch_table()
+                                        with self._connect() as conn:
+                                            cursor = conn.cursor()
+                                            # Найти активную лодку владельца
+                                            cursor.execute('''
+                                                SELECT id FROM boats WHERE user_id = ? AND is_active = 1 LIMIT 1
+                                            ''', (user_id,))
+                                            row = cursor.fetchone()
+                                            if not row:
+                                                return []
+                                            boat_id = row[0]
+                                            # Получить участников
+                                            cursor.execute('''
+                                                SELECT user_id FROM boat_members WHERE boat_id = ?
+                                            ''', (boat_id,))
+                                            members = [r[0] for r in cursor.fetchall()]
+                                            if not members:
+                                                return []
+                                            # Получить улов
+                                            cursor.execute('''
+                                                SELECT fish_id, weight FROM boat_catch WHERE boat_id = ?
+                                            ''', (boat_id,))
+                                            catch = cursor.fetchall()
+                                            total_fish = len(catch)
+                                            if total_fish == 0:
+                                                # Просто завершить плавание
+                                                cursor.execute('UPDATE boats SET is_active = 0, current_weight = 0 WHERE id = ?', (boat_id,))
+                                                conn.commit()
+                                                return []
+                                            per_user = total_fish // len(members)
+                                            remainder = total_fish % len(members)
+                                            # Получить имена
+                                            usernames = {}
+                                            for uid in members:
+                                                player = self.get_player(uid, 0)
+                                                usernames[uid] = player.get('username', f'id{uid}') if player else f'id{uid}'
+                                            # Раздать рыбу
+                                            idx = 0
+                                            results = []
+                                            for uid in members:
+                                                count = per_user + (1 if uid == user_id and remainder > 0 else 0)
+                                                user_catch = catch[idx:idx+count]
+                                                idx += count
+                                                total_weight = sum([w for _, w in user_catch])
+                                                # Добавить в caught_fish
+                                                for fish_id, weight in user_catch:
+                                                    cursor.execute('SELECT name, location, length FROM fish WHERE id = ?', (fish_id,))
+                                                    fish_row = cursor.fetchone()
+                                                    fish_name = fish_row[0] if fish_row else '??'
+                                                    location = fish_row[1] if fish_row else ''
+                                                    length = fish_row[2] if fish_row else 0
+                                                    cursor.execute('''
+                                                        INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, location, length)
+                                                        VALUES (?, 0, ?, ?, ?, ?)
+                                                    ''', (uid, fish_name, weight, location, length))
+                                                results.append((uid, usernames[uid], count, total_weight))
+                                            # Очистить boat_catch и сбросить лодку
+                                            cursor.execute('DELETE FROM boat_catch WHERE boat_id = ?', (boat_id,))
+                                            cursor.execute('UPDATE boats SET is_active = 0, current_weight = 0 WHERE id = ?', (boat_id,))
+                                            conn.commit()
+                                            return results
+    def _ensure_boat_invites_table(self):
+                                    """Создать таблицу boat_invites, если её нет."""
+                                    with self._connect() as conn:
+                                        cursor = conn.cursor()
+                                        cursor.execute('''
+                                            CREATE TABLE IF NOT EXISTS boat_invites (
+                                                id INTEGER PRIMARY KEY,
+                                                boat_id INTEGER NOT NULL,
+                                                from_user BIGINT NOT NULL,
+                                                to_user BIGINT NOT NULL,
+                                                status TEXT DEFAULT 'pending',
+                                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                                            )
+                                        ''')
+                                        conn.commit()
+
+    def create_boat_invite(self, from_user: int, to_user: int) -> bool:
+                                    """Создать приглашение в лодку от from_user к to_user."""
+                                    self._ensure_boat_tables()
+                                    self._ensure_boat_invites_table()
+                                    boat = self.get_user_boat(from_user)
+                                    if not boat or not boat['is_active']:
+                                        return False
+                                    with self._connect() as conn:
+                                        cursor = conn.cursor()
+                                        cursor.execute('''
+                                            INSERT INTO boat_invites (boat_id, from_user, to_user, status)
+                                            VALUES (?, ?, ?, 'pending')
+                                        ''', (boat['id'], from_user, to_user))
+                                        conn.commit()
+                                    return True
+
+    def respond_boat_invite(self, invite_id: int, accept: bool) -> bool:
+                                    """Принять или отклонить приглашение в лодку."""
+                                    self._ensure_boat_invites_table()
+                                    with self._connect() as conn:
+                                        cursor = conn.cursor()
+                                        status = 'accepted' if accept else 'declined'
+                                        cursor.execute('''
+                                            UPDATE boat_invites SET status = ? WHERE id = ?
+                                        ''', (status, invite_id))
+                                        if accept:
+                                            # Добавить пользователя в boat_members
+                                            cursor.execute('SELECT boat_id, to_user FROM boat_invites WHERE id = ?', (invite_id,))
+                                            row = cursor.fetchone()
+                                            if row:
+                                                boat_id, user_id = row
+                                                cursor.execute('''
+                                                    INSERT OR IGNORE INTO boat_members (boat_id, user_id, is_owner)
+                                                    VALUES (?, ?, 0)
+                                                ''', (boat_id, user_id))
+                                        conn.commit()
+                                    return True
+    def buy_paid_boat(self, user_id: int, name: str = 'Платная лодка', price: int = 50, capacity: int = 3, max_weight: float = 300.0, durability: int = 150) -> bool:
+                                """Покупка платной лодки за бриллианты. Возвращает True если успешно."""
+                                self._ensure_boat_tables()
+                                # Проверить, хватает ли бриллиантов
+                                player = self.get_player(user_id, 0)
+                                diamonds = int(player.get('diamonds', 0)) if player else 0
+                                if diamonds < price:
+                                    return False
+                                # Списать бриллианты
+                                self.subtract_diamonds(user_id, 0, price)
+                                # Создать лодку
+                                with self._connect() as conn:
+                                    cursor = conn.cursor()
+                                    cursor.execute('''
+                                        INSERT INTO boats (user_id, type, name, capacity, max_weight, durability, max_durability, is_active)
+                                        VALUES (?, 'paid', ?, ?, ?, ?, ?, 0)
+                                    ''', (user_id, name, capacity, max_weight, durability, durability))
+                                    boat_id = cursor.lastrowid
+                                    cursor.execute('''
+                                        INSERT INTO boat_members (boat_id, user_id, is_owner)
+                                        VALUES (?, ?, 1)
+                                    ''', (boat_id, user_id))
+                                    conn.commit()
+                                return True
+    def _ensure_user_effects_table(self):
+                            """Создать таблицу user_effects, если её нет."""
+                            with self._connect() as conn:
+                                cursor = conn.cursor()
+                                cursor.execute('''
+                                    CREATE TABLE IF NOT EXISTS user_effects (
+                                        id INTEGER PRIMARY KEY,
+                                        user_id BIGINT NOT NULL,
+                                        effect_type TEXT NOT NULL,
+                                        expires_at TIMESTAMP NOT NULL
+                                    )
+                                ''')
+                                conn.commit()
+
+    def apply_storm_event(self, user_id: int):
+                            """Применить шторм: увеличить КД бесплатной лодки до 18ч или уменьшить прочность платной."""
+                            from datetime import datetime, timedelta, timezone
+                            boat = self.get_user_boat(user_id)
+                            if boat['type'] == 'free':
+                                cooldown_until = datetime.now(timezone.utc) + timedelta(hours=18)
+                                with self._connect() as conn:
+                                    cursor = conn.cursor()
+                                    cursor.execute("UPDATE boats SET cooldown_until = ? WHERE id = ?", (cooldown_until.isoformat(), boat['id']))
+                                    conn.commit()
+                            else:
+                                import random
+                                loss = random.randint(2, 10)
+                                durability = max(0, int(boat.get('durability', 0)) - loss)
+                                with self._connect() as conn:
+                                    cursor = conn.cursor()
+                                    cursor.execute("UPDATE boats SET durability = ? WHERE id = ?", (durability, boat['id']))
+                                    conn.commit()
+
+    def apply_seasick_event(self, user_id: int):
+                            """Применить морскую болезнь: игрок не может ловить 1 час."""
+                            from datetime import datetime, timedelta, timezone
+                            self._ensure_user_effects_table()
+                            expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+                            with self._connect() as conn:
+                                cursor = conn.cursor()
+                                cursor.execute('''
+                                    INSERT INTO user_effects (user_id, effect_type, expires_at)
+                                    VALUES (?, 'seasick', ?)
+                                ''', (user_id, expires_at.isoformat()))
+                                conn.commit()
+
+    def is_user_seasick(self, user_id: int) -> bool:
+                            """Проверить, есть ли у пользователя эффект морской болезни."""
+                            self._ensure_user_effects_table()
+                            from datetime import datetime, timezone
+                            now = datetime.now(timezone.utc)
+                            with self._connect() as conn:
+                                cursor = conn.cursor()
+                                cursor.execute('''
+                                    SELECT expires_at FROM user_effects WHERE user_id = ? AND effect_type = 'seasick' AND expires_at > ? LIMIT 1
+                                ''', (user_id, now.isoformat()))
+                                row = cursor.fetchone()
+                                return bool(row)
+    def check_boat_weight_warning(self, user_id: int, threshold: float = 50.0) -> float:
+                        """Проверить, осталось ли мало веса в лодке. Возвращает остаток (кг), если меньше threshold, иначе None."""
+                        boat = self.get_user_boat(user_id)
+                        max_weight = float(boat.get('max_weight', 0))
+                        current_weight = float(boat.get('current_weight', 0))
+                        left = max_weight - current_weight
+                        if left < threshold:
+                            return left
+                        return None
+
+    def check_boat_crash(self, user_id: int) -> bool:
+                        """Проверить, произошло ли крушение лодки (превышение веса > 10 кг). Если да — сбросить плавание и пометить лодку как сломанную."""
+                        boat = self.get_user_boat(user_id)
+                        max_weight = float(boat.get('max_weight', 0))
+                        current_weight = float(boat.get('current_weight', 0))
+                        if current_weight > max_weight + 10:
+                            with self._connect() as conn:
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE boats SET is_active = 0 WHERE id = ?", (boat['id'],))
+                                cursor.execute("UPDATE boats SET durability = 0 WHERE id = ?", (boat['id'],))
+                                conn.commit()
+                            return True
+                        return False
+
+                    def reset_boat_trip(self, user_id: int):
+                        """Принудительно завершить плавание (например, при крушении)."""
+                        boat = self.get_user_boat(user_id)
+                        with self._connect() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("UPDATE boats SET is_active = 0 WHERE id = ?", (boat['id'],))
+                            conn.commit()
+                def _ensure_boat_catch_table(self):
+                    """Создать таблицу boat_catch, если её нет."""
+                    with self._connect() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute('''
+                            CREATE TABLE IF NOT EXISTS boat_catch (
+                                id INTEGER PRIMARY KEY,
+                                boat_id INTEGER NOT NULL,
+                                fish_id INTEGER NOT NULL,
+                                weight REAL NOT NULL
+                            )
+                        ''')
+                        conn.commit()
+
+                def is_user_on_boat_trip(self, user_id: int) -> bool:
+                    """Проверить, находится ли пользователь сейчас в плавании на лодке."""
+                    self._ensure_boat_tables()
+                    with self._connect() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute('''
+                            SELECT b.is_active FROM boats b
+                            JOIN boat_members bm ON bm.boat_id = b.id
+                            WHERE bm.user_id = ? AND b.is_active = 1
+                            LIMIT 1
+                        ''', (user_id,))
+                        row = cursor.fetchone()
+                        return bool(row and row[0])
+
+                def add_fish_to_boat(self, user_id: int, fish_id: int, weight: float) -> bool:
+                    """Добавить пойманную рыбу в лодку пользователя (если он в плавании)."""
+                    self._ensure_boat_tables()
+                    self._ensure_boat_catch_table()
+                    with self._connect() as conn:
+                        cursor = conn.cursor()
+                        # Найти активную лодку пользователя
+                        cursor.execute('''
+                            SELECT b.id FROM boats b
+                            JOIN boat_members bm ON bm.boat_id = b.id
+                            WHERE bm.user_id = ? AND b.is_active = 1
+                            LIMIT 1
+                        ''', (user_id,))
+                        row = cursor.fetchone()
+                        if not row:
+                            return False
+                        boat_id = row[0]
+                        cursor.execute('''
+                            INSERT INTO boat_catch (boat_id, fish_id, weight)
+                            VALUES (?, ?, ?)
+                        ''', (boat_id, fish_id, weight))
+                        # Обновить текущий вес лодки
+                        cursor.execute('''
+                            UPDATE boats SET current_weight = current_weight + ? WHERE id = ?
+                        ''', (weight, boat_id))
+                        conn.commit()
+                        return True
+            def get_user_boat(self, user_id: int) -> dict:
+                """Получить лодку пользователя (только бесплатную, если нет — создать)."""
+                self._ensure_boat_tables()
+                with self._connect() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT * FROM boats WHERE user_id = ? AND type = 'free' LIMIT 1", (user_id,))
+                    row = cursor.fetchone()
+                    if row:
+                        columns = [desc[0] for desc in cursor.description]
+                        return dict(zip(columns, row))
+                    # Если нет — создать бесплатную лодку
+                    cursor.execute('''
+                        INSERT INTO boats (user_id, type, name, capacity, max_weight, durability, max_durability, is_active)
+                        VALUES (?, 'free', 'Бесплатная лодка', 1, 100.0, 0, 0, 0)
+                    ''', (user_id,))
+                    boat_id = cursor.lastrowid
+                    cursor.execute('''
+                        INSERT INTO boat_members (boat_id, user_id, is_owner)
+                        VALUES (?, ?, 1)
+                    ''', (boat_id, user_id))
+                    conn.commit()
+                    cursor.execute("SELECT * FROM boats WHERE id = ?", (boat_id,))
+                    row = cursor.fetchone()
+                    columns = [desc[0] for desc in cursor.description]
+                    return dict(zip(columns, row))
+
+            def get_boat_members_count(self, boat_id: int) -> int:
+                """Получить количество участников в лодке."""
+                self._ensure_boat_tables()
+                with self._connect() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT COUNT(*) FROM boat_members WHERE boat_id = ?", (boat_id,))
+                    result = cursor.fetchone()
+                    return result[0] if result else 0
+
+            def can_start_boat_trip(self, user_id: int) -> (bool, float):
+                """Можно ли выплыть: True/False и сколько осталось секунд КД."""
+                boat = self.get_user_boat(user_id)
+                cooldown_until = boat.get('cooldown_until')
+                from datetime import datetime, timezone
+                if cooldown_until:
+                    try:
+                        dt = datetime.fromisoformat(str(cooldown_until))
+                        now = datetime.now(timezone.utc)
+                        delta = (dt - now).total_seconds()
+                        if delta > 0:
+                            return False, delta
+                    except Exception:
+                        pass
+                return True, 0
+
+            def start_boat_trip(self, user_id: int, force_stars: bool = False) -> bool:
+                """Старт плавания: если нет КД или force_stars=True, активирует лодку и сбрасывает КД."""
+                from datetime import datetime, timedelta, timezone
+                boat = self.get_user_boat(user_id)
+                boat_id = boat['id']
+                can_start, cd = self.can_start_boat_trip(user_id)
+                if not can_start and not force_stars:
+                    return False
+                cooldown_hours = 12
+                if not force_stars:
+                    cooldown_until = datetime.now(timezone.utc) + timedelta(hours=cooldown_hours)
+                else:
+                    cooldown_until = datetime.now(timezone.utc)
+                with self._connect() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE boats SET is_active = 1, cooldown_until = ? WHERE id = ?
+                    """, (cooldown_until.isoformat(), boat_id))
+                    conn.commit()
+                return True
+        def _ensure_boat_tables(self):
+            """Создать таблицы для лодок и участников лодки, если их еще нет."""
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                # Таблица лодок
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS boats (
+                        id INTEGER PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        type TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        capacity INTEGER NOT NULL,
+                        max_weight REAL NOT NULL,
+                        current_weight REAL DEFAULT 0,
+                        durability INTEGER DEFAULT 0,
+                        max_durability INTEGER DEFAULT 0,
+                        cooldown_until TIMESTAMP,
+                        is_active INTEGER DEFAULT 0
+                    )
+                ''')
+                # Таблица участников лодки
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS boat_members (
+                        id INTEGER PRIMARY KEY,
+                        boat_id INTEGER NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        is_owner INTEGER DEFAULT 0,
+                        FOREIGN KEY(boat_id) REFERENCES boats(id)
+                    )
+                ''')
+                conn.commit()
     def __init__(self):
         self._cached_conn: Optional['PostgresConnWrapper'] = None
         self.init_db()
@@ -1566,6 +1984,36 @@ class Database:
                 ("Каменный окунь", "Редкая", 0.2, 3.0, 15, 50, 60, "Море", "Все", "Креветка,Морской червь,Сало,Кусочки рыбы", 12, None),
                 ("Морская лисица", "Редкая", 5.0, 60.0, 40, 180, 350, "Море", "Все", "Кусочки рыбы,Сало,Моллюск,Кальмар", 45, None),
                 ("Морской черт", "Мифическая", 15.0, 100.0, 60, 200, 850, "Море", "Все", "Крупный живец,Туша рыбы,Кальмар,Спрут,Кусок мяса", 75, None),
+
+                # ===== АКВАРИУМНЫЕ РЫБЫ =====
+                ("Гуппи розовый", "Аквариумная", 0.01, 0.03, 2, 4, 10, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Гуппи синий", "Аквариумная", 0.01, 0.03, 2, 4, 10, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Скалярия мраморная", "Аквариумная", 0.1, 0.3, 5, 10, 20, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 3, None),
+                ("Скалярия золотая", "Аквариумная", 0.1, 0.3, 5, 10, 20, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 3, None),
+                ("Данио розовый", "Аквариумная", 0.01, 0.05, 2, 5, 8, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Данио леопардовый", "Аквариумная", 0.01, 0.05, 2, 5, 8, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Моллинезия черная", "Аквариумная", 0.05, 0.2, 3, 7, 12, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Моллинезия далматин", "Аквариумная", 0.05, 0.2, 3, 7, 12, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Петушок синий", "Аквариумная", 0.02, 0.08, 3, 6, 15, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Петушок мультиколор", "Аквариумная", 0.02, 0.08, 3, 6, 15, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Неон синий", "Аквариумная", 0.01, 0.03, 2, 4, 10, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Неон красный", "Аквариумная", 0.01, 0.03, 2, 4, 10, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Тернеция белая", "Аквариумная", 0.01, 0.04, 2, 5, 10, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Тернеция голубая", "Аквариумная", 0.01, 0.04, 2, 5, 10, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Барбус суматранский", "Аквариумная", 0.02, 0.08, 3, 6, 12, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Барбус зеленый", "Аквариумная", 0.02, 0.08, 3, 6, 12, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Гурами мраморный", "Аквариумная", 0.05, 0.15, 4, 8, 14, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Гурами золотой", "Аквариумная", 0.05, 0.15, 4, 8, 14, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Пецилия красная", "Аквариумная", 0.01, 0.05, 2, 5, 10, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+                ("Пецилия желтая", "Аквариумная", 0.01, 0.05, 2, 5, 10, "Река,Озеро", "Все", "Манка,Тесто,Хлеб,Опарыш,Мотыль", 2, None),
+
+                # ===== АНОМАЛИЯ =====
+                ("Рыба-трамп", "Аномалия", 0.5, 2.0, 20, 40, 100, "Море", "Все", "Черви,Живец,Опарыш,Мотыль,Кусочки рыбы,Блесна,Воблер", 5, None),
+                ("Сакабамбаспис", "Аномалия", 0.3, 1.5, 15, 35, 90, "Море", "Все", "Черви,Живец,Опарыш,Мотыль,Кусочки рыбы,Блесна,Воблер", 5, None),
+                ("Плащеносная акула", "Аномалия", 1.0, 5.0, 30, 80, 120, "Море", "Все", "Черви,Живец,Опарыш,Мотыль,Кусочки рыбы,Блесна,Воблер", 5, None),
+                ("Рыба-капля", "Аномалия", 0.7, 3.0, 25, 50, 110, "Море", "Все", "Черви,Живец,Опарыш,Мотыль,Кусочки рыбы,Блесна,Воблер", 5, None),
+                ("Баррелей", "Аномалия", 0.2, 1.0, 10, 25, 80, "Море", "Все", "Черви,Живец,Опарыш,Мотыль,Кусочки рыбы,Блесна,Воблер", 5, None),
+                ("Черный живоглот", "Аномалия", 0.8, 4.0, 20, 45, 130, "Море", "Все", "Черви,Живец,Опарыш,Мотыль,Кусочки рыбы,Блесна,Воблер", 5, None),
             ]
 
             from fish_stickers import FISH_INFO
