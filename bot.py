@@ -18,7 +18,7 @@ def get_button_style(text: str) -> str:
         return "destructive"
     return None
 from telegram.error import BadRequest, Forbidden, RetryAfter, TimedOut, NetworkError, Conflict
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, PreCheckoutQueryHandler, filters, ContextTypes, Defaults, ExtBot
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, PreCheckoutQueryHandler, TypeHandler, filters, ContextTypes, Defaults, ExtBot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.date import DateTrigger
@@ -1430,6 +1430,7 @@ class FishBot:
         del self.active_invoices[int(owner_id)]
 
     def __init__(self):
+        self.is_global_stopped = False
         self.scheduler = None  # Будет создан в main() с asyncio loop
         self.user_locations = {}  # Временное хранение локаций пользователей
         self.active_timeouts = {}  # Отслеживание активных таймеров
@@ -1693,13 +1694,46 @@ class FishBot:
         except Exception as e:
             logger.error(f"Error in auto_recover_rods: {e}")
         
+    async def check_global_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Pre-handler: блокирует обработку событий во время паузы бота."""
+        if not self.is_global_stopped:
+            return
+            
+        from telegram.ext import ApplicationHandlerStop
+        
+        allowed_chat_id = -1003864313222
+        owner_id = self.OWNER_ID
+        
+        user_id = update.effective_user.id if update.effective_user else None
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        
+        is_allowed = False
+        if chat_id == owner_id and user_id == owner_id:
+            is_allowed = True
+        elif chat_id == allowed_chat_id:
+            is_allowed = True
+            
+        if not is_allowed:
+            raise ApplicationHandlerStop()
+
     async def welcome_new_member(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handler for new members is disabled to avoid auto-greeting."""
         # Greeting new members is intentionally disabled.
         return
 
+    async def stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /stop (только владелец)"""
+        if getattr(update.effective_user, 'id', None) != self.OWNER_ID:
+            return
+        self.is_global_stopped = True
+        await update.message.reply_text("Бот приостановлен во всех чатах (кроме вас и разрешенного). Для возврата введите /start")
+
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start"""
+        if getattr(self, 'is_global_stopped', False) and getattr(update.effective_user, 'id', None) == self.OWNER_ID:
+            self.is_global_stopped = False
+            await update.message.reply_text("Бот возобновил работу во всех чатах.")
+            
         # Запускаем scheduler при первом запросе
         if self.scheduler and not self.scheduler.running:
             self.scheduler.start()
@@ -8379,7 +8413,10 @@ def main():
             await update.message.reply_text(f"Не удалось выдать удочку '{rod_name}'. Проверьте имя удочки.")
 
     # Добавление обработчиков
+    application.add_handler(TypeHandler(Update, bot_instance.check_global_stop), group=-1)
+
     application.add_handler(CommandHandler("dbinfo", dbinfo_command))
+    application.add_handler(CommandHandler("stop", bot_instance.stop))
     application.add_handler(CommandHandler("start", bot_instance.start))
     application.add_handler(CommandHandler("dbstats", dbstats_command))
     application.add_handler(CommandHandler("backupdb", backupdb_command))

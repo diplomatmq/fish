@@ -572,7 +572,7 @@ class Database:
                     ''', (boat_id, user_id))
             conn.commit()
         return True
-    def buy_paid_boat(self, user_id: int, name: str = 'Платная лодка', price: int = 50, capacity: int = 3, max_weight: float = 300.0, durability: int = 150) -> bool:
+    def buy_paid_boat(self, user_id: int, name: str = 'Платная лодка', price: int = 50, capacity: int = 3, max_weight: float = 1500.0, durability: int = 150) -> bool:
         """Покупка платной лодки за бриллианты. Возвращает True если успешно."""
         self._ensure_boat_tables()
         # Проверить, хватает ли бриллиантов
@@ -740,6 +740,37 @@ class Database:
             ''', (weight, boat_id))
             conn.commit()
             return True
+    def get_active_boat_by_user(self, user_id: int):
+        self._ensure_boat_tables()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT b.* FROM boats b
+                JOIN boat_members bm ON bm.boat_id = b.id
+                WHERE bm.user_id = ? AND b.is_active = 1
+                LIMIT 1
+            ''', (user_id,))
+            row = cursor.fetchone()
+            if row:
+                columns = [desc[0] for desc in cursor.description]
+                return dict(zip(columns, row))
+            return None
+
+    def add_boat_catch(self, boat_id: int, item_name: str, weight: float) -> bool:
+        self._ensure_boat_catch_table()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT id FROM fish WHERE name = ? LIMIT 1', (item_name,))
+            row = cursor.fetchone()
+            item_id = row[0] if row else 0
+            cursor.execute('''
+                INSERT INTO boat_catch (boat_id, fish_id, weight)
+                VALUES (?, ?, ?)
+            ''', (boat_id, item_id, weight))
+            cursor.execute('UPDATE boats SET current_weight = current_weight + ? WHERE id = ?', (weight, boat_id))
+            conn.commit()
+            return True
+
     def get_user_boat(self, user_id: int) -> dict:
         """Получить лодку пользователя (только бесплатную, если нет — создать)."""
         self._ensure_boat_tables()
@@ -753,7 +784,7 @@ class Database:
             # Если нет — создать бесплатную лодку
             cursor.execute('''
                 INSERT INTO boats (user_id, type, name, capacity, max_weight, durability, max_durability, is_active)
-                VALUES (?, 'free', 'Бесплатная лодка', 1, 100.0, 0, 0, 0)
+                VALUES (?, 'free', 'Бесплатная лодка', 1, 500.0, 0, 0, 0)
             ''', (user_id,))
             boat_id = cursor.lastrowid
             cursor.execute('''
@@ -1141,6 +1172,12 @@ class Database:
                 )
             ''')
             
+            # Initialize boat-related tables
+            self._ensure_boat_tables()
+            self._ensure_boat_catch_table()
+            self._ensure_boat_invites_table()
+            self._ensure_user_effects_table()
+
             conn.commit()
         
         # Ensure integer PK columns have sequences/defaults (Postgres)
