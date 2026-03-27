@@ -589,7 +589,8 @@ class Database:
                 INSERT INTO boats (user_id, type, name, capacity, max_weight, durability, max_durability, is_active)
                 VALUES (?, 'paid', ?, ?, ?, ?, ?, 0)
             ''', (user_id, name, capacity, max_weight, durability, durability))
-            boat_id = cursor.lastrowid
+            cursor.execute("SELECT id FROM boats WHERE user_id = ? AND type = 'paid' ORDER BY id DESC LIMIT 1", (user_id,))
+            boat_id = cursor.fetchone()[0]
             cursor.execute('''
                 INSERT INTO boat_members (boat_id, user_id, is_owner)
                 VALUES (?, ?, 1)
@@ -786,7 +787,8 @@ class Database:
                 INSERT INTO boats (user_id, type, name, capacity, max_weight, durability, max_durability, is_active)
                 VALUES (?, 'free', 'Бесплатная лодка', 1, 500.0, 0, 0, 0)
             ''', (user_id,))
-            boat_id = cursor.lastrowid
+            cursor.execute("SELECT id FROM boats WHERE user_id = ? AND type = 'free'", (user_id,))
+            boat_id = cursor.fetchone()[0]
             cursor.execute('''
                 INSERT INTO boat_members (boat_id, user_id, is_owner)
                 VALUES (?, ?, 1)
