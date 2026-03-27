@@ -2534,6 +2534,21 @@ class FishBot:
         # Если есть морская болезнь — добавить кнопку лечения
         if db.is_user_seasick(user_id):
             keyboard.insert(1, [InlineKeyboardButton("🚑 Вылечить морскую болезнь", callback_data=f"cure_seasick_{user_id}")])
+        # Кнопки при активном плавании
+        if is_active:
+            if boat and boat.get('user_id') == user_id:
+                keyboard.insert(0, [
+                    InlineKeyboardButton("⏹️ Вернуться", callback_data=f"boat_return_{user_id}"),
+                    InlineKeyboardButton("👥 Пригласить", callback_data=f"boat_invite_{user_id}")
+                ])
+            else:
+                keyboard.insert(0, [InlineKeyboardButton("⛵ В плавании", callback_data=f"boat_in_trip_{user_id}")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        if update.message:
+            await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode="HTML")
+        else:
+            await update.callback_query.edit_message_text(menu_text, reply_markup=reply_markup, parse_mode="HTML")
 
     async def handle_skip_boat_cooldown(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка сброса КД лодки по кнопке в меню."""
@@ -2556,16 +2571,8 @@ class FishBot:
             await self.show_fishing_menu(update, context)
         else:
             await update.callback_query.answer("❌ Не удалось вылечить морскую болезнь. Возможно, нет болезни или не хватает звёзд.", show_alert=True)
-        if boat.get('user_id') == user_id:
-            keyboard.insert(0, [
-                InlineKeyboardButton("⏹️ Вернуться", callback_data=f"boat_return_{user_id}"),
-                InlineKeyboardButton("👥 Пригласить", callback_data=f"boat_invite_{user_id}")
-            ])
-        else:
-            keyboard.insert(0, [InlineKeyboardButton("⛵ В плавании", callback_data=f"boat_in_trip_{user_id}", disabled=True)])
 
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
+    async def _build_menu_reply(self, update, menu_text, reply_markup):
         if update.message:
             await update.message.reply_text(menu_text, reply_markup=reply_markup, parse_mode="HTML")
         else:
