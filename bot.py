@@ -2514,28 +2514,9 @@ class FishBot:
             [InlineKeyboardButton("🧺 Лавка", callback_data=f"sell_fish_{user_id}"), InlineKeyboardButton("🛒 Магазин", callback_data=f"shop_{user_id}")],
             [InlineKeyboardButton("📊 Статистика", callback_data=f"stats_{user_id}"), InlineKeyboardButton("🎒 Инвентарь", callback_data=f"inventory_{user_id}")]
         ]
-        # Кнопка Выплыть/Вернуться/Пригласить
-        if not is_active:
-            keyboard.insert(0, [
-                InlineKeyboardButton(f"▶️ Выплыть ({members_count}/{capacity})", callback_data=f"boat_start_{user_id}")
-            ])
-            keyboard.insert(1, [
-                InlineKeyboardButton("⛵ Лодка 'Стандарт' (50💎)", callback_data=f"buy_boat_diamonds1_{user_id}")
-            ])
-            keyboard.insert(2, [
-                InlineKeyboardButton("⛵ Лодка 'Премиум' (150💎)", callback_data=f"buy_boat_diamonds2_{user_id}")
-            ])
-            keyboard.insert(3, [
-                InlineKeyboardButton("⛵ Лодка 'Элитная' (500💎)", callback_data=f"buy_boat_diamonds3_{user_id}")
-            ])
-        # Если есть КД лодки — добавить кнопку сброса КД
-        if db.has_boat_cooldown(user_id):
-            keyboard.insert(1, [InlineKeyboardButton("⏩ Сбросить КД лодки", callback_data=f"skip_boat_cd_{user_id}")])
-        # Если есть морская болезнь — добавить кнопку лечения
-        if db.is_user_seasick(user_id):
-            keyboard.insert(1, [InlineKeyboardButton("🚑 Вылечить морскую болезнь", callback_data=f"cure_seasick_{user_id}")])
-        # Кнопки при активном плавании
+        # Кнопки лодки
         if is_active:
+            # В плавании
             if boat and boat.get('user_id') == user_id:
                 keyboard.insert(0, [
                     InlineKeyboardButton("⏹️ Вернуться", callback_data=f"boat_return_{user_id}"),
@@ -2543,6 +2524,17 @@ class FishBot:
                 ])
             else:
                 keyboard.insert(0, [InlineKeyboardButton("⛵ В плавании", callback_data=f"boat_in_trip_{user_id}")])
+        else:
+            # Не плывёт: кнопка выплыть
+            keyboard.insert(0, [
+                InlineKeyboardButton(f"▶️ Выплыть ({members_count}/{capacity})", callback_data=f"boat_start_{user_id}")
+            ])
+        # Если есть КД лодки — кнопка сброса КД
+        if db.has_boat_cooldown(user_id):
+            keyboard.insert(1, [InlineKeyboardButton("⏩ Сбросить КД лодки (20⭐)", callback_data=f"skip_boat_cd_{user_id}")])
+        # Если есть морская болезнь — кнопка лечения
+        if db.is_user_seasick(user_id):
+            keyboard.insert(1, [InlineKeyboardButton("🚑 Вылечить морскую болезнь (10⭐)", callback_data=f"cure_seasick_{user_id}")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         if update.message:
@@ -3860,7 +3852,48 @@ class FishBot:
                 except Exception as e2:
                     logger.error(f"Failed to send as new message too: {e2}")
     
+    async def handle_shop_boats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Магазин лодок"""
+        query = update.callback_query
+        user_id = update.effective_user.id
+        if not query.data.endswith(f"_{user_id}"):
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+        await query.answer()
+
+        boat = db.get_user_boat(user_id)
+        boat_type = boat.get('type', 'free') if boat else 'free'
+
+        if boat_type != 'free':
+            text = (
+                f"⛵ <b>Ваша лодка:</b> {boat.get('name', '—')}\n"
+                f"👥 Вместимость: {boat.get('capacity', '—')}\n"
+                f"⚖️ Грузоподъёмность: {boat.get('max_weight', '—')} кг\n"
+                f"🔧 Прочность: {boat.get('durability', '—')}/{boat.get('max_durability', '—')}\n\n"
+                "У вас уже есть платная лодка."
+            )
+            keyboard = [[InlineKeyboardButton("🔙 Назад в магазин", callback_data=f"shop_{user_id}")]]
+        else:
+            text = (
+                "🛒 <b>Магазин лодок</b>\n\n"
+                "⛵ <b>Платная лодка</b> — 50 💎\n"
+                "Надёжная лодка для кооперативной рыбалки.\n"
+                "👥 Вместимость: 3 игрока\n"
+                "⚖️ Грузоподъёмность: 500 кг\n"
+                "🔧 Прочность: 100\n"
+                "⏱ КД выплывания: 12 ч\n\n"
+                "Покупка за 💎 бриллианты."
+            )
+            keyboard = [
+                [InlineKeyboardButton("⛵ Купить Платную лодку (50💎)", callback_data=f"buy_boat_diamonds1_{user_id}")],
+                [InlineKeyboardButton("🔙 Назад в магазин", callback_data=f"shop_{user_id}")]
+            ]
+
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+
     async def handle_shop_nets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+
         """Обработка магазина сетей"""
         query = update.callback_query
         try:
@@ -4393,9 +4426,7 @@ class FishBot:
             [InlineKeyboardButton("🪱 Наживки", callback_data=f"shop_baits_{user_id}")],
             [InlineKeyboardButton("🕸️ Сети", callback_data=f"shop_nets_{user_id}")],
             [InlineKeyboardButton("🧺 Кормушки и эхолот", callback_data=f"shop_feeders_{user_id}")],
-            [InlineKeyboardButton("⛵ Лодка 'Стандарт' (50💎)", callback_data=f"buy_boat_diamonds1_{user_id}")],
-            [InlineKeyboardButton("⛵ Лодка 'Премиум' (150💎)", callback_data=f"buy_boat_diamonds2_{user_id}")],
-            [InlineKeyboardButton("⛵ Лодка 'Элитная' (500💎)", callback_data=f"buy_boat_diamonds3_{user_id}")],
+            [InlineKeyboardButton("⛵ Лодки", callback_data=f"shop_boats_{user_id}")],
             [InlineKeyboardButton("💎 Обменник", callback_data=f"shop_exchange_{user_id}")],
             [InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")]
         ]
@@ -4488,15 +4519,15 @@ class FishBot:
                 await query.edit_message_text("❌ Недостаточно монет!")
         elif callback_data.startswith("buy_boat_diamonds1_"):
             price = 50
-            name = "Лодка 'Стандарт'"
+            name = "Платная лодка"
             capacity = 3
-            max_weight = 300.0
-            durability = 150
+            max_weight = 500.0
+            durability = 100
             ok = db.buy_paid_boat(user_id, name=name, price=price, capacity=capacity, max_weight=max_weight, durability=durability)
             if ok:
-                await query.edit_message_text(f"⛵ {name} куплена за {price} 💎! Вместимость: {capacity}, грузоподъёмность: {max_weight} кг, прочность: {durability}.")
+                await query.edit_message_text(f"⛵ {name} куплена за {price} 💎!\n👥 Вместимость: {capacity}\n⚖️ Грузоподъёмность: {max_weight} кг\n🔧 Прочность: {durability}")
             else:
-                await query.edit_message_text(f"❌ Не удалось купить {name}. Возможно, не хватает бриллиантов или лодка уже есть.")
+                await query.edit_message_text(f"❌ Не удалось купить {name}. Возможно, не хватает 💎 бриллиантов или у вас уже есть платная лодка.")
         elif callback_data.startswith("buy_boat_diamonds2_"):
             price = 150
             name = "Лодка 'Премиум'"
@@ -8549,6 +8580,7 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_baits_location, pattern="^shop_baits_loc_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_baits, pattern="^shop_baits_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_nets, pattern="^shop_nets_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_boats, pattern="^shop_boats_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_feeders, pattern="^shop_feeders_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_exchange, pattern="^shop_exchange_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_exchange_buy_diamond, pattern="^exchange_buy_diamond_"))
@@ -8557,6 +8589,7 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_exchange_pearl_to_diamond, pattern="^exchange_pearl_to_diamond_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_buy_rod, pattern="^buy_rod_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_buy_net, pattern="^buy_net_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_buy_callback, pattern="^buy_boat_diamonds"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_buy_feeder_coins, pattern="^buy_feeder_coins_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_buy_feeder_stars, pattern="^buy_feeder_stars_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_buy_echosounder, pattern="^buy_echosounder_"))

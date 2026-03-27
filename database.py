@@ -504,11 +504,18 @@ class Database:
                 total_weight = sum([w for _, w in user_catch])
                 # Добавить в caught_fish
                 for fish_id, weight in user_catch:
-                    cursor.execute('SELECT name, location, length FROM fish WHERE id = ?', (fish_id,))
+                    # Корректный запрос из таблицы видов рыб: name, min_length, max_length
+                    cursor.execute('SELECT name, min_length, max_length FROM fish WHERE id = ?', (fish_id,))
                     fish_row = cursor.fetchone()
-                    fish_name = fish_row[0] if fish_row else '??'
-                    location = fish_row[1] if fish_row else ''
-                    length = fish_row[2] if fish_row else 0
+                    if not fish_row:
+                        continue
+                    
+                    fish_name = fish_row[0]
+                    min_len, max_len = fish_row[1], fish_row[2]
+                    # Генерируем длину на основе веса/случайности
+                    length = round(random.uniform(min_len, max_len), 1)
+                    location = "Море"  # Лодка всегда в море
+                    
                     cursor.execute('''
                         INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, location, length)
                         VALUES (?, 0, ?, ?, ?, ?)
@@ -550,6 +557,18 @@ class Database:
             ''', (boat['id'], from_user, to_user))
             conn.commit()
         return True
+
+    def get_last_pending_invite_id(self, user_id: int) -> Optional[int]:
+        """Найти ID последнего активного приглашения для пользователя."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id FROM boat_invites 
+                WHERE to_user = ? AND status = 'pending' 
+                ORDER BY created_at DESC LIMIT 1
+            ''', (user_id,))
+            row = cursor.fetchone()
+            return row[0] if row else None
 
     def respond_boat_invite(self, invite_id: int, accept: bool) -> bool:
         """Принять или отклонить приглашение в лодку."""
@@ -597,6 +616,23 @@ class Database:
             ''', (boat_id, user_id))
             conn.commit()
         return True
+    def get_user_id_by_username(self, username: str) -> Optional[int]:
+        """Получить user_id по username."""
+        if not username:
+            return None
+        # Remove @ if present
+        if username.startswith('@'):
+            username = username[1:]
+        
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            # Поиск в таблице игроков (регистронезависимо)
+            cursor.execute("SELECT user_id FROM players WHERE LOWER(username) = ? LIMIT 1", (username.lower(),))
+            row = cursor.fetchone()
+            if row:
+                return row[0]
+        return None
+
     def _ensure_user_effects_table(self):
         """Создать таблицу user_effects, если её нет."""
         with self._connect() as conn:
