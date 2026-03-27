@@ -1453,6 +1453,10 @@ class FishBot:
     def _is_owner(self, user_id: int) -> bool:
         return int(user_id) == self.OWNER_ID
 
+    def _is_restricted_and_block(self, chat_id: int) -> bool:
+        """ заглушка для проверки ограничений по чатам """
+        return False
+
     def _parse_datetime_input(self, raw_text: str) -> Optional[datetime]:
         value = (raw_text or '').strip()
         if not value:
