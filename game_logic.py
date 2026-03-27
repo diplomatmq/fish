@@ -364,6 +364,7 @@ class FishingGame:
         )
         logger.info("   📊 Ranges: 0-3749=NO_BITE, 3750-7499=TRASH, 7500-11999=COMMON, 12000-14849=RARE, 14850-14997=LEGENDARY, 14998-14999=MYTHIC, 15000=NFT")
         
+        if roll == ROLL_MAX or adjusted_roll >= NFT_MAX:
             db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
             return {
                 "success": False,
