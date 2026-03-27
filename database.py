@@ -826,7 +826,13 @@ class Database:
         self._ensure_boat_tables()
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM boats WHERE user_id = ? AND type = 'free' LIMIT 1", (user_id,))
+            # Пытаемся получить платную лодку в первую очередь
+            cursor.execute('''
+                SELECT * FROM boats 
+                WHERE user_id = ? 
+                ORDER BY (CASE WHEN type = 'paid' THEN 0 ELSE 1 END), id DESC 
+                LIMIT 1
+            ''', (user_id,))
             row = cursor.fetchone()
             if row:
                 columns = [desc[0] for desc in cursor.description]

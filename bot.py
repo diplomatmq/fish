@@ -3096,6 +3096,8 @@ class FishBot:
         
         # Получаем рыбу для текущей локации и сезона
         available_fish = db.get_fish_by_location(location, season, min_level=player.get('level', 0) or 0)
+        # Исключаем NFT из улова сетями
+        available_fish = [f for f in available_fish if f['rarity'] != 'NFT']
         
         # Получаем мусор для локации
         available_trash = db.get_trash_by_location(location)
@@ -6062,17 +6064,16 @@ class FishBot:
             rare_max = 18999
             legendary_max = 19899
         else:
-            roll_max = 15000
-            no_bite_max = 3749
-            # Новые диапазоны для динамита (аналогично обычной ловле, аномалия реже мифической)
-            trash_max = 7499
-            common_max = 11399
-            rare_max = 14599
-            legendary_max = 14949
-            aquarium_max = 14979
-            mythic_max = 14999
-            anomaly_max = 15009
-            nft_max = 15010
+            roll_max = 20000
+            no_bite_max = 4999
+            trash_max = 9999
+            common_max = 14999
+            rare_max = 18999
+            legendary_max = 19899
+            aquarium_max = 19949
+            mythic_max = 19989
+            anomaly_max = 19999
+            nft_max = 20001
 
         logger.info(
             "[DYNAMITE] start user=%s chat=%s location=%s guaranteed=%s season=%s level=%s weather_bonus=%+d feeder_bonus=%+d population_penalty=%.2f%%",

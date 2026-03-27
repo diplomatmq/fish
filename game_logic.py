@@ -280,39 +280,29 @@ class FishingGame:
         active_boat = db.get_active_boat_by_user(user_id)
         is_on_boat = active_boat is not None
 
-        ROLL_MAX = 15000
-
-        # Новые диапазоны с учётом аквариумной и аномалии
-        # Примерные шансы:
-        # Ничего: 10% (0-1499/3749)
-        # Мусор: 10% (1500-2999/3750-7499)
-        # Обычная: 38% (3000-8899/7500-11399)
-        # Редкая: 32% (8900-13799/11400-14599)
-        # Легендарная: 3% (13800-14249/14600-14949)
-        # Аквариумная: 2% (14250-14549/14950-14979)
-        # Мифическая: 0.13% (14550-14569/14980-14999)
-        # Аномалия: 0.07% (14570-14579/15000-15009)
-        # NFT: 1 (14580/15010)
+        ROLL_MAX = 20000
+        
+        # Регулировка шансов на основе ROLL_MAX = 20000
         if is_on_boat:
-            NO_BITE_MAX = 1499
-            TRASH_MAX = 2999
-            COMMON_MAX = 8899
-            RARE_MAX = 13799
-            LEGENDARY_MAX = 14249
-            AQUARIUM_MAX = 14549
-            MYTHIC_MAX = 14569
-            ANOMALY_MAX = 14579
-            NFT_MAX = 14580
+            NO_BITE_MAX = 1999
+            TRASH_MAX = 3999
+            COMMON_MAX = 11999
+            RARE_MAX = 17999
+            LEGENDARY_MAX = 18999
+            AQUARIUM_MAX = 19499
+            MYTHIC_MAX = 19949
+            ANOMALY_MAX = 19999
+            NFT_MAX = 20001
         else:
-            NO_BITE_MAX = 3749
-            TRASH_MAX = 7499
-            COMMON_MAX = 11399
-            RARE_MAX = 14599
-            LEGENDARY_MAX = 14949
-            AQUARIUM_MAX = 14979
-            MYTHIC_MAX = 14999
-            ANOMALY_MAX = 15009
-            NFT_MAX = 15010
+            NO_BITE_MAX = 4999
+            TRASH_MAX = 9999
+            COMMON_MAX = 14999
+            RARE_MAX = 18999
+            LEGENDARY_MAX = 19899
+            AQUARIUM_MAX = 19949
+            MYTHIC_MAX = 19989
+            ANOMALY_MAX = 19999
+            NFT_MAX = 20001
 
         # Единая механика для всех локаций: один бросок от 0 до 15030
         # 0-3749 = ничего не клюёт
@@ -359,10 +349,10 @@ class FishingGame:
         
         logger.info(f"🎣 User {user_id} started fishing at location: {location}")
         logger.info(
-            f"   🎲 Random roll: {roll}/15000 (adjusted: {adjusted_roll}/15000 "
+            f"   🎲 Random roll: {roll}/{ROLL_MAX} (adjusted: {adjusted_roll}/{ROLL_MAX} "
             f"with weather {weather_condition}, feeder {feeder_bonus:+d}%)"
         )
-        logger.info("   📊 Ranges: 0-3749=NO_BITE, 3750-7499=TRASH, 7500-11999=COMMON, 12000-14849=RARE, 14850-14997=LEGENDARY, 14998-14999=MYTHIC, 15000=NFT")
+        logger.info("   📊 Ranges: 0-4999=NO_BITE, 5000-9999=TRASH, 10000-14999=COMMON, 15000-18999=RARE, 19000-19899=LEGENDARY, 19900-19999=TOP_TIER, 20000=NFT")
         
         if roll == ROLL_MAX: # NFT win only on exact raw roll 15000
             db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
@@ -373,9 +363,9 @@ class FishingGame:
                 "is_on_boat": is_on_boat
             }
 
-        force_legendary = adjusted_roll >= 14850
+        force_legendary = adjusted_roll >= 19000
         if force_legendary:
-            logger.info("   🎯 Forced TOP TIER (adjusted roll >= 14850)")
+            logger.info("   🎯 Forced TOP TIER (adjusted roll >= 19000)")
 
         if not force_legendary and adjusted_roll <= NO_BITE_MAX:
             logger.info(f"   📊 Result: NO_BITE (adjusted roll {adjusted_roll} <= {NO_BITE_MAX})")
@@ -771,7 +761,7 @@ class FishingGame:
 
         is_lucky_rod_g = (player.get('current_rod') == 'Удачливая удочка')
 
-        if roll == ROLL_MAX or (is_lucky_rod_g and roll == 19999):
+        if roll == ROLL_MAX: # NFT win only on exact raw roll 20000, no buffs
             logger.info("   🏆 Guaranteed result: NFT WIN (raw roll %s, lucky_rod=%s)", roll, is_lucky_rod_g)
             db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
             return {
