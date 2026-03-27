@@ -824,6 +824,11 @@ class Database:
                 pass
         return True, 0
 
+    def has_boat_cooldown(self, user_id: int) -> bool:
+        """Проверка, есть ли активный кулдаун на лодке пользователя."""
+        can_start, seconds_left = self.can_start_boat_trip(user_id)
+        return not can_start
+
     def start_boat_trip(self, user_id: int, force_stars: bool = False) -> bool:
         """Старт плавания: если нет КД или force_stars=True, активирует лодку и сбрасывает КД."""
         from datetime import datetime, timedelta, timezone
