@@ -692,7 +692,10 @@ class FishingGame:
         max_dur = player_rod.get('max_durability', 100) if player_rod else 100
         rod_broken = current_dur <= 0
         
-        db.add_caught_fish(user_id, chat_id, caught_fish['name'], weight, location, length)
+        if is_on_boat:
+            db.add_fish_to_boat(user_id, caught_fish['id'], weight)
+        else:
+            db.add_caught_fish(user_id, chat_id, caught_fish['name'], weight, location, length)
         
         # Расход наживки (только при успешной ловле и не за платный заброс!)
         if not guaranteed and player['current_bait'].lower() != 'черви':  # Черви бесконечные
@@ -732,12 +735,12 @@ class FishingGame:
             "new_balance": player['coins'],
             "xp_earned": xp_earned,
             "level_info": level_info,
-            # This was a normal (non-paid) catch
             "guaranteed": False,
             "stars_spent": 0,
             "rod_broken": rod_broken,
             "current_durability": current_dur,
             "max_durability": max_dur,
+            "is_on_boat": is_on_boat,
             "temp_rod_broken": temp_rod_result.get("broken", False)
         }
     
@@ -995,7 +998,15 @@ class FishingGame:
         max_dur = player_rod.get('max_durability', 100) if player_rod else 100
         rod_broken = current_dur <= 0
 
-        db.add_caught_fish(user_id, chat_id, caught_fish['name'], weight, location, length)
+        # Проверяем, находится ли игрок на лодке
+        active_boat = db.get_active_boat_by_user(user_id)
+        is_on_boat = active_boat is not None
+
+        if is_on_boat:
+            # На лодке рыба идёт в общий садок (boat_catch)
+            db.add_fish_to_boat(user_id, caught_fish['id'], weight)
+        else:
+            db.add_caught_fish(user_id, chat_id, caught_fish['name'], weight, location, length)
 
         xp_earned = db.calculate_item_xp({
             'rarity': caught_fish.get('rarity', 'Обычная'),
@@ -1008,7 +1019,7 @@ class FishingGame:
 
         fish_price = caught_fish.get('price', 0)
         db.update_player(user_id, chat_id,
-                         coins=player['coins'] + fish_price,
+                         coins=player['coins'] + (0 if is_on_boat else fish_price),
                          last_fish_time=datetime.now().isoformat())
 
         temp_rod_result = self._consume_temp_rod_use(user_id, chat_id, player['current_rod'])
@@ -1019,8 +1030,9 @@ class FishingGame:
             "weight": weight,
             "length": length,
             "location": location,
-            "earned": fish_price,
-            "new_balance": player['coins'] + fish_price,
+            "is_on_boat": is_on_boat,
+            "earned": fish_price if not is_on_boat else 0,
+            "new_balance": player['coins'] + (fish_price if not is_on_boat else 0),
             "guaranteed": True,
             "stars_spent": GUARANTEED_CATCH_COST,
             "rod_broken": rod_broken,

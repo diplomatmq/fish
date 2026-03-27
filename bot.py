@@ -1195,25 +1195,20 @@ class FishBot:
         if not payload or not payload.startswith("guaranteed_"):
             return None
 
+        # guaranteed_{user_id}_{chat_id}_{ts}_{optional_location}
         body = payload[len("guaranteed_"):]
-        parts = body.rsplit("_", 2)
-        if len(parts) != 3:
+        parts = body.split("_")
+        if len(parts) < 3:
             return None
 
-        first_part, chat_part, ts_part = parts
-
         try:
-            group_chat_id = int(chat_part)
-            created_ts = int(ts_part)
+            payload_user_id = int(parts[0])
+            group_chat_id = int(parts[1])
+            created_ts = int(parts[2])
+            # Remaining parts represent location (joined back if it had spaces replaced by _)
+            location = " ".join(parts[3:]) if len(parts) > 3 else None
         except (TypeError, ValueError):
             return None
-
-        payload_user_id = None
-        location = None
-        try:
-            payload_user_id = int(first_part)
-        except (TypeError, ValueError):
-            location = first_part
 
         return {
             "payload_user_id": payload_user_id,
@@ -1996,62 +1991,7 @@ class FishBot:
             return
         
 
-        # --- ЛОДОЧНАЯ ЛОГИКА ---
-        if db.is_user_on_boat_trip(user_id):
-            # Игрок в плавании — рыба идёт в лодку
-            try:
-                location_changed, consecutive_casts, show_warning = db.update_population_state(
-                    user_id, 
-                    player['current_location']
-                )
-                if show_warning:
-                    warning_msg = (
-                        "⚠️ <b>ВАЖНО! РЫБЫ ОСТАЛОСЬ МАЛО!</b>\n\n"
-                        "Вы 30 раз подряд ловили на одной локации.\n"
-                        "Рыба испугалась и её осталось мало в этом месте.\n\n"
-                        "🗺️ <b>Смените локацию!</b>\n"
-                        "Используйте /menu для выбора другого места.\n\n"
-                        "Как снять штраф:\n"
-                        "• Не ловить 60 минут\n"
-                        "• Или сменить локацию и сделать 10 забросов на новой\n\n"
-                        "Если продолжите ловить на одной локации, шансы будут падать:\n"
-                        "• 30 забросов: -5%\n"
-                        "• 40 забросов: -8%\n"
-                        "• 50 забросов: -11%\n"
-                        "• 60+ забросов: -15%"
-                    )
-                    try:
-                        await update.message.reply_text(warning_msg)
-                    except Exception as e:
-                        logger.error(f"Error sending population warning: {e}")
-                # Получаем результат ловли
-                result = game.fish(user_id, chat_id, player['current_location'])
-                if result['success'] and not result.get('is_trash'):
-                    fish = result['fish']
-                    fish_id = fish.get('id')
-                    weight = result.get('weight', 0)
-                    # Добавить рыбу в лодку
-                    db.add_fish_to_boat(user_id, fish_id, weight)
-                    await update.message.reply_text(
-                        f"🐟 Рыба {fish['name']} весом {weight} кг добавлена в лодку!\n\nВернуться на берег — только по кнопке владельца лодки."
-                    )
-                    # Проверка на крушение
-                    if db.check_boat_crash(user_id):
-                        await update.message.reply_text("💥 Крушение! Лодка сломалась из-за перегруза. Все теряют улов.")
-                    else:
-                        # Предупреждение о малом весе
-                        left = db.check_boat_weight_warning(user_id)
-                        if left is not None:
-                            await update.message.reply_text(f"⚠️ Осталось места в лодке: {left:.1f} кг")
-                    return
-                else:
-                    # Мусор или неудача — обычная обработка
-                    await update.message.reply_text("В этот раз ничего ценного не поймано. Попробуйте ещё!")
-                    return
-            except Exception as e:
-                logger.exception("Ошибка при ловле на лодке: %s", e)
-                await update.message.reply_text("❌ Ошибка при ловле на лодке. Обратитесь в поддержку.")
-            return
+        # --- Boat trip state handled implicitly by game.fish and main block below ---
 
         # --- Обычная рыбалка ---
         try:
@@ -2254,13 +2194,27 @@ class FishBot:
 📏 Размер: {length}см | Вес: {weight} кг
 💰 Стоимость: {fish_price} 🪙
 📍 Место: {result['location']}
-⭐ Редкость: {fish['rarity']}{xp_line}{progress_line}
+⭐ Редкость: {fish['rarity']}{xp_line}{progress_line}"""
 
-Вы можете продать эту рыбу в лавке! 🐟
-            """
+            if result.get('is_on_boat'):
+                message += "\n⛵ <b>Рыба добавлена в лодку!</b> (Её раздаст владелец по возвращении)"
+                # Если на лодке, продать нельзя
+            else:
+                message += "\n\nВы можете продать эту рыбу в лавке! 🐟"
             
             if result.get('guaranteed'):
                 message += "\n⭐ Гарантированный улов!"
+
+            # Если на лодке — доп проверки
+            if result.get('is_on_boat'):
+                # Проверка на крушение
+                if db.check_boat_crash(user_id):
+                    message += "\n\n💥 <b>КРУШЕНИЕ!</b> Лодка не выдержала веса и сломалась! Весь улов текущего плавания утерян."
+                else:
+                    # Предупреждение о малом весе
+                    left = db.check_boat_weight_warning(user_id)
+                    if left is not None and left < 50:
+                        message += f"\n\n⚠️ <b>ВНИМАНИЕ!</b> Лодка почти полна. Осталось места: {left:.1f} кг"
 
             # Добавляем примечание о популяции (дебафф при частых забросах на одной локации)
             try:
@@ -2336,80 +2290,69 @@ class FishBot:
                 """
                 await update.message.reply_text(message)
                 return
-            elif result.get('is_trash'):
-                # Мусор пойман
-                xp_line = ""
-                progress_line = ""
-                if result.get('xp_earned'):
-                    xp_line = f"\n✨ Опыт: +{result['xp_earned']}"
-                    progress_line = f"\n{format_level_progress(result.get('level_info'))}"
-                message = f"""
-{result['message']}
+            elif result.get('is_trash') or result.get('no_bite'):
+                # Мусор или неудачный заброс — предлагаем гарантированный улов
+                if result.get('is_trash'):
+                    xp_line = ""
+                    progress_line = ""
+                    if result.get('xp_earned'):
+                        xp_line = f"\n✨ Опыт: +{result['xp_earned']}"
+                        progress_line = f"\n{format_level_progress(result.get('level_info'))}"
+                    message = f"""{result['message']}
 
 📦 Мусор: {result['trash']['name']}
 ⚖️ Вес: {result['trash']['weight']} кг
-💰 Стоимость: {result['trash']['price']} 🪙
-{xp_line}{progress_line}
-
-Ваш баланс: {result['new_balance']} 🪙
-                """
-                
-                # Отправляем фото мусора если оно есть
-                if result['trash']['name'] in TRASH_STICKERS:
+💰 Стоимость: {result['earned']} 🪙{xp_line}{progress_line}
+                    """
+                    # Отправляем фото мусора если оно есть
                     try:
-                        trash_image = TRASH_STICKERS[result['trash']['name']]
-                        image_path = Path(__file__).parent / trash_image
-                        if image_path.exists():
-                            with open(image_path, 'rb') as f:
-                                sticker_message = await self.application.bot.send_document(
-                                    chat_id=update.effective_chat.id,
-                                    document=f
-                                )
-                            if sticker_message:
-                                context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
+                        trash_name = result['trash']['name']
+                        if trash_name in TRASH_STICKERS:
+                            trash_image = TRASH_STICKERS[trash_name]
+                            image_path = Path(__file__).parent / trash_image
+                            if image_path.exists():
+                                with open(image_path, 'rb') as f:
+                                    sticker_message = await self.application.bot.send_document(
+                                        chat_id=update.effective_chat.id,
+                                        document=f,
+                                        reply_to_message_id=update.message.message_id
+                                    )
+                                if sticker_message:
+                                    context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
                     except Exception as e:
-                        logger.warning(f"Could not send trash image for {result['trash']['name']}: {e}")
-                
-                await update.message.reply_text(message)
-                if result.get('temp_rod_broken'):
-                    await update.message.reply_text(
-                        "💥 Временная удочка сломалась после удачного улова.\n"
-                        "Теперь активна бамбуковая. Купить новую можно в магазине."
-                    )
-                return
-            elif result.get('no_bite'):
-                # При no_bite также создаём invoice_url и кнопку
+                        logger.warning(f"Could not send trash image: {e}")
+                else:
+                    message = f"😔 {result['message']}"
+
                 from config import BOT_TOKEN, STAR_NAME
-                import traceback
-                invoice_error = None
                 try:
                     from bot import TelegramBotAPI as _TelegramBotAPI
                     tg_api = _TelegramBotAPI(BOT_TOKEN)
+                    # Кодируем локацию
+                    loc = result.get('location', 'Unknown').replace(' ', '_')
+                    payload = f"guaranteed_{user_id}_{chat_id}_{int(datetime.now().timestamp())}_{loc}"
+                    
                     invoice_url = await tg_api.create_invoice_link(
-                        title=f"Гарантированный улов",
-                        description=f"Гарантированный улов — подтвердите оплату (1 {STAR_NAME})",
-                        payload=f"guaranteed_{user_id}_{chat_id}_{int(datetime.now().timestamp())}",
+                        title="Гарантированный улов",
+                        description=f"Гарантированный улов (1 {STAR_NAME})",
+                        payload=payload,
                         currency="XTR",
-                        prices=[{"label": f"Вход", "amount": 1}]
+                        prices=[{"label": "Вход", "amount": 1}]
                     )
-                    logger.info(f"[INVOICE] Got invoice_url: {invoice_url}")
                 except Exception as e:
-                    logger.error(f"[INVOICE] Failed to get invoice_url: {e}")
+                    logger.error(f"[INVOICE] Failed: {e}")
                     invoice_url = None
-                    invoice_error = str(e) + "\n" + traceback.format_exc()
+
                 if invoice_url:
                     await self.send_invoice_url_button(
                         chat_id=chat_id,
                         invoice_url=invoice_url,
-                        text=f"😔 {result['message']}\n\n⭐ Оплатите 1 Telegram Stars для гарантированного улова на локации: {result['location']}",
+                        text=f"{message}\n\n⭐ Оплатите 1 Telegram Stars для гарантированного улова!",
                         user_id=user_id,
                         reply_to_message_id=update.effective_message.message_id if update.effective_message else None
                     )
                 else:
-                    error_text = f"😔 {result['message']}\n\n(Ошибка генерации ссылки для оплаты)"
-                    if invoice_error:
-                        error_text += f"\nОшибка: {invoice_error}"
-                    await update.message.reply_text(error_text, parse_mode=None)
+                    await update.message.reply_text(f"{message}\n\n(Ошибка генерации ссылки для оплаты)")
                 return
             else:
                 # Если арест рыбнадзора — не показываем кнопку платного заброса
@@ -2519,8 +2462,7 @@ class FishBot:
             # В плавании
             if boat and boat.get('user_id') == user_id:
                 keyboard.insert(0, [
-                    InlineKeyboardButton("⏹️ Вернуться", callback_data=f"boat_return_{user_id}"),
-                    InlineKeyboardButton("👥 Пригласить", callback_data=f"boat_invite_{user_id}")
+                    InlineKeyboardButton("⏹️ Вернуться", callback_data=f"boat_return_{user_id}")
                 ])
             else:
                 keyboard.insert(0, [InlineKeyboardButton("⛵ В плавании", callback_data=f"boat_in_trip_{user_id}")])
@@ -3879,7 +3821,7 @@ class FishBot:
                 "⛵ <b>Платная лодка</b> — 50 💎\n"
                 "Надёжная лодка для кооперативной рыбалки.\n"
                 "👥 Вместимость: 3 игрока\n"
-                "⚖️ Грузоподъёмность: 500 кг\n"
+                "⚖️ Грузоподъёмность: 1500 кг\n"
                 "🔧 Прочность: 100\n"
                 "⏱ КД выплывания: 12 ч\n\n"
                 "Покупка за 💎 бриллианты."
@@ -4521,7 +4463,7 @@ class FishBot:
             price = 50
             name = "Платная лодка"
             capacity = 3
-            max_weight = 500.0
+            max_weight = 1500.0
             durability = 100
             ok = db.buy_paid_boat(user_id, name=name, price=price, capacity=capacity, max_weight=max_weight, durability=durability)
             if ok:
@@ -7577,6 +7519,9 @@ class FishBot:
 
         try:
             result = game.fish(user_id, group_chat_id, location, guaranteed=True)
+            # Если улов на лодке, исправляем локацию в результате
+            if result.get('is_on_boat'):
+                result['location'] = "Море"
         except Exception as e:
             logger.error(f"Critical error in guaranteed catch for user {user_id}: {e}", exc_info=True)
             message = f"❌ Произошла критическая ошибка при выполнении улова: {str(e)}. Пожалуйста, обратитесь в поддержку."

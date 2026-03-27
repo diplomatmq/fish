@@ -434,8 +434,9 @@ class Database:
         self.increment_chat_stars(0, -price)
         with self._connect() as conn:
             cursor = conn.cursor()
+            # Сбрасываем КД для любой лодки пользователя
             cursor.execute('''
-                UPDATE boats SET cooldown_until = NULL, is_active = 1 WHERE user_id = ? AND type = 'free'
+                UPDATE boats SET cooldown_until = NULL, is_active = 1 WHERE user_id = ?
             ''', (user_id,))
             conn.commit()
         return True
@@ -484,7 +485,13 @@ class Database:
             total_fish = len(catch)
             if total_fish == 0:
                 # Просто завершить плавание
-                cursor.execute('UPDATE boats SET is_active = 0, current_weight = 0 WHERE id = ?', (boat_id,))
+                from datetime import datetime, timedelta, timezone
+                cd_until = datetime.now(timezone.utc) + timedelta(hours=12)
+                cursor.execute('''
+                    UPDATE boats 
+                    SET is_active = 0, current_weight = 0, cooldown_until = ? 
+                    WHERE id = ?
+                ''', (cd_until.isoformat(), boat_id))
                 conn.commit()
                 return []
             per_user = total_fish // len(members)
@@ -521,9 +528,15 @@ class Database:
                         VALUES (?, 0, ?, ?, ?, ?)
                     ''', (uid, fish_name, weight, location, length))
                 results.append((uid, usernames[uid], count, total_weight))
+            from datetime import datetime, timedelta, timezone
+            cd_until = datetime.now(timezone.utc) + timedelta(hours=12)
             # Очистить boat_catch и сбросить лодку
             cursor.execute('DELETE FROM boat_catch WHERE boat_id = ?', (boat_id,))
-            cursor.execute('UPDATE boats SET is_active = 0, current_weight = 0 WHERE id = ?', (boat_id,))
+            cursor.execute('''
+                UPDATE boats 
+                SET is_active = 0, current_weight = 0, cooldown_until = ? 
+                WHERE id = ?
+            ''', (cd_until.isoformat(), boat_id))
             conn.commit()
             return results
     def _ensure_boat_invites_table(self):
