@@ -3085,6 +3085,12 @@ class FishBot:
             await query.answer(f"⏳ Сеть можно использовать через {time_str}", show_alert=True)
             return
         
+        # Нельзя использовать сеть во время плавания на лодке
+        active_boat = db.get_active_boat_by_user(user_id)
+        if active_boat:
+            await query.answer("❌ Нельзя использовать сеть во время плавания на лодке!", show_alert=True)
+            return
+
         # Проверяем использования
         if player_net['max_uses'] != -1 and player_net['uses_left'] <= 0:
             await query.answer("❌ У этой сети закончились использования!", show_alert=True)
@@ -6045,6 +6051,17 @@ class FishBot:
             return
 
         location = player.get('current_location', 'Городской пруд')
+        
+        # Нельзя использовать динамит во время плавания на лодке
+        active_boat = db.get_active_boat_by_user(user_id)
+        if active_boat:
+             await self._safe_send_message(
+                 chat_id=chat_id,
+                 text="❌ Нельзя использовать динамит во время плавания на лодке!",
+                 reply_to_message_id=reply_to_message_id,
+             )
+             return
+
         season = get_current_season()
         player_level = int(player.get('level') or 0)
         weather = db.get_or_update_weather(location)
