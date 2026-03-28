@@ -3509,21 +3509,26 @@ class Database:
     def get_active_tournament_for_location(self, location_name: str) -> Optional[Dict[str, Any]]:
         with self._connect() as conn:
             cursor = conn.cursor()
+            # Make location check case-insensitive and trim spaces
             cursor.execute(
                 '''
-                                SELECT *
-                                FROM tournaments
-                                WHERE tournament_type IN ('longest_fish', 'biggest_weight')
-                                    AND target_location = ?
-                                    AND starts_at <= CURRENT_TIMESTAMP
-                                    AND ends_at >= CURRENT_TIMESTAMP
-                                ORDER BY starts_at DESC
-                                LIMIT 1
+                    SELECT *
+                    FROM tournaments
+                    WHERE tournament_type IN ('longest_fish', 'biggest_weight')
+                        AND LOWER(TRIM(target_location)) = LOWER(TRIM(?))
+                        AND starts_at <= CURRENT_TIMESTAMP
+                        AND ends_at >= CURRENT_TIMESTAMP
+                    ORDER BY starts_at DESC
+                    LIMIT 1
                 ''',
                 (location_name,),
             )
             row = cursor.fetchone()
             if not row:
+                # Log for debugging if no tournament is found
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"No active tournament for location: '{location_name}' (case-insensitive match)")
                 return None
             cols = [d[0] for d in cursor.description]
             return dict(zip(cols, row))
