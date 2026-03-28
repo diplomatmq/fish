@@ -1162,59 +1162,6 @@ class FishBot:
                         weight = round(float(user_row.get('best_weight') or 0), 2)
                         lines.append("")
                         lines.append(f"<i>Ваше место: {user_place}. {name} — {fish} — {weight} кг</i>")
-            elif t_type == 'specific_fish':
-                # Определяем критерий (вес/количество) из названия турнира или target_fish
-                criteria = 'weight' if 'вес' in (tour.get('title') or '').lower() else 'count'
-                fish_name = tour.get('target_fish')
-                if not fish_name:
-                    lines.append("Ошибка: не указана рыба для турнира.")
-                else:
-                    if criteria == 'weight':
-                        rows = db.get_location_fish_leaderboard_weight(location_name, fish_name, tour['starts_at'], tour['ends_at'], limit=top_limit)
-                        all_rows = db.get_location_fish_leaderboard_weight(location_name, fish_name, tour['starts_at'], tour['ends_at'], limit=1000)
-                        if not rows:
-                            lines.append("Пока никто не поймал эту рыбу на этой локации.")
-                        else:
-                            for i, r in enumerate(rows, 1):
-                                medal = medals[i - 1] if i <= 3 else f"{i}."
-                                name = html.escape(r.get('username') or str(r['user_id']))
-                                weight = round(float(r.get('total_weight') or 0), 2)
-                                count = int(r.get('total_fish') or 0)
-                                lines.append(f"{medal} {name} — {weight} кг ({count} шт.)")
-                            for idx, r in enumerate(all_rows, 1):
-                                if r.get('user_id') == user_id:
-                                    user_row = r
-                                    user_place = idx
-                                    break
-                            if user_row and user_place > top_limit:
-                                name = html.escape(user_row.get('username') or str(user_row['user_id']))
-                                weight = round(float(user_row.get('total_weight') or 0), 2)
-                                count = int(user_row.get('total_fish') or 0)
-                                lines.append("")
-                                lines.append(f"<i>Ваше место: {user_place}. {name} — {weight} кг ({count} шт.)</i>")
-                    else:
-                        rows = db.get_location_fish_leaderboard_count(location_name, fish_name, tour['starts_at'], tour['ends_at'], limit=top_limit)
-                        all_rows = db.get_location_fish_leaderboard_count(location_name, fish_name, tour['starts_at'], tour['ends_at'], limit=1000)
-                        if not rows:
-                            lines.append("Пока никто не поймал эту рыбу на этой локации.")
-                        else:
-                            for i, r in enumerate(rows, 1):
-                                medal = medals[i - 1] if i <= 3 else f"{i}."
-                                name = html.escape(r.get('username') or str(r['user_id']))
-                                count = int(r.get('total_fish') or 0)
-                                weight = round(float(r.get('total_weight') or 0), 2)
-                                lines.append(f"{medal} {name} — {count} шт. ({weight} кг)")
-                            for idx, r in enumerate(all_rows, 1):
-                                if r.get('user_id') == user_id:
-                                    user_row = r
-                                    user_place = idx
-                                    break
-                            if user_row and user_place > top_limit:
-                                name = html.escape(user_row.get('username') or str(user_row['user_id']))
-                                count = int(user_row.get('total_fish') or 0)
-                                weight = round(float(user_row.get('total_weight') or 0), 2)
-                                lines.append("")
-                                lines.append(f"<i>Ваше место: {user_place}. {name} — {count} шт. ({weight} кг)</i>")
             else:
                 lines.append("Тип турнира для этой локации не поддерживается отображением.")
             await update.message.reply_text("\n".join(lines), parse_mode='HTML')

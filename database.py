@@ -424,61 +424,61 @@ RARITY_XP_MULTIPLIERS = {
 }
 
 class Database:
-        def get_location_fish_leaderboard_weight(self, location_name: str, fish_name: str, starts_at: datetime, ends_at: datetime, limit: int = 10) -> list:
-            """Топ по суммарному весу определённой рыбы на локации."""
-            with self._connect() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    '''
-                    SELECT
-                        COALESCE(MAX(p.username), 'Неизвестно') AS username,
-                        cf.user_id,
-                        COALESCE(SUM(cf.weight), 0) AS total_weight,
-                        COUNT(cf.id) AS total_fish
-                    FROM caught_fish cf
-                    LEFT JOIN players p ON p.user_id = cf.user_id
-                    WHERE cf.location = ?
-                      AND cf.fish_name = ?
-                      AND cf.caught_at >= ?
-                      AND cf.caught_at <= ?
-                      AND COALESCE(cf.sold, 0) = 0
-                    GROUP BY cf.user_id
-                    ORDER BY total_weight DESC, total_fish DESC
-                    LIMIT ?
-                    ''',
-                    (location_name, fish_name, starts_at, ends_at, max(1, int(limit or 10)))
-                )
-                rows = cursor.fetchall()
-                cols = [d[0] for d in cursor.description]
-                return [dict(zip(cols, r)) for r in rows]
+    def get_location_fish_leaderboard_weight(self, location_name: str, fish_name: str, starts_at: datetime, ends_at: datetime, limit: int = 10) -> list:
+        """Топ по суммарному весу определённой рыбы на локации."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    COALESCE(MAX(p.username), 'Неизвестно') AS username,
+                    cf.user_id,
+                    COALESCE(SUM(cf.weight), 0) AS total_weight,
+                    COUNT(cf.id) AS total_fish
+                FROM caught_fish cf
+                LEFT JOIN players p ON p.user_id = cf.user_id
+                WHERE cf.location = ?
+                  AND cf.fish_name = ?
+                  AND cf.caught_at >= ?
+                  AND cf.caught_at <= ?
+                  AND COALESCE(cf.sold, 0) = 0
+                GROUP BY cf.user_id
+                ORDER BY total_weight DESC, total_fish DESC
+                LIMIT ?
+                ''',
+                (location_name, fish_name, starts_at, ends_at, max(1, int(limit or 10)))
+            )
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, r)) for r in rows]
 
-        def get_location_fish_leaderboard_count(self, location_name: str, fish_name: str, starts_at: datetime, ends_at: datetime, limit: int = 10) -> list:
-            """Топ по количеству определённой рыбы на локации."""
-            with self._connect() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    '''
-                    SELECT
-                        COALESCE(MAX(p.username), 'Неизвестно') AS username,
-                        cf.user_id,
-                        COUNT(cf.id) AS total_fish,
-                        COALESCE(SUM(cf.weight), 0) AS total_weight
-                    FROM caught_fish cf
-                    LEFT JOIN players p ON p.user_id = cf.user_id
-                    WHERE cf.location = ?
-                      AND cf.fish_name = ?
-                      AND cf.caught_at >= ?
-                      AND cf.caught_at <= ?
-                      AND COALESCE(cf.sold, 0) = 0
-                    GROUP BY cf.user_id
-                    ORDER BY total_fish DESC, total_weight DESC
-                    LIMIT ?
-                    ''',
-                    (location_name, fish_name, starts_at, ends_at, max(1, int(limit or 10)))
-                )
-                rows = cursor.fetchall()
-                cols = [d[0] for d in cursor.description]
-                return [dict(zip(cols, r)) for r in rows]
+    def get_location_fish_leaderboard_count(self, location_name: str, fish_name: str, starts_at: datetime, ends_at: datetime, limit: int = 10) -> list:
+        """Топ по количеству определённой рыбы на локации."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    COALESCE(MAX(p.username), 'Неизвестно') AS username,
+                    cf.user_id,
+                    COUNT(cf.id) AS total_fish,
+                    COALESCE(SUM(cf.weight), 0) AS total_weight
+                FROM caught_fish cf
+                LEFT JOIN players p ON p.user_id = cf.user_id
+                WHERE cf.location = ?
+                  AND cf.fish_name = ?
+                  AND cf.caught_at >= ?
+                  AND cf.caught_at <= ?
+                  AND COALESCE(cf.sold, 0) = 0
+                GROUP BY cf.user_id
+                ORDER BY total_fish DESC, total_weight DESC
+                LIMIT ?
+                ''',
+                (location_name, fish_name, starts_at, ends_at, max(1, int(limit or 10)))
+            )
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, r)) for r in rows]
     def skip_boat_cooldown(self, user_id: int, price: int = 20) -> bool:
         """Обойти КД лодки за звёзды. Списывает звёзды, сбрасывает КД, активирует лодку."""
         self._ensure_boat_tables()
