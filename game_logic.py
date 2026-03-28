@@ -911,32 +911,21 @@ class FishingGame:
 
         logger.info(f"   🎯 Rarity: {target_rarity} (roll: {adjusted_roll})")
 
-        # Гарантированный улов: учитывать и локацию, и наживку (по просьбе пользователя)
+        # Гарантированный улов: учитывать только локацию и уровень игрока, наживка не влияет
         fish_list = db.get_fish_by_location(location, self.current_season, min_level=player.get('level', 0))
         fish_list = self._normalize_fish_list(fish_list)
         if not fish_list:
             # Расширяем поиск: игнорируем сезон — гарантия ВСЕГДА должна давать шанс, если рыба есть в локации в принципе
             logger.info(f"   ⚠️ No seasonal fish for {location}, season {self.current_season} — expanding to all seasons in this location")
             fish_list = self._normalize_fish_list(db.get_fish_by_location(location, 'Все', min_level=0))
-            
-        current_bait = player.get('current_bait', '')
-        if fish_list:
-            # Строгая проверка наживки
-            fish_list = [f for f in fish_list if db.check_bait_suitable_for_fish(current_bait, f['name'])]
-            if not fish_list:
-                logger.info(f"   ❌ No fish in {location} suitable for bait {current_bait}")
-                return {
-                    "success": False,
-                    "message": f"На локации {location} на наживку '{current_bait}' ничего не клюёт!",
-                    "location": location
-                }
 
         if not fish_list:
-            # Больше нет глобального fall-back к любой рыбе из БД. Если в локации нет рыбы под наживку — сорвалось.
-            logger.error(f"   ❌ No fish available in location {location} for bait {current_bait}")
+            # Совсем нет рыбы в локации — понятное сообщение
+            logger.error(f"   ❌ No fish available in location {location} for guaranteed catch")
+            db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
             return {
                 "success": False,
-                "message": f"На локации {location} нет подходящей рыбы под вашу наживку.",
+                "message": f"В локации '{location}' нет ни одной рыбы для гарантированного улова.",
                 "location": location
             }
         if not fish_list:
@@ -949,13 +938,25 @@ class FishingGame:
                 "location": location
             }
 
-        # Ищем рыбу нужной редкости; если нет — гарантия выдаёт любую рыбу сезона (пользователь всегда получает что-то)
-        target_fish = [f for f in fish_list if f['rarity'] == target_rarity]
-        if not target_fish:
-            logger.info(f"   ⚠️ No fish of rarity {target_rarity} available in season {self.current_season} for location {location} - falling back to any fish this season (guaranteed)")
-            target_fish = fish_list
-
-        caught_fish = random.choice(target_fish)
+        # Ищем рыбу нужной редкости; если нет — понижаем редкость до ближайшей доступной, только если вообще ничего — выдаём любую
+        RARITY_ORDER = ["Обычная", "Редкая", "Легендарная", "Мифическая", "Аквариумная", "Аномалия"]
+        try:
+            idx = RARITY_ORDER.index(target_rarity)
+        except ValueError:
+            idx = 0
+        found = False
+        for i in range(idx, -1, -1):
+            try_rarity = RARITY_ORDER[i]
+            target_fish = [f for f in fish_list if f['rarity'] == try_rarity]
+            if target_fish:
+                caught_fish = random.choice(target_fish)
+                logger.info(f"   ⚠️ No fish of rarity {target_rarity}, downgraded to {try_rarity} ({caught_fish['name']})")
+                found = True
+                break
+        if not found:
+            # Если вообще ничего — выдаём любую рыбу сезона
+            caught_fish = random.choice(fish_list)
+            logger.info(f"   ⚠️ No fish of any target rarity, giving any fish: {caught_fish['name']}")
 
         # ── Rod weight cap for guaranteed cast ──────────────────────────────
         # Fixed per-rod caps for guaranteed cast (no pay-to-win on weak rods).

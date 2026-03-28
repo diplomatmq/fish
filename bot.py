@@ -2617,14 +2617,17 @@ class FishBot:
         """Обработка кнопки Вернуться (делёж улова)"""
         user_id = update.effective_user.id
         
-        results, boat_id = db.return_boat_trip_and_split_catch(user_id)
+        results, boat_id, status = db.return_boat_trip_and_split_catch(user_id)
         if results is None:
             await update.callback_query.answer("Ошибка возврата лодки.", show_alert=True)
             await self.show_fishing_menu(update, context)
             return
-        if not results:
-            # Если лодка потонула (перегруз), boat_id есть, results пустой
+        if status == 'sunk':
             await update.callback_query.answer("💥 КРУШЕНИЕ! Лодка не выдержала веса и пошла ко дну! Весь улов текущего плавания утерян.", show_alert=True)
+            await self.show_fishing_menu(update, context)
+            return
+        if status == 'empty':
+            await update.callback_query.answer("Плавание завершено. Улов отсутствует.", show_alert=True)
             await self.show_fishing_menu(update, context)
             return
         msg = "\n".join([f"@{username} — получил {count} рыб, общий вес — {weight:.1f} кг" for _, username, count, weight in results])
@@ -6989,9 +6992,11 @@ class FishBot:
             fish = result.get('fish')
             if not fish:
                 logger.error("Guaranteed catch missing fish data for user %s", user_id)
+                # Показываем пользователю причину, если она есть
+                error_msg = result.get('message') or "❌ Не удалось получить данные улова. Звезды будут возвращены."
                 await self.application.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text="❌ Не удалось получить данные улова. Звезды будут возвращены."
+                    text=error_msg
                 )
                 telegram_payment_charge_id_val = context.user_data.get('telegram_payment_charge_id')
                 await self.refund_star_payment(user_id, telegram_payment_charge_id_val)

@@ -545,7 +545,7 @@ class Database:
                     WHERE id = ?
                 ''', (cd_until.isoformat(), boat_id))
                 conn.commit()
-                return [], boat_id
+                return [], boat_id, 'sunk'
             # Получить участников
             cursor.execute('''
                 SELECT user_id FROM boat_members WHERE boat_id = ?
@@ -570,7 +570,7 @@ class Database:
                     WHERE id = ?
                 ''', (cd_until.isoformat(), boat_id))
                 conn.commit()
-                return [], boat_id
+                return [], boat_id, 'empty'
             per_user = total_fish // len(members)
             remainder = total_fish % len(members)
             # Получить имена
@@ -616,7 +616,7 @@ class Database:
                 WHERE id = ?
             ''', (cd_until.isoformat(), boat_id))
             conn.commit()
-            return results, boat_id
+            return results, boat_id, 'ok'
     def _ensure_boat_invites_table(self):
         """Создать таблицу boat_invites, если её нет."""
         with self._connect() as conn:
