@@ -2546,6 +2546,17 @@ class Database:
         except Exception:
             logger.exception('subtract_diamonds failed for user=%s chat=%s amount=%s', user_id, chat_id, amount)
 
+    def get_fish_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Получить данные рыбы по её имени."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM fish WHERE name = ? LIMIT 1", (name,))
+            row = cursor.fetchone()
+            if row:
+                columns = [desc[0] for desc in cursor.description]
+                return dict(zip(columns, row))
+            return None
+
     def get_fish_by_location(self, location: str, season: str = "Лето", min_level: Optional[int] = None) -> List[Dict[str, Union[str, int, float]]]:
         """Получить список рыб для локации"""
         with self._connect() as conn:
