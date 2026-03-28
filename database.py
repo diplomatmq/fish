@@ -1,36 +1,36 @@
-    class PostgresConnWrapper:
-        """A thin wrapper exposing a sqlite-like connection API for psycopg2.
-        It provides execute(), cursor(), commit(), and context-manager support.
-        """
-        def __init__(self, dsn: str):
-            # ...existing code...
-
-    # ...existing code...
-
-    class Database:
+class PostgresConnWrapper:
+    """A thin wrapper exposing a sqlite-like connection API for psycopg2.
+    It provides execute(), cursor(), commit(), and context-manager support.
+    """
+    def __init__(self, dsn: str):
         # ...existing code...
 
-        def get_tournament_caught_fish(self, user_id: int, location: str, starts_at: datetime, ends_at: datetime, fish_name: Optional[str] = None) -> List[Dict[str, Any]]:
-            """Получить всю нужную рыбу игрока для турнира по локации, времени, (опционально виду) и не проданную."""
-            with self._connect() as conn:
-                cursor = conn.cursor()
-                query = '''
-                    SELECT * FROM caught_fish
-                    WHERE user_id = ?
-                      AND location = ?
-                      AND caught_at >= ?
-                      AND caught_at <= ?
-                      AND COALESCE(sold, 0) = 0
-                '''
-                params = [user_id, location, starts_at, ends_at]
-                if fish_name:
-                    query += ' AND fish_name = ?'
-                    params.append(fish_name)
-                query += ' ORDER BY caught_at DESC'
-                cursor.execute(query, params)
-                rows = cursor.fetchall()
-                columns = [description[0] for description in cursor.description]
-                return [dict(zip(columns, row)) for row in rows]
+# ...existing code...
+
+class Database:
+    # ...existing code...
+
+    def get_tournament_caught_fish(self, user_id: int, location: str, starts_at: datetime, ends_at: datetime, fish_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Получить всю нужную рыбу игрока для турнира по локации, времени, (опционально виду) и не проданную."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            query = '''
+                SELECT * FROM caught_fish
+                WHERE user_id = ?
+                  AND location = ?
+                  AND caught_at >= ?
+                  AND caught_at <= ?
+                  AND COALESCE(sold, 0) = 0
+            '''
+            params = [user_id, location, starts_at, ends_at]
+            if fish_name:
+                query += ' AND fish_name = ?'
+                params.append(fish_name)
+            query += ' ORDER BY caught_at DESC'
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
 import os
 import logging
 import random
