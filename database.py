@@ -515,6 +515,8 @@ class Database:
         """Возврат лодки: делит улов между участниками, добавляет в caught_fish, возвращает (results, boat_id). Может вызвать любой участник лодки."""
         self._ensure_boat_tables()
         self._ensure_boat_catch_table()
+        import logging
+        logger = logging.getLogger(__name__)
         with self._connect() as conn:
             cursor = conn.cursor()
             # Найти активную лодку, где пользователь — участник
@@ -525,8 +527,7 @@ class Database:
             ''', (user_id,))
             row = cursor.fetchone()
             if not row:
-                import logging
-                logging.getLogger(__name__).warning(f"[boat] Не найдена активная лодка для пользователя {user_id} при возврате.")
+                logger.warning(f"[boat] Не найдена активная лодка для пользователя {user_id} при возврате.")
                 return [], None
             boat_id = row[0]
 
@@ -545,19 +546,23 @@ class Database:
                     WHERE id = ?
                 ''', (cd_until.isoformat(), boat_id))
                 conn.commit()
+                logger.info(f"[boat] Крушение лодки {boat_id}, весь улов утерян.")
                 return [], boat_id, 'sunk'
             # Получить участников
             cursor.execute('''
                 SELECT user_id FROM boat_members WHERE boat_id = ?
             ''', (boat_id,))
             members = [r[0] for r in cursor.fetchall()]
+            logger.info(f"[boat] Участники лодки {boat_id}: {members}")
             if not members:
+                logger.warning(f"[boat] Нет участников в лодке {boat_id} при возврате.")
                 return [], boat_id
             # Получить улов
             cursor.execute('''
                 SELECT fish_id, weight, chat_id FROM boat_catch WHERE boat_id = ?
             ''', (boat_id,))
             catch = cursor.fetchall()
+            logger.info(f"[boat] Улов лодки {boat_id}: {catch}")
             total_fish = len(catch)
             if total_fish == 0:
                 # Просто завершить плавание
@@ -570,6 +575,7 @@ class Database:
                     WHERE id = ?
                 ''', (cd_until.isoformat(), boat_id))
                 conn.commit()
+                logger.info(f"[boat] Нет улова в лодке {boat_id} при возврате.")
                 return [], boat_id, 'empty'
             per_user = total_fish // len(members)
             remainder = total_fish % len(members)
@@ -586,24 +592,30 @@ class Database:
                 user_catch = catch[idx:idx+count]
                 idx += count
                 total_weight = sum([w for _, w, _ in user_catch])
+                if not user_catch:
+                    logger.warning(f"[boat] Для пользователя {uid} не нашлось рыбы для распределения (user_catch пустой)")
+                else:
+                    logger.info(f"[boat] Рыба для пользователя {uid}: {user_catch}")
                 # Добавить в caught_fish
                 for fish_id, weight, item_chat_id in user_catch:
                     # Корректный запрос из таблицы видов рыб: name, min_length, max_length
                     cursor.execute('SELECT name, min_length, max_length FROM fish WHERE id = ?', (fish_id,))
                     fish_row = cursor.fetchone()
                     if not fish_row:
+                        logger.warning(f"[boat] Не найден fish_id={fish_id} в таблице fish при возврате лодки {boat_id}")
                         continue
-                    
                     fish_name = fish_row[0]
                     min_len, max_len = fish_row[1], fish_row[2]
                     # Генерируем длину на основе веса/случайности
                     length = round(random.uniform(min_len, max_len), 1)
                     location = "Море"  # Лодка всегда в море
-                    
                     cursor.execute('''
                         INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, location, length)
                         VALUES (?, ?, ?, ?, ?, ?)
                     ''', (uid, item_chat_id, fish_name, weight, location, length))
+                    logger.info(f"[boat] Записана рыба: user_id={uid}, chat_id={item_chat_id}, fish_name={fish_name}, weight={weight}, location={location}, length={length}")
+                if user_catch:
+                    logger.info(f"[boat] Пользователь {uid} получил {len(user_catch)} рыб(ы), общий вес: {total_weight:.2f} кг. Улов не пропал, а распределён.")
                 results.append((uid, usernames[uid], count, total_weight))
             from datetime import datetime, timedelta, timezone
             cd_until = datetime.now(timezone.utc) + timedelta(hours=12)
@@ -616,6 +628,7 @@ class Database:
                 WHERE id = ?
             ''', (cd_until.isoformat(), boat_id))
             conn.commit()
+            logger.info(f"[boat] Возврат лодки {boat_id} завершён. Итоги: {results}")
             return results, boat_id, 'ok'
     def _ensure_boat_invites_table(self):
         """Создать таблицу boat_invites, если её нет."""
