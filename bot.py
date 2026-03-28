@@ -8677,6 +8677,7 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_leaderboard_callback, pattern="^leaderboard$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_tour_type_callback, pattern="^tour_type_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_tour_location_callback, pattern="^tour_location_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_tour_criteria_callback, pattern="^tour_criteria_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_payment_expired_callback, pattern="^payment_expired$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_invoice_cancelled_callback, pattern="^invoice_cancelled$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_pay_telegram_star_callback, pattern="^pay_telegram_star_"))
