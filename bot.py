@@ -2617,15 +2617,14 @@ class FishBot:
         """Обработка кнопки Вернуться (делёж улова)"""
         user_id = update.effective_user.id
         
-        # Проверка на крушение перед возвратом
-        if db.check_boat_crash(user_id):
-            await update.callback_query.answer("💥 КРУШЕНИЕ! Лодка не выдержала веса и пошла ко дну! Весь улов текущего плавания утерян.", show_alert=True)
+        results, boat_id = db.return_boat_trip_and_split_catch(user_id)
+        if results is None:
+            await update.callback_query.answer("Ошибка возврата лодки.", show_alert=True)
             await self.show_fishing_menu(update, context)
             return
-
-        results = db.return_boat_trip_and_split_catch(user_id)
         if not results:
-            await update.callback_query.answer("Нет улова или вы не владелец лодки.", show_alert=True)
+            # Если лодка потонула (перегруз), boat_id есть, results пустой
+            await update.callback_query.answer("💥 КРУШЕНИЕ! Лодка не выдержала веса и пошла ко дну! Весь улов текущего плавания утерян.", show_alert=True)
             await self.show_fishing_menu(update, context)
             return
         msg = "\n".join([f"@{username} — получил {count} рыб, общий вес — {weight:.1f} кг" for _, username, count, weight in results])

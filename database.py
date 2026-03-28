@@ -512,14 +512,16 @@ class Database:
             conn.commit()
         return True
     def return_boat_trip_and_split_catch(self, user_id: int) -> tuple:
-        """Возврат лодки: делит улов между участниками, добавляет в caught_fish, возвращает (results, boat_id). Только владелец может вызвать."""
+        """Возврат лодки: делит улов между участниками, добавляет в caught_fish, возвращает (results, boat_id). Может вызвать любой участник лодки."""
         self._ensure_boat_tables()
         self._ensure_boat_catch_table()
         with self._connect() as conn:
             cursor = conn.cursor()
-            # Найти активную лодку владельца
+            # Найти активную лодку, где пользователь — участник
             cursor.execute('''
-                SELECT id FROM boats WHERE user_id = ? AND is_active = 1 LIMIT 1
+                SELECT b.id FROM boats b
+                JOIN boat_members bm ON bm.boat_id = b.id
+                WHERE bm.user_id = ? AND b.is_active = 1 LIMIT 1
             ''', (user_id,))
             row = cursor.fetchone()
             if not row:
