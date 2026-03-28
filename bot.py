@@ -1185,81 +1185,102 @@ class FishBot:
         msg = await self.application.bot.send_message(**send_kwargs)
         # Сохраняем активный инвойс для пользователя
         self.active_invoices[user_id] = {
-            'invoice_url': invoice_url,
-            'group_chat_id': chat_id,
-            'group_message_id': msg.message_id,
-            'invoice_id': invoice_id,
-            'created_at': datetime.now(),
-        }
-        # Ставим таймаут на отключение кнопки
-        await self.schedule_timeout(chat_id, msg.message_id, "⏰ Срок действия этого инвойса истек", timeout_seconds=timeout_sec)
-
-    def _build_guaranteed_payload(self, user_id: int, chat_id: int) -> str:
-        return f"guaranteed_{user_id}_{chat_id}_{int(datetime.now().timestamp())}"
-
-    def _parse_guaranteed_payload(self, payload: str) -> Optional[Dict[str, Any]]:
-        if not payload or not payload.startswith("guaranteed_"):
-            return None
-
-        # guaranteed_{user_id}_{chat_id}_{ts}_{optional_location}
-        body = payload[len("guaranteed_"):]
-        parts = body.split("_")
-        if len(parts) < 3:
-            return None
-
-        try:
-            payload_user_id = int(parts[0])
-            group_chat_id = int(parts[1])
-            created_ts = int(parts[2])
-            # Remaining parts represent location (joined back if it had spaces replaced by _)
-            location = " ".join(parts[3:]) if len(parts) > 3 else None
-        except (TypeError, ValueError):
-            return None
-
-        return {
-            "payload_user_id": payload_user_id,
-            "group_chat_id": group_chat_id,
-            "created_ts": created_ts,
-            "location": location,
-        }
-
-    def _build_harpoon_skip_payload(self, user_id: int, chat_id: int) -> str:
-        return f"harpoon_skip_{user_id}_{chat_id}_{int(datetime.now().timestamp())}"
-
-    def _parse_harpoon_skip_payload(self, payload: str) -> Optional[Dict[str, int]]:
-        if not payload or not payload.startswith("harpoon_skip_"):
-            return None
-
-        body = payload[len("harpoon_skip_"):]
-        parts = body.rsplit("_", 2)
-        if len(parts) != 3:
-            return None
-
-        user_part, chat_part, ts_part = parts
-        try:
-            return {
-                "payload_user_id": int(user_part),
-                "group_chat_id": int(chat_part),
-                "created_ts": int(ts_part),
-            }
-        except (TypeError, ValueError):
-            return None
-
-    def _build_booster_payload(self, booster_code: str, user_id: int, chat_id: int) -> str:
-        return f"booster_{booster_code}_{user_id}_{chat_id}_{int(datetime.now().timestamp())}"
-
-    def _build_dynamite_skip_payload(self, user_id: int, chat_id: int) -> str:
-        return f"dynamite_skip_cd_{user_id}_{chat_id}_{int(datetime.now().timestamp())}"
-
-    def _parse_dynamite_skip_payload(self, payload: str) -> Optional[Dict[str, int]]:
-        if not payload or not payload.startswith("dynamite_skip_cd_"):
-            return None
-
-        body = payload[len("dynamite_skip_cd_"):]
-        parts = body.rsplit("_", 2)
-        if len(parts) != 3:
-            return None
-
+            try:
+                tour = db.get_active_tournament_for_location(location_name)
+                if not tour:
+                    await update.message.reply_text(f"\U0001F3C1 Нет активного турнира для этой локации.")
+                    return
+                top_limit = int(tour.get('prize_places') or 10)
+                medals = ['\U0001F947', '\U0001F948', '\U0001F949']
+                starts_str = tour['starts_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['starts_at'], 'strftime') else str(tour['starts_at'])[:16]
+                ends_str = tour['ends_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['ends_at'], 'strftime') else str(tour['ends_at'])[:16]
+                lines = [
+                    f"\U0001F578️ <b>Топ локации: {location_name}</b>",
+                    f"\U0001F4C5 {starts_str} — {ends_str}",
+                    f"\U0001F3C5 Призовых мест: {top_limit}",
+                    "",
+                ]
+                user_id = update.effective_user.id
+                user_row = None
+                user_place = None
+                # Получаем параметры турнира
+                target_fish = tour.get('target_fish')
+                criteria = tour.get('criteria', 'weight')
+                t_type = tour.get('tournament_type', '')
+                title = tour.get('title', '')
+                # Для турниров типа 'specific_fish' с (кол-во) в названии — выводим по количеству
+                if t_type == 'specific_fish' and '(кол-во' in title.lower():
+                    rows = db.get_location_fish_leaderboard_count(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=top_limit)
+                    all_rows = db.get_location_fish_leaderboard_count(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=1000)
+                    if not rows:
+                        lines.append(f"Пока никто не поймал рыбу '{target_fish}' на этой локации.")
+                    else:
+                        for i, r in enumerate(rows, 1):
+                            medal = medals[i - 1] if i <= 3 else f"{i}."
+                            name = html.escape(r.get('username') or str(r['user_id']))
+                            count = int(r.get('total_fish') or 0)
+                            lines.append(f"{medal} {name} — {count} шт.")
+                        # Поиск пользователя вне топа
+                        for idx, r in enumerate(all_rows, 1):
+                            if r.get('user_id') == user_id:
+                                user_row = r
+                                user_place = idx
+                                break
+                        if user_row and user_place > top_limit:
+                            name = html.escape(user_row.get('username') or str(user_row['user_id']))
+                            count = int(user_row.get('total_fish') or 0)
+                            lines.append("")
+                            lines.append(f"<i>Ваше место: {user_place}. {name} — {count} шт.</i>")
+                elif criteria == 'weight':
+                    rows = db.get_location_fish_leaderboard_weight(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=top_limit)
+                    all_rows = db.get_location_fish_leaderboard_weight(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=1000)
+                    if not rows:
+                        lines.append(f"Пока никто не поймал рыбу '{target_fish}' на этой локации.")
+                    else:
+                        for i, r in enumerate(rows, 1):
+                            medal = medals[i - 1] if i <= 3 else f"{i}."
+                            name = html.escape(r.get('username') or str(r['user_id']))
+                            weight = round(float(r.get('total_weight') or 0), 2)
+                            lines.append(f"{medal} {name} — {weight} кг")
+                        # Поиск пользователя вне топа
+                        for idx, r in enumerate(all_rows, 1):
+                            if r.get('user_id') == user_id:
+                                user_row = r
+                                user_place = idx
+                                break
+                        if user_row and user_place > top_limit:
+                            name = html.escape(user_row.get('username') or str(user_row['user_id']))
+                            weight = round(float(user_row.get('total_weight') or 0), 2)
+                            lines.append("")
+                            lines.append(f"<i>Ваше место: {user_place}. {name} — {weight} кг</i>")
+                elif criteria == 'count':
+                    rows = db.get_location_fish_leaderboard_count(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=top_limit)
+                    all_rows = db.get_location_fish_leaderboard_count(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=1000)
+                    if not rows:
+                        lines.append(f"Пока никто не поймал рыбу '{target_fish}' на этой локации.")
+                    else:
+                        for i, r in enumerate(rows, 1):
+                            medal = medals[i - 1] if i <= 3 else f"{i}."
+                            name = html.escape(r.get('username') or str(r['user_id']))
+                            count = int(r.get('total_fish') or 0)
+                            lines.append(f"{medal} {name} — {count} шт.")
+                        # Поиск пользователя вне топа
+                        for idx, r in enumerate(all_rows, 1):
+                            if r.get('user_id') == user_id:
+                                user_row = r
+                                user_place = idx
+                                break
+                        if user_row and user_place > top_limit:
+                            name = html.escape(user_row.get('username') or str(user_row['user_id']))
+                            count = int(user_row.get('total_fish') or 0)
+                            lines.append("")
+                            lines.append(f"<i>Ваше место: {user_place}. {name} — {count} шт.</i>")
+                else:
+                    lines.append("Тип турнира для этой локации не поддерживается отображением.")
+                await update.message.reply_text("\n".join(lines), parse_mode='HTML')
+            except Exception as e:
+                logger.exception("_location_leaderboard_command failed for %s: %s", location_name, e)
+                await update.message.reply_text("\u26A0\uFE0F Произошла ошибка. Попробуйте позже.")
         user_part, chat_part, ts_part = parts
         try:
             return {
