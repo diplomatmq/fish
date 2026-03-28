@@ -1,3 +1,24 @@
+    def get_tournament_caught_fish(self, user_id: int, location: str, starts_at: datetime, ends_at: datetime, fish_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Получить всю нужную рыбу игрока для турнира по локации, времени, (опционально виду) и не проданную."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            query = '''
+                SELECT * FROM caught_fish
+                WHERE user_id = ?
+                  AND location = ?
+                  AND caught_at >= ?
+                  AND caught_at <= ?
+                  AND COALESCE(sold, 0) = 0
+            '''
+            params = [user_id, location, starts_at, ends_at]
+            if fish_name:
+                query += ' AND fish_name = ?'
+                params.append(fish_name)
+            query += ' ORDER BY caught_at DESC'
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
 import os
 import logging
 import random
@@ -529,7 +550,12 @@ class Database:
             if not row:
                 logger.warning(f"[boat] Не найдена активная лодка для пользователя {user_id} при возврате.")
                 return [], None
+
             boat_id = row[0]
+            # Получить локацию лодки
+            cursor.execute('SELECT current_location FROM boats WHERE id = ?', (boat_id,))
+            boat_loc_row = cursor.fetchone()
+            boat_location = boat_loc_row[0] if boat_loc_row and boat_loc_row[0] else "Море"
 
             # Предварительная проверка на крушение перед возвратом
             cursor.execute('SELECT current_weight, max_weight FROM boats WHERE id = ?', (boat_id,))
@@ -608,7 +634,7 @@ class Database:
                     min_len, max_len = fish_row[1], fish_row[2]
                     # Генерируем длину на основе веса/случайности
                     length = round(random.uniform(min_len, max_len), 1)
-                    location = "Море"  # Лодка всегда в море
+                    location = boat_location  # Локация лодки
                     cursor.execute('''
                         INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, location, length)
                         VALUES (?, ?, ?, ?, ?, ?)
