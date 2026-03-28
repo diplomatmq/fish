@@ -8,46 +8,6 @@ import re
 from pathlib import Path
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
-# ...existing code...
-
-class EmojiBot(ExtBot):
-    API_CALL_TIMEOUT = float(os.getenv('TG_API_CALL_TIMEOUT', '20'))
-    API_CALL_RETRIES = int(os.getenv('TG_API_CALL_RETRIES', '1'))
-    RETRY_BACKOFF_SEC = float(os.getenv('TG_API_RETRY_BACKOFF', '1.5'))
-
-    def _parse_guaranteed_payload(self, payload: str) -> Optional[dict]:
-        if not payload or not payload.startswith("guaranteed_"):
-            return None
-        body = payload[len("guaranteed_"):]
-        parts = body.rsplit("_", 2)
-        if len(parts) != 3:
-            return None
-        user_part, chat_part, ts_part = parts
-        try:
-            return {
-                "payload_user_id": int(user_part),
-                "group_chat_id": int(chat_part),
-                "created_ts": int(ts_part),
-            }
-        except (TypeError, ValueError):
-            return None
-
-    def _parse_dynamite_skip_payload(self, payload: str) -> Optional[dict]:
-        if not payload or not payload.startswith("dynamite_skip_"):
-            return None
-        body = payload[len("dynamite_skip_"):]
-        parts = body.rsplit("_", 2)
-        if len(parts) != 3:
-            return None
-        user_part, chat_part, ts_part = parts
-        try:
-            return {
-                "payload_user_id": int(user_part),
-                "group_chat_id": int(chat_part),
-                "created_ts": int(ts_part),
-            }
-        except (TypeError, ValueError):
-            return None
 # -*- coding: utf-8 -*-
 import logging
 import html
