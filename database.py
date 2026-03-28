@@ -3514,7 +3514,7 @@ class Database:
                 '''
                     SELECT *
                     FROM tournaments
-                    WHERE tournament_type IN ('longest_fish', 'biggest_weight')
+                    WHERE tournament_type IN ('longest_fish', 'biggest_weight', 'specific_fish')
                         AND LOWER(TRIM(target_location)) = LOWER(TRIM(?))
                         AND starts_at <= CURRENT_TIMESTAMP
                         AND ends_at >= CURRENT_TIMESTAMP
