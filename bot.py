@@ -1190,24 +1190,6 @@ class FishBot:
             "created_at": datetime.now(),
             "chat_id": chat_id,
         }
-                                user_place = idx
-                                break
-                        if user_row and user_place > top_limit:
-                            name = html.escape(user_row.get('username') or str(user_row['user_id']))
-                            weight = round(float(user_row.get('total_weight') or 0), 2)
-                            lines.append("")
-                            lines.append(f"<i>Ваше место: {user_place}. {name} — {weight} кг</i>")
-                elif criteria == 'count':
-                    rows = db.get_location_fish_leaderboard_count(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=top_limit)
-                    all_rows = db.get_location_fish_leaderboard_count(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=1000)
-                    if not rows:
-                        lines.append(f"Пока никто не поймал рыбу '{target_fish}' на этой локации.")
-                    else:
-                        for i, r in enumerate(rows, 1):
-                            medal = medals[i - 1] if i <= 3 else f"{i}."
-                            name = html.escape(r.get('username') or str(r['user_id']))
-                            count = int(r.get('total_fish') or 0)
-                            lines.append(f"{medal} {name} — {count} шт.")
                         # Поиск пользователя вне топа
                         for idx, r in enumerate(all_rows, 1):
                             if r.get('user_id') == user_id:
