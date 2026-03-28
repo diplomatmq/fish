@@ -6103,9 +6103,13 @@ class FishBot:
         if guaranteed:
             roll_max = 20000
             trash_max = 7999
-            common_max = 16999
+            common_max = 14999
             rare_max = 18999
             legendary_max = 19899
+            aquarium_max = 19949
+            mythic_max = 19989
+            anomaly_max = 19999
+            nft_max = 20001
         else:
             roll_max = 20000
             no_bite_max = 4999
@@ -7380,12 +7384,20 @@ class FishBot:
                 dynamite_reply_id = self.active_invoices[user_id].get('group_message_id')
                 del self.active_invoices[user_id]
 
-            await self._execute_dynamite_blast(
-                user_id=user_id,
-                chat_id=group_chat_id,
-                guaranteed=True,
-                reply_to_message_id=dynamite_reply_id,
-            )
+            try:
+                await self._execute_dynamite_blast(
+                    user_id=user_id,
+                    chat_id=group_chat_id,
+                    guaranteed=True,
+                    reply_to_message_id=dynamite_reply_id,
+                )
+            except Exception as e:
+                logger.error(f"[DYNAMITE] Star payment execution failed: {e}", exc_info=True)
+                await self._safe_send_message(
+                    chat_id=accounting_chat_id,
+                    text="❌ Возникла ошибка при использовании динамита! Звёзды возвращены.",
+                )
+                await self.refund_star_payment(user_id, telegram_payment_charge_id)
             return
         elif payload and payload.startswith("dynamite_fine_"):
             if not parsed_dynamite_fine_payload:
@@ -7582,9 +7594,7 @@ class FishBot:
 
         try:
             result = game.fish(user_id, group_chat_id, location, guaranteed=True)
-            # Если улов на лодке, исправляем локацию в результате
-            if result.get('is_on_boat'):
-                result['location'] = "Море"
+            # Убираем принудительный перенос в Море, так как это путает при ловле в озере/реке на лодке
         except Exception as e:
             logger.error(f"Critical error in guaranteed catch for user {user_id}: {e}", exc_info=True)
             message = f"❌ Произошла критическая ошибка при выполнении улова: {str(e)}. Пожалуйста, обратитесь в поддержку."

@@ -900,17 +900,34 @@ class FishingGame:
 
         logger.info(f"   🎯 Rarity: {target_rarity} (roll: {adjusted_roll})")
 
-        # Гарантированный улов: учитывать только сезон, игнорировать наживку.
+        # Гарантированный улов: учитывать и локацию, и наживку (по просьбе пользователя)
         fish_list = db.get_fish_by_location(location, self.current_season, min_level=player.get('level', 0))
         fish_list = self._normalize_fish_list(fish_list)
         if not fish_list:
-            # Расширяем поиск: игнорируем сезон и уровень — гарантия ВСЕГДА даёт рыбу
-            logger.info(f"   ⚠️ No seasonal fish for {location}, season {self.current_season} — expanding to all fish")
+            # Расширяем поиск: игнорируем сезон — гарантия ВСЕГДА должна давать шанс, если рыба есть в локации в принципе
+            logger.info(f"   ⚠️ No seasonal fish for {location}, season {self.current_season} — expanding to all seasons in this location")
             fish_list = self._normalize_fish_list(db.get_fish_by_location(location, 'Все', min_level=0))
+            
+        current_bait = player.get('current_bait', '')
+        if fish_list:
+            # Строгая проверка наживки
+            fish_list = [f for f in fish_list if db.check_bait_suitable_for_fish(current_bait, f['name'])]
+            if not fish_list:
+                logger.info(f"   ❌ No fish in {location} suitable for bait {current_bait}")
+                return {
+                    "success": False,
+                    "message": f"На локации {location} на наживку '{current_bait}' ничего не клюёт!",
+                    "location": location
+                }
+
         if not fish_list:
-            # Последний резерв: любая рыба из БД без фильтра локации
-            logger.info(f"   ⚠️ No fish at all for {location} — using global fallback")
-            fish_list = self._normalize_fish_list(db.get_all_fish_list() if hasattr(db, 'get_all_fish_list') else [])
+            # Больше нет глобального fall-back к любой рыбе из БД. Если в локации нет рыбы под наживку — сорвалось.
+            logger.error(f"   ❌ No fish available in location {location} for bait {current_bait}")
+            return {
+                "success": False,
+                "message": f"На локации {location} нет подходящей рыбы под вашу наживку.",
+                "location": location
+            }
         if not fish_list:
             # Совсем нет рыбы в БД — единственный допустимый выход с ошибкой
             logger.error(f"   ❌ No fish in DB at all — guaranteed cast cannot proceed")
