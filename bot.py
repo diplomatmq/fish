@@ -1190,14 +1190,6 @@ class FishBot:
             "created_at": datetime.now(),
             "chat_id": chat_id,
         }
-                            count = int(user_row.get('total_fish') or 0)
-                            lines.append("")
-                            lines.append(f"<i>Ваше место: {user_place}. {name} — {count} шт.</i>")
-                else:
-                    lines.append("Тип турнира для этой локации не поддерживается отображением.")
-                await update.message.reply_text("\n".join(lines), parse_mode='HTML')
-            except Exception as e:
-                logger.exception("_location_leaderboard_command failed for %s: %s", location_name, e)
                 await update.message.reply_text("\u26A0\uFE0F Произошла ошибка. Попробуйте позже.")
         user_part, chat_part, ts_part = parts
         try:
