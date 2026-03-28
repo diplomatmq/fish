@@ -1190,16 +1190,12 @@ class FishBot:
             "created_at": datetime.now(),
             "chat_id": chat_id,
         }
-                await update.message.reply_text("\u26A0\uFE0F Произошла ошибка. Попробуйте позже.")
-        user_part, chat_part, ts_part = parts
-        try:
-            return {
-                "payload_user_id": int(user_part),
-                "group_chat_id": int(chat_part),
-                "created_ts": int(ts_part),
-            }
-        except (TypeError, ValueError):
-            return None
+        # If you want to handle errors here, add try/except and proper indentation.
+        # Example:
+        # try:
+        #     ...
+        # except Exception:
+        #     await update.message.reply_text("\u26A0\uFE0F Произошла ошибка. Попробуйте позже.")
 
     def _build_dynamite_fine_payload(self, user_id: int, chat_id: int) -> str:
         return f"dynamite_fine_{user_id}_{chat_id}_{int(datetime.now().timestamp())}"
