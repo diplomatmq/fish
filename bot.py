@@ -1190,14 +1190,6 @@ class FishBot:
             "created_at": datetime.now(),
             "chat_id": chat_id,
         }
-                        # Поиск пользователя вне топа
-                        for idx, r in enumerate(all_rows, 1):
-                            if r.get('user_id') == user_id:
-                                user_row = r
-                                user_place = idx
-                                break
-                        if user_row and user_place > top_limit:
-                            name = html.escape(user_row.get('username') or str(user_row['user_id']))
                             count = int(user_row.get('total_fish') or 0)
                             lines.append("")
                             lines.append(f"<i>Ваше место: {user_place}. {name} — {count} шт.</i>")
