@@ -523,6 +523,8 @@ class Database:
             ''', (user_id,))
             row = cursor.fetchone()
             if not row:
+                import logging
+                logging.getLogger(__name__).warning(f"[boat] Не найдена активная лодка для пользователя {user_id} при возврате.")
                 return []
             boat_id = row[0]
 
