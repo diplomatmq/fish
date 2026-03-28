@@ -1185,39 +1185,11 @@ class FishBot:
         msg = await self.application.bot.send_message(**send_kwargs)
         # Сохраняем активный инвойс для пользователя
         self.active_invoices[user_id] = {
-            try:
-                tour = db.get_active_tournament_for_location(location_name)
-                if not tour:
-                    await update.message.reply_text(f"\U0001F3C1 Нет активного турнира для этой локации.")
-                    return
-                top_limit = int(tour.get('prize_places') or 10)
-                medals = ['\U0001F947', '\U0001F948', '\U0001F949']
-                starts_str = tour['starts_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['starts_at'], 'strftime') else str(tour['starts_at'])[:16]
-                ends_str = tour['ends_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['ends_at'], 'strftime') else str(tour['ends_at'])[:16]
-                lines = [
-                    f"\U0001F578️ <b>Топ локации: {location_name}</b>",
-                    f"\U0001F4C5 {starts_str} — {ends_str}",
-                    f"\U0001F3C5 Призовых мест: {top_limit}",
-                    "",
-                ]
-                user_id = update.effective_user.id
-                user_row = None
-                user_place = None
-                # Получаем параметры турнира
-                target_fish = tour.get('target_fish')
-                criteria = tour.get('criteria', 'weight')
-                t_type = tour.get('tournament_type', '')
-                title = tour.get('title', '')
-                # Для турниров типа 'specific_fish' с (кол-во) в названии — выводим по количеству
-                if t_type == 'specific_fish' and '(кол-во' in title.lower():
-                    rows = db.get_location_fish_leaderboard_count(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=top_limit)
-                    all_rows = db.get_location_fish_leaderboard_count(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=1000)
-                    if not rows:
-                        lines.append(f"Пока никто не поймал рыбу '{target_fish}' на этой локации.")
-                    else:
-                        for i, r in enumerate(rows, 1):
-                            medal = medals[i - 1] if i <= 3 else f"{i}."
-                            name = html.escape(r.get('username') or str(r['user_id']))
+            "invoice_id": invoice_id,
+            "msg_id": msg.message_id,
+            "created_at": datetime.now(),
+            "chat_id": chat_id,
+        }
                             count = int(r.get('total_fish') or 0)
                             lines.append(f"{medal} {name} — {count} шт.")
                         # Поиск пользователя вне топа
