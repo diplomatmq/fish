@@ -1,3 +1,20 @@
+# -*- coding: utf-8 -*-
+import logging
+import html
+import requests
+import random
+import asyncio
+import re
+from pathlib import Path
+from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+# ...existing code...
+
+class EmojiBot(ExtBot):
+    API_CALL_TIMEOUT = float(os.getenv('TG_API_CALL_TIMEOUT', '20'))
+    API_CALL_RETRIES = int(os.getenv('TG_API_CALL_RETRIES', '1'))
+    RETRY_BACKOFF_SEC = float(os.getenv('TG_API_RETRY_BACKOFF', '1.5'))
+
     def _parse_guaranteed_payload(self, payload: str) -> Optional[dict]:
         if not payload or not payload.startswith("guaranteed_"):
             return None
