@@ -350,6 +350,31 @@ def format_fish_name(name: str) -> str:
 
 
 class FishBot:
+    def _parse_guaranteed_payload(self, payload: str) -> dict:
+        """
+        Парсит payload вида guaranteed_{user_id}_{chat_id}_{ts}[_location]
+        Возвращает dict с ключами: payload_user_id, group_chat_id, created_ts, location (если есть)
+        """
+        # Пример payload: guaranteed_2011062098_-1003716809697_1774724390
+        # или guaranteed_2011062098_-1003716809697_1774724390_Lake
+        try:
+            parts = payload.split("_", 4)
+            if len(parts) < 4:
+                return {}
+            payload_user_id = int(parts[1])
+            group_chat_id = int(parts[2])
+            created_ts = int(parts[3])
+            location = parts[4] if len(parts) > 4 else None
+            return {
+                "payload_user_id": payload_user_id,
+                "group_chat_id": group_chat_id,
+                "created_ts": created_ts,
+                "location": location,
+            }
+        except Exception as e:
+            logger.warning(f"_parse_guaranteed_payload: failed to parse '{payload}': {e}")
+            return {}
+
     async def skip_boat_cooldown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /skip_boat_cd — сбросить КД лодки за звёзды."""
         user_id = update.effective_user.id
@@ -359,6 +384,7 @@ class FishBot:
             await update.message.reply_text(f"⏩ КД лодки сброшен за {price} ⭐! Можно выплывать снова.")
         else:
             await update.message.reply_text("❌ Не удалось сбросить КД лодки. Возможно, нет КД или не хватает звёзд.")
+
     async def cure_seasick_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /cure_seasick — вылечить морскую болезнь за звёзды."""
         user_id = update.effective_user.id
