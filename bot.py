@@ -745,10 +745,17 @@ class FishBot:
 
         draft['tournament_type'] = selected_type
         if selected_type == 'specific_fish':
-            draft['step'] = 'target_fish'
+            # Для specific_fish: сначала локация, потом критерий, потом рыба
+            locations = db.get_locations()
+            keyboard = [
+                [InlineKeyboardButton(loc['name'], callback_data=f'tour_location_{loc["name"]}')]
+                for loc in locations
+            ]
+            draft['step'] = 'location'
             context.user_data['new_tour'] = draft
             await query.edit_message_text(
-                f"Выбран тип: {self.TOUR_TYPES[selected_type]}\n\nВведите название рыбы (точно как в игре):"
+                f"Выбран тип: {self.TOUR_TYPES[selected_type]}\n\nВыберите локацию:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
 
@@ -773,7 +780,7 @@ class FishBot:
         )
 
     async def handle_tour_location_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Выбор локации для турнира 'Самая длинная рыба'."""
+        """Выбор локации для турнира 'Улов определённой рыбы'."""
         query = update.callback_query
         await query.answer()
 
@@ -788,10 +795,41 @@ class FishBot:
 
         location_name = query.data.replace('tour_location_', '', 1)
         draft['target_location'] = location_name
-        draft['step'] = 'title'
+        # Новый шаг: выбор критерия
+        draft['step'] = 'criteria'
+        context.user_data['new_tour'] = draft
+        keyboard = [
+            [InlineKeyboardButton("Общий вес рыбы", callback_data='tour_criteria_weight')],
+            [InlineKeyboardButton("Количество рыбы", callback_data='tour_criteria_count')],
+        ]
+        await query.edit_message_text(
+            f"📍 Локация: {location_name}\n\nВыберите критерий турнира:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def handle_tour_criteria_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Выбор критерия турнира (вес/количество) после локации."""
+        query = update.callback_query
+        await query.answer()
+
+        if not self._is_owner(update.effective_user.id):
+            await query.answer("Нет доступа", show_alert=True)
+            return
+
+        draft = context.user_data.get('new_tour')
+        if not draft or draft.get('step') != 'criteria':
+            await query.edit_message_text("Сессия не найдена. Запустите /new_tour заново.")
+            return
+
+        criteria = query.data.replace('tour_criteria_', '', 1)
+        if criteria not in ('weight', 'count'):
+            await query.answer("Неизвестный критерий", show_alert=True)
+            return
+        draft['criteria'] = criteria
+        draft['step'] = 'target_fish'
         context.user_data['new_tour'] = draft
         await query.edit_message_text(
-            f"📍 Локация: {location_name}\n\nВведите название турнира:"
+            f"Выбран критерий: {'Общий вес' if criteria == 'weight' else 'Количество'}\n\nВведите название рыбы (точно как в игре):"
         )
 
     async def handle_new_tour_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -885,10 +923,14 @@ class FishBot:
                 context.user_data.pop('new_tour', None)
                 return True
 
+            # criteria сохраняем в title (или target_fish) если тип specific_fish
+            extra_title = ''
+            if draft.get('tournament_type') == 'specific_fish' and draft.get('criteria'):
+                extra_title = f" ({'вес' if draft['criteria']=='weight' else 'кол-во'})"
             tournament_id = db.create_tournament(
                 chat_id=int(draft['chat_id']),
                 created_by=int(draft['created_by']),
-                title=draft.get('title') or 'Турнир',
+                title=(draft.get('title') or 'Турнир') + extra_title,
                 tournament_type=draft.get('tournament_type'),
                 starts_at=starts_at,
                 ends_at=ends_at,
@@ -1120,6 +1162,59 @@ class FishBot:
                         weight = round(float(user_row.get('best_weight') or 0), 2)
                         lines.append("")
                         lines.append(f"<i>Ваше место: {user_place}. {name} — {fish} — {weight} кг</i>")
+            elif t_type == 'specific_fish':
+                # Определяем критерий (вес/количество) из названия турнира или target_fish
+                criteria = 'weight' if 'вес' in (tour.get('title') or '').lower() else 'count'
+                fish_name = tour.get('target_fish')
+                if not fish_name:
+                    lines.append("Ошибка: не указана рыба для турнира.")
+                else:
+                    if criteria == 'weight':
+                        rows = db.get_location_fish_leaderboard_weight(location_name, fish_name, tour['starts_at'], tour['ends_at'], limit=top_limit)
+                        all_rows = db.get_location_fish_leaderboard_weight(location_name, fish_name, tour['starts_at'], tour['ends_at'], limit=1000)
+                        if not rows:
+                            lines.append("Пока никто не поймал эту рыбу на этой локации.")
+                        else:
+                            for i, r in enumerate(rows, 1):
+                                medal = medals[i - 1] if i <= 3 else f"{i}."
+                                name = html.escape(r.get('username') or str(r['user_id']))
+                                weight = round(float(r.get('total_weight') or 0), 2)
+                                count = int(r.get('total_fish') or 0)
+                                lines.append(f"{medal} {name} — {weight} кг ({count} шт.)")
+                            for idx, r in enumerate(all_rows, 1):
+                                if r.get('user_id') == user_id:
+                                    user_row = r
+                                    user_place = idx
+                                    break
+                            if user_row and user_place > top_limit:
+                                name = html.escape(user_row.get('username') or str(user_row['user_id']))
+                                weight = round(float(user_row.get('total_weight') or 0), 2)
+                                count = int(user_row.get('total_fish') or 0)
+                                lines.append("")
+                                lines.append(f"<i>Ваше место: {user_place}. {name} — {weight} кг ({count} шт.)</i>")
+                    else:
+                        rows = db.get_location_fish_leaderboard_count(location_name, fish_name, tour['starts_at'], tour['ends_at'], limit=top_limit)
+                        all_rows = db.get_location_fish_leaderboard_count(location_name, fish_name, tour['starts_at'], tour['ends_at'], limit=1000)
+                        if not rows:
+                            lines.append("Пока никто не поймал эту рыбу на этой локации.")
+                        else:
+                            for i, r in enumerate(rows, 1):
+                                medal = medals[i - 1] if i <= 3 else f"{i}."
+                                name = html.escape(r.get('username') or str(r['user_id']))
+                                count = int(r.get('total_fish') or 0)
+                                weight = round(float(r.get('total_weight') or 0), 2)
+                                lines.append(f"{medal} {name} — {count} шт. ({weight} кг)")
+                            for idx, r in enumerate(all_rows, 1):
+                                if r.get('user_id') == user_id:
+                                    user_row = r
+                                    user_place = idx
+                                    break
+                            if user_row and user_place > top_limit:
+                                name = html.escape(user_row.get('username') or str(user_row['user_id']))
+                                count = int(user_row.get('total_fish') or 0)
+                                weight = round(float(user_row.get('total_weight') or 0), 2)
+                                lines.append("")
+                                lines.append(f"<i>Ваше место: {user_place}. {name} — {count} шт. ({weight} кг)</i>")
             else:
                 lines.append("Тип турнира для этой локации не поддерживается отображением.")
             await update.message.reply_text("\n".join(lines), parse_mode='HTML')
@@ -2173,6 +2268,17 @@ class FishBot:
                 else:
                     await update.message.reply_text(message)
 
+                # Если на лодке — доп проверки
+                if result.get('is_on_boat'):
+                    # Проверка на крушение
+                    if db.check_boat_crash(user_id):
+                        await update.message.reply_text("💥 <b>КРУШЕНИЕ!</b> Лодка не выдержала веса мусора и сломалась! Весь улов текущего плавания утерян.")
+                    else:
+                        # Предупреждение о малом весе
+                        left = db.check_boat_weight_warning(user_id)
+                        if left is not None and left < 50:
+                            await update.message.reply_text(f"⚠️ <b>ВНИМАНИЕ!</b> Лодка почти полна. Осталось места: {left:.1f} кг")
+
                 if result.get('temp_rod_broken'):
                     await update.message.reply_text(
                         "💥 Временная удочка сломалась после удачного улова.\n"
@@ -2563,6 +2669,13 @@ class FishBot:
     async def handle_boat_return(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка кнопки Вернуться (делёж улова)"""
         user_id = update.effective_user.id
+        
+        # Проверка на крушение перед возвратом
+        if db.check_boat_crash(user_id):
+            await update.callback_query.answer("💥 КРУШЕНИЕ! Лодка не выдержала веса и пошла ко дну! Весь улов текущего плавания утерян.", show_alert=True)
+            await self.show_fishing_menu(update, context)
+            return
+
         results = db.return_boat_trip_and_split_catch(user_id)
         if not results:
             await update.callback_query.answer("Нет улова или вы не владелец лодки.", show_alert=True)
@@ -6342,7 +6455,7 @@ class FishBot:
                 # Находим fish_id по имени
                 f_data = db.get_fish_by_name(item['name'])
                 if f_data:
-                    db.add_fish_to_boat(user_id, f_data['id'], float(item['weight']))
+                    db.add_fish_to_boat(user_id, f_data['id'], float(item['weight']), chat_id)
             else:
                 db.add_caught_fish(
                     user_id,

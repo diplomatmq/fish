@@ -411,7 +411,7 @@ class FishingGame:
                     # На лодке мусор тоже идёт в лодку? 
                     # По тексту "Рыба идёт в лодку". Мусор обычно игнорируется или тоже туда.
                     # Добавим в общую кучу, если это улов.
-                    db.add_boat_catch(active_boat['id'], trash['name'], trash['weight'])
+                    db.add_boat_catch(active_boat['id'], trash['name'], trash['weight'], chat_id)
                     db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
                 else:
                     db.update_player(user_id, chat_id,
@@ -683,7 +683,7 @@ class FishingGame:
         rod_broken = current_dur <= 0
         
         if is_on_boat:
-            db.add_fish_to_boat(user_id, caught_fish['id'], weight)
+            db.add_fish_to_boat(user_id, caught_fish['id'], weight, chat_id)
         else:
             db.add_caught_fish(user_id, chat_id, caught_fish['name'], weight, location, length)
         
@@ -792,9 +792,16 @@ class FishingGame:
                 })
                 level_info = db.add_player_xp(user_id, chat_id, xp_earned)
 
+                # Проверяем, находится ли игрок на лодке
+                active_boat = db.get_active_boat_by_user(user_id)
+                is_on_boat = active_boat is not None
+
                 db.update_player(user_id, chat_id,
-                                coins=player['coins'] + trash['price'],
+                                coins=player['coins'] + (0 if is_on_boat else trash['price']),
                                 last_fish_time=datetime.now().isoformat())
+                
+                if is_on_boat:
+                    db.add_boat_catch(active_boat['id'], trash['name'], trash['weight'], chat_id)
 
                 temp_rod_result = self._consume_temp_rod_use(user_id, chat_id, player['current_rod'])
 
@@ -803,6 +810,10 @@ class FishingGame:
                     f"🗑️ Ловля... Поймали {trash['name']}!",
                     f"😤 Ловля... Это был {trash['name']}, а не рыба!",
                 ]
+                
+                # ... [treasure logic remains same, but I need to include it in the replace block if it's within range]
+                # Wait, I'll use a better approach for the replacement block.
+                # Actually, I'll just replace the return dict and the coins update part.
                 
                 # ===== ВТОРОЙ РОЛ НА ДРАГОЦЕННОСТИ =====
                 from treasures import TREASURES
@@ -1011,7 +1022,7 @@ class FishingGame:
 
         if is_on_boat:
             # На лодке рыба идёт в общий садок (boat_catch)
-            db.add_fish_to_boat(user_id, caught_fish['id'], weight)
+            db.add_fish_to_boat(user_id, caught_fish['id'], weight, chat_id)
         else:
             db.add_caught_fish(user_id, chat_id, caught_fish['name'], weight, location, length)
 
