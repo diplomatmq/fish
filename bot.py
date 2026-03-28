@@ -1197,6 +1197,15 @@ class FishBot:
         # except Exception:
         #     await update.message.reply_text("\u26A0\uFE0F Произошла ошибка. Попробуйте позже.")
 
+
+    def _build_guaranteed_payload(self, user_id: int, chat_id: int) -> str:
+        """Payload для гарантированного улова (инвойс)."""
+        return f"guaranteed_{user_id}_{chat_id}_{int(datetime.now().timestamp())}"
+
+    def _build_dynamite_skip_payload(self, user_id: int, chat_id: int) -> str:
+        """Payload для мгновенного взрыва динамита (инвойс)."""
+        return f"dynamite_skip_{user_id}_{chat_id}_{int(datetime.now().timestamp())}"
+
     def _build_dynamite_fine_payload(self, user_id: int, chat_id: int) -> str:
         return f"dynamite_fine_{user_id}_{chat_id}_{int(datetime.now().timestamp())}"
 
