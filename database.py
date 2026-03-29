@@ -103,6 +103,7 @@ class PostgresConnWrapper:
                                     'player_rods': 'user_id, rod_name',
                                     'chat_configs': 'chat_id',
                                     'user_ref_links': 'user_id',
+                                    'system_flags': 'key',
                                 }
                                 conflict_cols = conflict_map.get(table.lower())
                                 if conflict_cols:
@@ -436,16 +437,8 @@ class Database:
         """Установить значение системного флага."""
         with self._connect() as conn:
             cursor = conn.cursor()
-            # Универсальный запрос для SQLite и Postgres (UPSERT)
-            try:
-                # Пытаемся обновить, если есть
-                cursor.execute("UPDATE system_flags SET value = ? WHERE key = ?", (value, key))
-                if cursor.rowcount == 0:
-                    # Если нечего обновлять, вставляем
-                    cursor.execute("INSERT INTO system_flags (key, value) VALUES (?, ?)", (key, value))
-            except Exception:
-                # Если таблицы еще нет или другой сбой
-                cursor.execute("INSERT INTO system_flags (key, value) VALUES (?, ?)", (key, value))
+            # Теперь INSERT OR REPLACE корректно транслируется в ON CONFLICT для Postgres
+            cursor.execute("INSERT OR REPLACE INTO system_flags (key, value) VALUES (?, ?)", (key, value))
             conn.commit()
 
     def get_system_flag(self, key: str) -> Optional[str]:
@@ -651,8 +644,8 @@ class Database:
                     # Используем сохраненную локацию, если она есть
                     final_location = catch_location if catch_location else "Море"
                     cursor.execute('''
-                        INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, location, length, caught_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, location, length, caught_at, sold)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 0)
                     ''', (uid, item_chat_id, fish_name, weight, final_location, length, catch_time))
                     logger.info(f"[boat] Записана рыба: user_id={uid}, chat_id={item_chat_id}, fish_name={fish_name}, weight={weight}, location={final_location}, length={length}, caught_at={catch_time}")
                 if user_catch:

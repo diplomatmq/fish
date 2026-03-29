@@ -1592,29 +1592,33 @@ class FishBot:
         prize_link = ""
         
         if hour < 23:
-            prize_key = "torch_1_won"
+            prize_key = f"torch_1_won_{chat_id}"
             prize_link = "https://t.me/nft/ChillFlame-294384"
         else:
-            prize_key = "torch_2_won"
+            prize_key = f"torch_2_won_{chat_id}"
             prize_link = "https://t.me/nft/ChillFlame-92692"
             
-        # Проверяем, не выигран ли этот приз уже
+        # Проверяем, не выигран ли этот приз уже в этом чате
         already_won = db.get_system_flag(prize_key)
         if already_won == "1":
-            logger.info(f"[TORCH_LOG] Prize {prize_key} already won. Skipping.")
+            logger.info(f"[TORCH_LOG] Prize {prize_key} already won in chat {chat_id}. Skipping.")
             return False
             
         # Помечаем как выигранный
         try:
             db.set_system_flag(prize_key, "1")
+            logger.info(f"[TORCH_LOG] Flag {prize_key} successfully set to 1")
         except Exception as e:
-            logger.error(f"[TORCH_LOG] Error setting system flag {prize_key}: {e}")
-            # Если не удалось сохранить, лучше не выдавать приз, чтобы не было дублей
+            logger.error(f"[TORCH_LOG] Error setting system flag {prize_key}: {e}", exc_info=True)
             return False
         
         # Поздравляем пользователя
         congrats_text = f"Поздравляю, факел найден! 🔥\n\n{prize_link}"
-        await self._safe_send_message(chat_id=chat_id, text=congrats_text)
+        msg = await self._safe_send_message(chat_id=chat_id, text=congrats_text, parse_mode="HTML")
+        if msg:
+            logger.info(f"[TORCH_LOG] Congrats message sent to chat {chat_id}")
+        else:
+            logger.warning(f"[TORCH_LOG] Failed to send congrats message to chat {chat_id}")
         
         # Уведомляем админа
         admin_msg = (
@@ -1623,7 +1627,12 @@ class FishBot:
             f"📍 Чат: {chat_title or chat_id} (ID: {chat_id})\n"
             f"🔗 Ссылка: {prize_link}"
         )
-        await self._safe_send_message(chat_id=ADMIN_ID, text=admin_msg)
+        try:
+            admin_notify = await self.application.bot.send_message(chat_id=ADMIN_ID, text=admin_msg, parse_mode="HTML")
+            if admin_notify:
+                logger.info(f"[TORCH_LOG] Admin notification sent to {ADMIN_ID}")
+        except Exception as e:
+            logger.warning(f"[TORCH_LOG] Could not notify admin {ADMIN_ID}: {e}")
         
         return True
 
@@ -2414,6 +2423,22 @@ class FishBot:
 
             # Если на лодке — доп проверки
             if result.get('is_on_boat'):
+                # --- ПРИОРИТЕТНАЯ ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ (НА ЛОДКЕ) ---
+                # Лодка тоже считается!
+                rarity_for_event = fish['rarity']
+                if rarity_for_event in ["Редкая", "Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
+                    try:
+                        await self._check_torch_event(
+                            chat_id=chat_id,
+                            user_id=user_id,
+                            username=update.effective_user.username or update.effective_user.first_name,
+                            rarity=rarity_for_event,
+                            chat_title=update.effective_chat.title
+                        )
+                    except Exception as e:
+                        logger.error(f"Error in prioritized torch event check (boat): {e}")
+                # ---------------------------------------------------------
+
                 # Проверка на крушение
                 if db.check_boat_crash(user_id):
                     message += "\n\n💥 <b>КРУШЕНИЕ!</b> Лодка не выдержала веса и сломалась! Весь улов текущего плавания утерян."
