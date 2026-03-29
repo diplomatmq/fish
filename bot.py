@@ -228,6 +228,11 @@ class EmojiBot(ExtBot):
                 await asyncio.sleep(wait + 1)
             except (BadRequest, Forbidden) as exc:
                 # Ошибки Telegram API (например, Chat not found, Forbidden) не лечатся retry'ем
+                exc_str = str(exc)
+                if "Message is not modified" in exc_str:
+                    return None
+                if any(fragment in exc_str for fragment in ("Not enough rights", "Chat not found", "Forbidden")):
+                    return None
                 logger.warning("EmojiBot.%s non-retryable error: %s", method_name, exc)
                 raise
             except (TimedOut, NetworkError, asyncio.TimeoutError) as exc:
@@ -1111,6 +1116,9 @@ class FishBot:
             # Получаем параметры турнира
             target_fish = tour.get('target_fish')
             criteria = tour.get('criteria', 'weight')
+            
+            logger.info(f"Tournament found for {location_name}: fish={target_fish}, criteria={criteria}")
+            
             if not target_fish:
                 lines.append("Ошибка: не указана целевая рыба для турнира.")
                 await update.message.reply_text("\n".join(lines), parse_mode='HTML')
@@ -1118,6 +1126,7 @@ class FishBot:
             if criteria == 'weight':
                 rows = db.get_location_fish_leaderboard_weight(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=top_limit)
                 all_rows = db.get_location_fish_leaderboard_weight(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=1000)
+                logger.info(f"Rows found for {location_name} (weight): {len(rows)}")
                 if not rows:
                     lines.append(f"Пока никто не поймал рыбу '{target_fish}' на этой локации.")
                 else:
@@ -1238,9 +1247,28 @@ class FishBot:
         """Payload для гарантированного улова (инвойс)."""
         return f"guaranteed_{user_id}_{chat_id}_{int(datetime.now().timestamp())}"
 
+
     def _build_dynamite_skip_payload(self, user_id: int, chat_id: int) -> str:
         """Payload для мгновенного взрыва динамита (инвойс)."""
         return f"dynamite_skip_{user_id}_{chat_id}_{int(datetime.now().timestamp())}"
+
+    def _parse_dynamite_skip_payload(self, payload: str) -> Optional[dict]:
+        """Парсит payload вида dynamite_skip_{user_id}_{chat_id}_{ts}"""
+        if not payload or not payload.startswith("dynamite_skip_"):
+            return None
+        body = payload[len("dynamite_skip_"):]
+        parts = body.rsplit("_", 2)
+        if len(parts) != 3:
+            return None
+        user_part, chat_part, ts_part = parts
+        try:
+            return {
+                "payload_user_id": int(user_part),
+                "group_chat_id": int(chat_part),
+                "created_ts": int(ts_part),
+            }
+        except (TypeError, ValueError):
+            return None
 
     def _build_dynamite_fine_payload(self, user_id: int, chat_id: int) -> str:
         return f"dynamite_fine_{user_id}_{chat_id}_{int(datetime.now().timestamp())}"
@@ -1277,6 +1305,32 @@ class FishBot:
         try:
             return {
                 "booster_code": booster_code,
+                "payload_user_id": int(user_part),
+                "group_chat_id": int(chat_part),
+                "created_ts": int(ts_part),
+            }
+        except (TypeError, ValueError):
+            return None
+
+    def _build_booster_payload(self, code: str, user_id: int, chat_id: int) -> str:
+        """Payload для покупки бустера (кормушки/эхолота) (инвойс)."""
+        return f"booster_{code}_{user_id}_{chat_id}_{int(datetime.now().timestamp())}"
+
+    def _build_harpoon_skip_payload(self, user_id: int, chat_id: int) -> str:
+        """Payload для мгновенного использования гарпуна (инвойс)."""
+        return f"harpoon_skip_{user_id}_{chat_id}_{int(datetime.now().timestamp())}"
+
+    def _parse_harpoon_skip_payload(self, payload: str) -> Optional[Dict[str, int]]:
+        """Парсит payload вида harpoon_skip_{user_id}_{chat_id}_{ts}"""
+        if not payload or not payload.startswith("harpoon_skip_"):
+            return None
+        body = payload[len("harpoon_skip_"):]
+        parts = body.rsplit("_", 2)
+        if len(parts) != 3:
+            return None
+        user_part, chat_part, ts_part = parts
+        try:
+            return {
                 "payload_user_id": int(user_part),
                 "group_chat_id": int(chat_part),
                 "created_ts": int(ts_part),
@@ -1469,6 +1523,9 @@ class FishBot:
             try:
                 return await self.application.bot.send_message(**kwargs)
             except (BadRequest, Forbidden) as e:
+                exc_str = str(e)
+                if any(fragment in exc_str for fragment in ("Not enough rights", "Chat not found", "Forbidden")):
+                    return None
                 logger.warning("_safe_send_message: non-retryable error (chat_id=%s): %s", kwargs.get('chat_id'), e)
                 return None
             except RetryAfter as e:
@@ -1483,10 +1540,34 @@ class FishBot:
         return None
 
     async def _safe_send_document(self, **kwargs):
+        document = kwargs.get('document')
+        if document:
+            try:
+                if hasattr(document, 'read'):
+                    pos = document.tell()
+                    document.seek(0, 2)
+                    size = document.tell()
+                    document.seek(pos)
+                    if size == 0:
+                        logger.warning("_safe_send_document: skip empty file object")
+                        return None
+                elif isinstance(document, (str, Path)):
+                    p = Path(document)
+                    if p.exists() and p.stat().st_size == 0:
+                        logger.warning("_safe_send_document: skip empty file path: %s", document)
+                        return None
+            except Exception as e:
+                logger.warning("_safe_send_document: error checking file size: %s", e)
+
         for attempt in range(3):
             try:
                 return await self.application.bot.send_document(**kwargs)
             except (BadRequest, Forbidden) as e:
+                exc_str = str(e)
+                if "File must be non-empty" in exc_str:
+                    return None
+                if any(fragment in exc_str for fragment in ("Not enough rights", "Chat not found", "Forbidden")):
+                    return None
                 logger.warning("_safe_send_document: non-retryable error (chat_id=%s): %s", kwargs.get('chat_id'), e)
                 return None
             except RetryAfter as e:
@@ -1505,6 +1586,9 @@ class FishBot:
             try:
                 return await self.application.bot.send_sticker(**kwargs)
             except (BadRequest, Forbidden) as e:
+                exc_str = str(e)
+                if any(fragment in exc_str for fragment in ("Not enough rights", "Chat not found", "Forbidden")):
+                    return None
                 logger.warning("_safe_send_sticker: non-retryable error (chat_id=%s): %s", kwargs.get('chat_id'), e)
                 return None
             except RetryAfter as e:
@@ -1523,6 +1607,8 @@ class FishBot:
             try:
                 return await self.application.bot.edit_message_text(**kwargs)
             except (BadRequest, Forbidden) as e:
+                if "Message is not modified" in str(e):
+                    return None
                 logger.warning("_safe_edit_message_text: non-retryable error: %s", e)
                 return None
             except RetryAfter as e:
@@ -1541,6 +1627,9 @@ class FishBot:
             try:
                 return await self.application.bot.send_invoice(**kwargs)
             except (BadRequest, Forbidden) as e:
+                exc_str = str(e)
+                if any(fragment in exc_str for fragment in ("Not enough rights", "Chat not found", "Forbidden")):
+                    return None
                 logger.warning("_safe_send_invoice: non-retryable error (chat_id=%s): %s", kwargs.get('chat_id'), e)
                 return None
             except RetryAfter as e:
@@ -2551,8 +2640,12 @@ class FishBot:
         user_id = update.effective_user.id
         
         results, boat_id, status = db.return_boat_trip_and_split_catch(user_id)
-        if results is None:
-            await update.callback_query.answer("Ошибка возврата лодки.", show_alert=True)
+        if status == 'not_found':
+            await update.callback_query.answer("Ошибка: активная лодка не найдена.", show_alert=True)
+            await self.show_fishing_menu(update, context)
+            return
+        if status == 'no_members':
+            await update.callback_query.answer("Ошибка: участники лодки не найдены.", show_alert=True)
             await self.show_fishing_menu(update, context)
             return
         if status == 'sunk':
@@ -3826,6 +3919,8 @@ class FishBot:
         try:
             await query.edit_message_text(message, reply_markup=reply_markup)
         except Exception as e:
+            if "Message is not modified" in str(e):
+                return
             logger.error(f"Error editing shop_baits_location: {e}")
             if "Message is not modified" not in str(e):
                 # Попробуем отправить как обычное сообщение
@@ -5332,8 +5427,13 @@ class FishBot:
         try:
             await query.edit_message_text(message, reply_markup=reply_markup, parse_mode="HTML")
         except Exception as e:
+            if "Message is not modified" in str(e):
+                return
             logger.error(f"Error editing treasures inventory message: {e}")
-            await query.edit_message_text("💎 Клад\n\nВаши сокровища:")
+            try:
+                await query.edit_message_text("💎 Клад\n\nВаши сокровища:")
+            except Exception:
+                pass
     
     async def handle_sell_treasure(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Продажа предмета из клада"""

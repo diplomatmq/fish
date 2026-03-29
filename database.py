@@ -438,7 +438,7 @@ class Database:
                 FROM caught_fish cf
                 LEFT JOIN players p ON p.user_id = cf.user_id
                 WHERE cf.location = ?
-                  AND cf.fish_name = ?
+                  AND LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(?))
                   AND cf.caught_at >= ?
                   AND cf.caught_at <= ?
                   AND COALESCE(cf.sold, 0) = 0
@@ -466,7 +466,7 @@ class Database:
                 FROM caught_fish cf
                 LEFT JOIN players p ON p.user_id = cf.user_id
                 WHERE cf.location = ?
-                  AND cf.fish_name = ?
+                  AND LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(?))
                   AND cf.caught_at >= ?
                   AND cf.caught_at <= ?
                   AND COALESCE(cf.sold, 0) = 0
@@ -528,7 +528,7 @@ class Database:
             row = cursor.fetchone()
             if not row:
                 logger.warning(f"[boat] Не найдена активная лодка для пользователя {user_id} при возврате.")
-                return [], None
+                return [], None, 'not_found'
             boat_id = row[0]
 
             # Предварительная проверка на крушение перед возвратом
@@ -556,10 +556,10 @@ class Database:
             logger.info(f"[boat] Участники лодки {boat_id}: {members}")
             if not members:
                 logger.warning(f"[boat] Нет участников в лодке {boat_id} при возврате.")
-                return [], boat_id
+                return [], boat_id, 'no_members'
             # Получить улов
             cursor.execute('''
-                SELECT fish_id, weight, chat_id FROM boat_catch WHERE boat_id = ?
+                SELECT fish_id, weight, chat_id, location, caught_at FROM boat_catch WHERE boat_id = ?
             ''', (boat_id,))
             catch = cursor.fetchall()
             logger.info(f"[boat] Улов лодки {boat_id}: {catch}")
@@ -591,13 +591,13 @@ class Database:
                 count = per_user + (1 if uid == user_id and remainder > 0 else 0)
                 user_catch = catch[idx:idx+count]
                 idx += count
-                total_weight = sum([w for _, w, _ in user_catch])
+                total_weight = sum([w for _, w, _, _, _ in user_catch])
                 if not user_catch:
                     logger.warning(f"[boat] Для пользователя {uid} не нашлось рыбы для распределения (user_catch пустой)")
                 else:
                     logger.info(f"[boat] Рыба для пользователя {uid}: {user_catch}")
                 # Добавить в caught_fish
-                for fish_id, weight, item_chat_id in user_catch:
+                for fish_id, weight, item_chat_id, catch_location, catch_time in user_catch:
                     # Корректный запрос из таблицы видов рыб: name, min_length, max_length
                     cursor.execute('SELECT name, min_length, max_length FROM fish WHERE id = ?', (fish_id,))
                     fish_row = cursor.fetchone()
@@ -608,12 +608,13 @@ class Database:
                     min_len, max_len = fish_row[1], fish_row[2]
                     # Генерируем длину на основе веса/случайности
                     length = round(random.uniform(min_len, max_len), 1)
-                    location = "Море"  # Лодка всегда в море
+                    # Используем сохраненную локацию, если она есть
+                    final_location = catch_location if catch_location else "Море"
                     cursor.execute('''
-                        INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, location, length)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    ''', (uid, item_chat_id, fish_name, weight, location, length))
-                    logger.info(f"[boat] Записана рыба: user_id={uid}, chat_id={item_chat_id}, fish_name={fish_name}, weight={weight}, location={location}, length={length}")
+                        INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, location, length, caught_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (uid, item_chat_id, fish_name, weight, final_location, length, catch_time))
+                    logger.info(f"[boat] Записана рыба: user_id={uid}, chat_id={item_chat_id}, fish_name={fish_name}, weight={weight}, location={final_location}, length={length}, caught_at={catch_time}")
                 if user_catch:
                     logger.info(f"[boat] Пользователь {uid} получил {len(user_catch)} рыб(ы), общий вес: {total_weight:.2f} кг. Улов не пропал, а распределён.")
                 results.append((uid, usernames[uid], count, total_weight))
@@ -851,9 +852,9 @@ class Database:
                     UPDATE boats 
                     SET is_active = 0, current_weight = 0, durability = 0, cooldown_until = ? 
                     WHERE id = ?
-                """, (cd_until.isoformat(), boat_id))
+                """, (cd_until.isoformat(), boat['id']))
                 # Очищаем улов, чтобы он не сохранился до следующего плавания
-                cursor.execute("DELETE FROM boat_catch WHERE boat_id = ?", (boat_id,))
+                cursor.execute("DELETE FROM boat_catch WHERE boat_id = ?", (boat['id'],))
                 conn.commit()
             return True
         return False
@@ -875,16 +876,31 @@ class Database:
                     boat_id INTEGER NOT NULL,
                     fish_id INTEGER NOT NULL,
                     weight REAL NOT NULL,
-                    chat_id BIGINT DEFAULT 0
+                    chat_id BIGINT DEFAULT 0,
+                    location TEXT DEFAULT 'Море',
+                    caught_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            # Для существующей таблицы добавляем колонку, если её нет
+            # Для существующей таблицы добавляем колонки, если их нет
             try:
                 cursor.execute("ALTER TABLE boat_catch ADD COLUMN IF NOT EXISTS chat_id BIGINT DEFAULT 0")
             except Exception:
-                # На случай, если IF NOT EXISTS не поддерживается
                 try:
                     cursor.execute("ALTER TABLE boat_catch ADD COLUMN chat_id BIGINT DEFAULT 0")
+                except:
+                    pass
+            try:
+                cursor.execute("ALTER TABLE boat_catch ADD COLUMN IF NOT EXISTS location TEXT DEFAULT 'Море'")
+            except Exception:
+                try:
+                    cursor.execute("ALTER TABLE boat_catch ADD COLUMN location TEXT DEFAULT 'Море'")
+                except:
+                    pass
+            try:
+                cursor.execute("ALTER TABLE boat_catch ADD COLUMN IF NOT EXISTS caught_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            except Exception:
+                try:
+                    cursor.execute("ALTER TABLE boat_catch ADD COLUMN caught_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
                 except:
                     pass
             conn.commit()
@@ -903,7 +919,7 @@ class Database:
             row = cursor.fetchone()
             return bool(row and row[0])
 
-    def add_fish_to_boat(self, user_id: int, fish_id: int, weight: float, chat_id: Any = 0) -> bool:
+    def add_fish_to_boat(self, user_id: int, fish_id: int, weight: float, chat_id: Any = 0, location: str = "Море") -> bool:
         """Добавить пойманную рыбу в лодку пользователя (если он в плавании)."""
         self._ensure_boat_tables()
         self._ensure_boat_catch_table()
@@ -928,15 +944,16 @@ class Database:
                 return False
             boat_id = row[0]
             cursor.execute('''
-                INSERT INTO boat_catch (boat_id, fish_id, weight, chat_id)
-                VALUES (?, ?, ?, ?)
-            ''', (boat_id, fish_id, weight, chat_id_to_store))
+                INSERT INTO boat_catch (boat_id, fish_id, weight, chat_id, location, caught_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (boat_id, fish_id, weight, chat_id_to_store, location, datetime.now()))
             # Обновить текущий вес лодки
             cursor.execute('''
                 UPDATE boats SET current_weight = current_weight + ? WHERE id = ?
             ''', (weight, boat_id))
             conn.commit()
             return True
+
     def get_active_boat_by_user(self, user_id: int):
         self._ensure_boat_tables()
         with self._connect() as conn:
@@ -953,7 +970,7 @@ class Database:
                 return dict(zip(columns, row))
             return None
 
-    def add_boat_catch(self, boat_id: int, item_name: str, weight: float, chat_id: Any = 0) -> bool:
+    def add_boat_catch(self, boat_id: int, item_name: str, weight: float, chat_id: Any = 0, location: str = "Море") -> bool:
         self._ensure_boat_catch_table()
         # Гарантируем, что chat_id - это число (BIGINT)
         try:
@@ -967,9 +984,9 @@ class Database:
             row = cursor.fetchone()
             item_id = row[0] if row else 0
             cursor.execute('''
-                INSERT INTO boat_catch (boat_id, fish_id, weight, chat_id)
-                VALUES (?, ?, ?, ?)
-            ''', (boat_id, item_id, weight, chat_id_to_store))
+                INSERT INTO boat_catch (boat_id, fish_id, weight, chat_id, location, caught_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (boat_id, item_id, weight, chat_id_to_store, location, datetime.now()))
             cursor.execute('UPDATE boats SET current_weight = current_weight + ? WHERE id = ?', (weight, boat_id))
             conn.commit()
             return True
@@ -2174,7 +2191,7 @@ class Database:
                 ("Кумжа", "Редкая", 1.0, 7.0, 30, 80, 170, "Озеро", "Весна,Лето,Осень,Зима", "Воблер,Блесна,Муха,Мушка,Живец", 18, None),
                 ("Палия", "Редкая", 1.0, 8.0, 40, 90, 170, "Озеро", "Весна,Осень,Зима", "Блесна,Живец,Икра,Мотыль", 18, None),
                 ("Ряпушка", "Обычная", 0.01, 0.05, 5, 12, 4, "Озеро", "Все", "Мотыль,Опарыш,Муха,Черви", 3, None),
-                ("Корюшка", "Редкая", 0.01, 0.1, 7, 15, 15, "Озеро", "Весна,Зима", "Кусочки рыбы,Мотыль,Опарыш", 5, None),
+                ("Корюшка", "Редкая", 0.01, 0.1, 7, 15, 15, "Озеро,Городской пруд", "Весна,Зима", "Кусочки рыбы,Мотыль,Опарыш", 5, None),
                 ("Берш", "Редкая", 0.2, 1.2, 20, 45, 40, "Озеро", "Все", "Живец,Блесна,Черви,Кусочки рыбы", 8, None),
                 ("Белоглазка", "Обычная", 0.05, 0.3, 10, 25, 7, "Озеро", "Все", "Каша,Опарыш,Черви,Тесто", 4, None),
                 ("Хариус", "Редкая", 0.2, 1.5, 20, 50, 45, "Озеро", "Весна,Лето,Осень,Зима", "Муха,Блесна,Икра,Мотыль,Мушка", 10, None),
@@ -3527,8 +3544,7 @@ class Database:
                 '''
                     SELECT *
                     FROM tournaments
-                    WHERE tournament_type IN ('longest_fish', 'biggest_weight', 'specific_fish')
-                        AND LOWER(TRIM(target_location)) = LOWER(TRIM(?))
+                    WHERE (LOWER(TRIM(target_location)) = LOWER(TRIM(?)) OR target_location IS NULL)
                         AND starts_at <= CURRENT_TIMESTAMP
                         AND ends_at >= CURRENT_TIMESTAMP
                     ORDER BY starts_at DESC
