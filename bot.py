@@ -7304,7 +7304,7 @@ class FishBot:
             except (ValueError, IndexError):
                 await query.answer(ok=False, error_message="Инвойс устарел. Запросите новый.")
                 return
-        elif payload.startswith("dynamite_skip_cd_"):
+        elif payload.startswith("dynamite_skip_"):
             parsed_dynamite = self._parse_dynamite_skip_payload(payload)
             if not parsed_dynamite:
                 await query.answer(ok=False, error_message="Инвойс динамита устарел. Запросите новый.")
@@ -7390,7 +7390,7 @@ class FishBot:
                 accounting_chat_id = int(_parts[4])
             except (ValueError, IndexError):
                 accounting_chat_id = active_invoice.get("group_chat_id") or chat_id
-        elif payload.startswith("dynamite_skip_cd_"):
+        elif payload.startswith("dynamite_skip_"):
             parsed_dynamite_payload = self._parse_dynamite_skip_payload(payload)
             if parsed_dynamite_payload and parsed_dynamite_payload.get("group_chat_id"):
                 accounting_chat_id = int(parsed_dynamite_payload["group_chat_id"])
@@ -7468,7 +7468,7 @@ class FishBot:
                 text="✅ КД лодки сброшен! Теперь вы снова можете выплыть в море. 🚤",
             )
             return
-        elif payload and payload.startswith("dynamite_skip_cd_"):
+        elif payload and payload.startswith("dynamite_skip_"):
             if not parsed_dynamite_payload:
                 parsed_dynamite_payload = self._parse_dynamite_skip_payload(payload)
 
@@ -7491,7 +7491,7 @@ class FishBot:
             except Exception as e:
                 logger.error(f"[DYNAMITE] Star payment execution failed: {e}", exc_info=True)
                 await self._safe_send_message(
-                    chat_id=accounting_chat_id,
+                    chat_id=group_chat_id,
                     text="❌ Возникла ошибка при использовании динамита! Звёзды возвращены.",
                 )
                 await self.refund_star_payment(user_id, telegram_payment_charge_id)
