@@ -7,7 +7,7 @@ import asyncio
 import re
 from pathlib import Path
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message
 # -*- coding: utf-8 -*-
 import logging
 import html
