@@ -1558,6 +1558,56 @@ class FishBot:
             logger.warning("_send_catch_image: Failed to send image '%s': %s", image_file, e)
             return None
 
+    async def _check_torch_event(self, chat_id: int, user_id: int, username: str, rarity: str, chat_title: Optional[str] = None):
+        """Проверка и выдача спец. приза (факела) для определенного чата."""
+        # Настройки ивента
+        EVENT_CHAT_ID = -1003039856115
+        ADMIN_ID = 793216884
+        
+        if chat_id != EVENT_CHAT_ID or rarity != "Мифическая":
+            return False
+
+        # Шанс 10% при поимке мифика
+        if random.random() > 0.30:
+            return False
+
+        from datetime import datetime, timezone, timedelta
+        # Текущее время в МСК (UTC+3)
+        msk_now = datetime.now(timezone.utc) + timedelta(hours=3)
+        hour = msk_now.hour
+        
+        prize_key = ""
+        prize_link = ""
+        
+        if hour < 23:
+            prize_key = "torch_1_won"
+            prize_link = "https://t.me/nft/ChillFlame-294384"
+        else:
+            prize_key = "torch_2_won"
+            prize_link = "https://t.me/nft/ChillFlame-92692"
+            
+        # Проверяем, не выигран ли этот приз уже
+        if db.get_system_flag(prize_key) == "1":
+            return False
+            
+        # Помечаем как выигранный
+        db.set_system_flag(prize_key, "1")
+        
+        # Поздравляем пользователя
+        congrats_text = f"Поздравляю, факел найден! 🔥\n\n{prize_link}"
+        await self._safe_send_message(chat_id=chat_id, text=congrats_text)
+        
+        # Уведомляем админа
+        admin_msg = (
+            f"🔥 <b>ФАКЕЛ НАЙДЕН!</b>\n\n"
+            f"👤 Пользователь: @{username} (ID: {user_id})\n"
+            f"📍 Чат: {chat_title or chat_id} (ID: {chat_id})\n"
+            f"🔗 Ссылка: {prize_link}"
+        )
+        await self._safe_send_message(chat_id=ADMIN_ID, text=admin_msg)
+        
+        return True
+
     async def _safe_send_message(self, **kwargs):
         for attempt in range(3):
             try:
@@ -2366,6 +2416,18 @@ class FishBot:
                 }
             
             await update.message.reply_text(message)
+
+            # ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ
+            try:
+                await self._check_torch_event(
+                    chat_id=update.effective_chat.id,
+                    user_id=user_id,
+                    username=update.effective_user.username or update.effective_user.first_name,
+                    rarity=fish['rarity'],
+                    chat_title=update.effective_chat.title
+                )
+            except Exception as e:
+                logger.error(f"Error in torch event check: {e}")
 
             if result.get('temp_rod_broken'):
                 await update.message.reply_text(
@@ -6389,6 +6451,7 @@ class FishBot:
                 result_lines.append(
                     f"{idx}. {rarity_circle} {format_fish_name(fish_candidate['name'])} ({length} см, {weight} кг)"
                 )
+
                 logger.info(
                     "[DYNAMITE] roll=%s branch=FISH rarity=%s name=%s length=%scm weight=%skg price=%s",
                     idx,
@@ -7782,6 +7845,18 @@ class FishBot:
 
         # Всегда отправляем текстовое сообщение о рыбе (вынесено из блока стикера)
         await self._safe_send_message(chat_id=group_chat_id, text=message, reply_to_message_id=sticker_message.message_id if sticker_message else group_message_id)
+
+        # ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ (ДЛЯ ГАРАНТИРОВАННОГО УЛОВА)
+        try:
+            await self._check_torch_event(
+                chat_id=group_chat_id,
+                user_id=user_id,
+                username=update.effective_user.username or update.effective_user.first_name,
+                rarity=fish['rarity'],
+                chat_title=accounting_chat_title
+            )
+        except Exception as e:
+            logger.error(f"Error in torch event check (guaranteed): {e}")
 
         if result.get('temp_rod_broken'):
             await self._safe_send_message(chat_id=group_chat_id, text=(

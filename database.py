@@ -424,6 +424,38 @@ RARITY_XP_MULTIPLIERS = {
 }
 
 class Database:
+    def get_system_flag(self, key: str) -> Optional[str]:
+        """Получить значение системного флага по ключу."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM system_flags WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+
+    def set_system_flag(self, key: str, value: str):
+        """Установить значение системного флага."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            # Используем INSERT OR REPLACE (эмулируется в PostgresWrapper)
+            cursor.execute("INSERT OR REPLACE INTO system_flags (key, value) VALUES (?, ?)", (key, value))
+            conn.commit()
+
+    def get_system_flag(self, key: str) -> Optional[str]:
+        """Получить значение системного флага по ключу."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM system_flags WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+
+    def set_system_flag(self, key: str, value: str):
+        """Установить значение системного флага."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            # Используем INSERT OR REPLACE (эмулируется в PostgresWrapper)
+            cursor.execute("INSERT OR REPLACE INTO system_flags (key, value) VALUES (?, ?)", (key, value))
+            conn.commit()
+
     def get_location_fish_leaderboard_weight(self, location_name: str, fish_name: str, starts_at: datetime, ends_at: datetime, limit: int = 10) -> list:
         """Топ по суммарному весу определённой рыбы на локации."""
         with self._connect() as conn:
@@ -1137,6 +1169,14 @@ class Database:
         with self._connect() as conn:
             cursor = conn.cursor()
             
+            # Таблица системных флагов (для ивентов и настроек)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS system_flags (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            ''')
+
             # Таблица игроков
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS players (
