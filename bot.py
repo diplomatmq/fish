@@ -1559,49 +1559,46 @@ class FishBot:
             return None
 
     async def _check_torch_event(self, chat_id: int, user_id: int, username: str, rarity: str, chat_title: Optional[str] = None):
-        """Проверка и выдача спец. приза (факела) для определенного чата."""
+        """Проверка и выдача второго факела (доступен с 23:00 МСК)."""
         # Настройки ивента
         EVENT_CHAT_ID = -1003039856115
         ADMIN_ID = 793216884
         
-        # Теперь ивент срабатывает при поимке "Редкая" (или выше для надежности)
-        if chat_id != EVENT_CHAT_ID or rarity not in ["Редкая", "Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
+        from datetime import datetime, timezone, timedelta
+        # Текущее время в МСК (UTC+3)
+        msk_now = datetime.now(timezone.utc) + timedelta(hours=3)
+        hour = msk_now.hour
+
+        # Ивент для второго факела начинается строго с 23:00
+        if hour < 23:
+            return False
+
+        # Теперь ивент срабатывает только при поимке "Легендарная" или выше
+        if chat_id != EVENT_CHAT_ID or rarity not in ["Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
             return False
 
         # Генерируем ролл для логов
         torch_roll = random.random()
-        # Шанс 95% (порог 0.05 означает, что значения 0.05-1.00 выигрывают)
-        win_threshold = 0.05
+        # Шанс 25% (порог 0.75 означает, что значения 0.75-1.00 выигрывают)
+        win_threshold = 0.75
         is_winner = torch_roll >= win_threshold
 
         # Логирование каждой попытки (для поиска по ключевому слову TORCH_LOG)
         logger.info(
-            f"[TORCH_LOG] Attempt: chat_id={chat_id}, user_id={user_id}, username={username}, "
+            f"[TORCH_LOG] Second Torch Attempt: chat_id={chat_id}, user_id={user_id}, username={username}, "
             f"rarity={rarity}, roll={torch_roll:.4f}, threshold={win_threshold:.2f}, winner={is_winner}"
         )
 
         if not is_winner:
             return False
 
-        from datetime import datetime, timezone, timedelta
-        # Текущее время в МСК (UTC+3)
-        msk_now = datetime.now(timezone.utc) + timedelta(hours=3)
-        hour = msk_now.hour
-        
-        prize_key = ""
-        prize_link = ""
-        
-        if hour < 23:
-            prize_key = f"torch_1_won_{chat_id}"
-            prize_link = "https://t.me/nft/ChillFlame-294384"
-        else:
-            prize_key = f"torch_2_won_{chat_id}"
-            prize_link = "https://t.me/nft/ChillFlame-92692"
+        prize_key = f"torch_2_won_{chat_id}"
+        prize_link = "https://t.me/nft/ChillFlame-92692"
             
         # Проверяем, не выигран ли этот приз уже в этом чате
         already_won = db.get_system_flag(prize_key)
         if already_won == "1":
-            logger.info(f"[TORCH_LOG] Prize {prize_key} already won in chat {chat_id}. Skipping.")
+            logger.info(f"[TORCH_LOG] Second Prize {prize_key} already won in chat {chat_id}. Skipping.")
             return False
             
         # Помечаем как выигранный
@@ -1617,22 +1614,18 @@ class FishBot:
         msg = await self._safe_send_message(chat_id=chat_id, text=congrats_text, parse_mode="HTML")
         if msg:
             logger.info(f"[TORCH_LOG] Congrats message sent to chat {chat_id}")
-        else:
-            logger.warning(f"[TORCH_LOG] Failed to send congrats message to chat {chat_id}")
         
         # Уведомляем админа
         admin_msg = (
-            f"🔥 <b>ФАКЕЛ НАЙДЕН!</b>\n\n"
+            f"🔥 <b>ВТОРОЙ ФАКЕЛ НАЙДЕН!</b>\n\n"
             f"👤 Пользователь: @{username} (ID: {user_id})\n"
             f"📍 Чат: {chat_title or chat_id} (ID: {chat_id})\n"
             f"🔗 Ссылка: {prize_link}"
         )
         try:
-            admin_notify = await self.application.bot.send_message(chat_id=ADMIN_ID, text=admin_msg, parse_mode="HTML")
-            if admin_notify:
-                logger.info(f"[TORCH_LOG] Admin notification sent to {ADMIN_ID}")
-        except Exception as e:
-            logger.warning(f"[TORCH_LOG] Could not notify admin {ADMIN_ID}: {e}")
+            await self.application.bot.send_message(chat_id=ADMIN_ID, text=admin_msg, parse_mode="HTML")
+        except Exception:
+            pass
         
         return True
 
@@ -2233,9 +2226,9 @@ class FishBot:
             result = game.fish(user_id, chat_id, player['current_location'])
             
             # --- ПРИОРИТЕТНАЯ ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ ---
-            # Теперь ролл факела срабатывает, когда выпадает "Редкая" или выше
+            # Теперь ролл факела срабатывает, когда выпадает "Легендарная" или выше
             rarity_for_event = result.get('target_rarity')
-            if rarity_for_event in ["Редкая", "Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
+            if rarity_for_event in ["Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
                 try:
                     torch_won = await self._check_torch_event(
                         chat_id=update.effective_chat.id,
@@ -2426,7 +2419,7 @@ class FishBot:
                 # --- ПРИОРИТЕТНАЯ ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ (НА ЛОДКЕ) ---
                 # Лодка тоже считается!
                 rarity_for_event = fish['rarity']
-                if rarity_for_event in ["Редкая", "Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
+                if rarity_for_event in ["Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
                     try:
                         await self._check_torch_event(
                             chat_id=chat_id,
@@ -7819,9 +7812,9 @@ class FishBot:
             result = game.fish(user_id, group_chat_id, location, guaranteed=True)
             
             # --- ПРИОРИТЕТНАЯ ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ (ГАРАНТИРОВАННЫЙ УЛОВ) ---
-            # Теперь ролл факела срабатывает, когда выпадает "Редкая" или выше
+            # Теперь ролл факела срабатывает, когда выпадает "Легендарная" или выше
             rarity_for_event = result.get('target_rarity')
-            if rarity_for_event in ["Редкая", "Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
+            if rarity_for_event in ["Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
                 try:
                     torch_won = await self._check_torch_event(
                         chat_id=group_chat_id,
