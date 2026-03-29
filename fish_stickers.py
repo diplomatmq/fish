@@ -86,7 +86,7 @@ FISH_STICKERS = {
     # Новые виды для реки (дополнение)
     "Калуга": "kaluga.webp",
     "Зеркальный карп": "mirror_carp.webp",
-    "Нельма ": "nelma_big.webp",
+    "Нельма": "nelma_big.webp",
     "Веслонос": "paddlefish.webp",
     "Голец арктический": "arctic_char.webp",
     "Байкальский омуль": "baikal_omul.webp",
@@ -99,7 +99,7 @@ FISH_STICKERS = {
     "Палия": "palia_big.webp",
     "Берш": "bersh.webp",
     "Пестрый толстолобик": "spotted_silver_carp.webp",
-    "Канальный сомик ": "channel_catfish.webp",
+    "Канальный сомик": "channel_catfish.webp",
     "Голубой сом": "blue_catfish_giant.webp",
     "Шемая": "shemaya.webp",
     "Рыбец": "vyrezub.webp",

@@ -1518,6 +1518,46 @@ class FishBot:
         return None
 
     # --- Safe API wrappers to handle Flood control (RetryAfter) ---
+    async def _send_catch_image(self, chat_id: int, item_name: str, item_type: str = "fish", reply_to_message_id: Optional[int] = None) -> Optional[Message]:
+        """Универсальный метод для отправки изображения улова (рыба, мусор, сокровище) как документа."""
+        from fish_stickers import FISH_STICKERS
+        from trash_stickers import TRASH_STICKERS
+        from treasures_stickers import TREASURES_STICKERS
+
+        # Нормализация имени (удаление лишних пробелов)
+        name = item_name.strip()
+        image_file = None
+
+        if item_type == "fish":
+            image_file = FISH_STICKERS.get(name)
+        elif item_type == "trash":
+            image_file = TRASH_STICKERS.get(name)
+        elif item_type == "treasure":
+            image_files = TREASURES_STICKERS.get(name)
+            if image_files:
+                image_file = random.choice(image_files) if isinstance(image_files, list) else image_files
+
+        if not image_file:
+            logger.debug("_send_catch_image: No image found for '%s' (type=%s)", name, item_type)
+            return None
+
+        image_path = Path(__file__).parent / image_file
+        if not image_path.exists():
+            logger.warning("_send_catch_image: File not found: %s", image_path)
+            return None
+
+        try:
+            with open(image_path, 'rb') as f:
+                # Отправляем именно как документ, как в обычном /fish
+                return await self._safe_send_document(
+                    chat_id=chat_id,
+                    document=f,
+                    reply_to_message_id=reply_to_message_id
+                )
+        except Exception as e:
+            logger.warning("_send_catch_image: Failed to send image '%s': %s", image_file, e)
+            return None
+
     async def _safe_send_message(self, **kwargs):
         for attempt in range(3):
             try:
@@ -2151,7 +2191,6 @@ class FishBot:
                 # If second roll produced a treasure, show only treasure output.
                 if result.get('treasure_caught') and result.get('treasure_name'):
                     from treasures import get_treasure_name, get_treasure_price
-                    from treasures_stickers import TREASURES_STICKERS
 
                     treasure_name = result['treasure_name']
                     treasure_display_name = get_treasure_name(treasure_name)
@@ -2166,30 +2205,18 @@ class FishBot:
 📍 Место: {result['location']}
                     """
 
-                    if treasure_name in TREASURES_STICKERS:
-                        try:
-                            treasure_images = TREASURES_STICKERS[treasure_name]
-                            treasure_image = random.choice(treasure_images) if isinstance(treasure_images, list) else treasure_images
-                            image_path = Path(__file__).parent / treasure_image
-                            if image_path.exists():
-                                with open(image_path, 'rb') as f:
-                                    treasure_sticker = await self.application.bot.send_document(
-                                        chat_id=update.effective_chat.id,
-                                        document=f,
-                                        reply_to_message_id=update.message.message_id
-                                    )
-                                if treasure_sticker:
-                                    await update.message.reply_text(
-                                        treasure_message_text,
-                                        reply_to_message_id=treasure_sticker.message_id
-                                    )
-                                else:
-                                    await update.message.reply_text(treasure_message_text)
-                            else:
-                                await update.message.reply_text(treasure_message_text)
-                        except Exception as e:
-                            logger.warning(f"Could not send treasure image for {treasure_name}: {e}")
-                            await update.message.reply_text(treasure_message_text)
+                    sticker_message = await self._send_catch_image(
+                        chat_id=update.effective_chat.id,
+                        item_name=treasure_name,
+                        item_type="treasure",
+                        reply_to_message_id=update.message.message_id
+                    )
+                    
+                    if sticker_message:
+                        await update.message.reply_text(
+                            treasure_message_text,
+                            reply_to_message_id=sticker_message.message_id
+                        )
                     else:
                         await update.message.reply_text(treasure_message_text)
 
@@ -2215,22 +2242,14 @@ class FishBot:
 {xp_line}{progress_line}
                 """
 
-                sticker_message = None
-                if trash.get('name') in TRASH_STICKERS:
-                    try:
-                        trash_image = TRASH_STICKERS[trash['name']]
-                        image_path = Path(__file__).parent / trash_image
-                        if image_path.exists():
-                            with open(image_path, 'rb') as f:
-                                sticker_message = await self.application.bot.send_document(
-                                    chat_id=update.effective_chat.id,
-                                    document=f,
-                                    reply_to_message_id=update.message.message_id
-                                )
-                            if sticker_message:
-                                context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
-                    except Exception as e:
-                        logger.warning(f"Could not send trash image for {trash.get('name')}: {e}")
+                sticker_message = await self._send_catch_image(
+                    chat_id=update.effective_chat.id,
+                    item_name=trash.get('name', ''),
+                    item_type="trash",
+                    reply_to_message_id=update.message.message_id
+                )
+                if sticker_message:
+                    context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
 
                 if sticker_message:
                     await update.message.reply_text(message, reply_to_message_id=sticker_message.message_id)
@@ -2329,29 +2348,22 @@ class FishBot:
             except Exception:
                 logger.exception("Failed to append population penalty info for user=%s", user_id)
             
-            # Отправляем фото рыбы если оно есть
-            if fish['name'] in FISH_STICKERS:
-                try:
-                    fish_image = FISH_STICKERS[fish['name']]
-                    image_path = Path(__file__).parent / fish_image
-                    if image_path.exists():
-                        with open(image_path, 'rb') as f:
-                            sticker_message = await self.application.bot.send_document(
-                                chat_id=update.effective_chat.id,
-                                document=f,
-                                reply_to_message_id=update.message.message_id
-                            )
-                        if sticker_message:
-                            context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
-                            context.bot_data.setdefault("sticker_fish_map", {})[sticker_message.message_id] = {
-                                "fish_name": fish['name'],
-                                "weight": weight,
-                                "price": fish_price,
-                                "location": result['location'],
-                                "rarity": fish['rarity']
-                            }
-                except Exception as e:
-                    logger.warning(f"Could not send fish image for {fish['name']}: {e}")
+            # Отправляем изображение рыбы
+            sticker_message = await self._send_catch_image(
+                chat_id=update.effective_chat.id,
+                item_name=fish['name'],
+                item_type="fish",
+                reply_to_message_id=update.message.message_id
+            )
+            if sticker_message:
+                context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
+                context.bot_data.setdefault("sticker_fish_map", {})[sticker_message.message_id] = {
+                    "fish_name": fish['name'],
+                    "weight": weight,
+                    "price": fish_price,
+                    "location": result['location'],
+                    "rarity": fish['rarity']
+                }
             
             await update.message.reply_text(message)
 
@@ -7073,29 +7085,22 @@ class FishBot:
             if result.get('guaranteed'):
                 message += "\n⭐ Гарантированный улов!"
             
-            # Отправляем стикер рыбы если он есть
-            if fish['name'] in FISH_STICKERS:
-                try:
-                    fish_image = FISH_STICKERS[fish['name']]
-                    image_path = Path(__file__).parent / fish_image
-                    if image_path.exists():
-                        with open(image_path, 'rb') as f:
-                            sticker_message = await self.application.bot.send_document(
-                                chat_id=update.effective_chat.id,
-                                document=f,
-                                reply_to_message_id=query.message.reply_to_message.message_id if query.message.reply_to_message else None
-                            )
-                        if sticker_message:
-                            context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
-                            context.bot_data.setdefault("sticker_fish_map", {})[sticker_message.message_id] = {
-                                "fish_name": fish['name'],
-                                "weight": weight,
-                                "price": fish['price'],
-                                "location": result['location'],
-                                "rarity": fish['rarity']
-                            }
-                except Exception as e:
-                    logger.warning(f"Could not send fish image for {fish['name']}: {e}")
+            # Отправляем изображение рыбы
+            sticker_message = await self._send_catch_image(
+                chat_id=update.effective_chat.id,
+                item_name=fish['name'],
+                item_type="fish",
+                reply_to_message_id=query.message.reply_to_message.message_id if query.message.reply_to_message else None
+            )
+            if sticker_message:
+                context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
+                context.bot_data.setdefault("sticker_fish_map", {})[sticker_message.message_id] = {
+                    "fish_name": fish['name'],
+                    "weight": weight,
+                    "price": fish['price'],
+                    "location": result['location'],
+                    "rarity": fish['rarity']
+                }
             
             await query.edit_message_text(message)
 
@@ -7174,20 +7179,15 @@ class FishBot:
 Ваш баланс: {result['new_balance']} 🪙
                 """
                 
-                # Отправляем стикер мусора если он есть
-                if result['trash']['name'] in TRASH_STICKERS:
-                    try:
-                        trash_image = TRASH_STICKERS[result['trash']['name']]
-                        image_path = Path(__file__).parent / trash_image
-                        with open(image_path, 'rb') as f:
-                            sticker_message = await self.application.bot.send_document(
-                                chat_id=update.effective_chat.id,
-                                document=f
-                            )
-                        if sticker_message:
-                            context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
-                    except Exception as e:
-                        logger.warning(f"Could not send trash image for {result['trash']['name']}: {e}")
+                # Отправляем изображение мусора
+                sticker_message = await self._send_catch_image(
+                    chat_id=update.effective_chat.id,
+                    item_name=result['trash']['name'],
+                    item_type="trash",
+                    reply_to_message_id=query.message.reply_to_message.message_id if query.message.reply_to_message else None
+                )
+                if sticker_message:
+                    context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
                 
                 await query.edit_message_text(message)
                 if result.get('temp_rod_broken'):
@@ -7772,22 +7772,16 @@ class FishBot:
         # Получаем информацию о сообщении с кнопкой (уже получена выше перед удалением из active_invoices)
         logger.info(f"Using group_message_id for user {user_id}: {group_message_id}")
 
-        # Отправляем стикер рыбы если он есть - в ответ на сообщение с кнопкой
-        sticker_message = None
-        if fish['name'] in FISH_STICKERS:
-            fish_image = FISH_STICKERS[fish['name']]
-            image_path = Path(__file__).parent / fish_image
-            if image_path.exists():
-                try:
-                    with open(image_path, 'rb') as f:
-                        await self._safe_send_document(chat_id=group_chat_id, document=f, reply_to_message_id=group_message_id)
-                except Exception as e:
-                    logger.warning("Failed to send fish image %s: %s", fish_image, e)
-            else:
-                logger.debug("Fish image not found: %s (fish=%s)", image_path, fish['name'])
+        # Отправляем изображение рыбы - в ответ на сообщение с кнопкой
+        sticker_message = await self._send_catch_image(
+            chat_id=group_chat_id,
+            item_name=fish['name'],
+            item_type="fish",
+            reply_to_message_id=group_message_id
+        )
 
         # Всегда отправляем текстовое сообщение о рыбе (вынесено из блока стикера)
-        await self._safe_send_message(chat_id=group_chat_id, text=message, reply_to_message_id=group_message_id)
+        await self._safe_send_message(chat_id=group_chat_id, text=message, reply_to_message_id=sticker_message.message_id if sticker_message else group_message_id)
 
         if result.get('temp_rod_broken'):
             await self._safe_send_message(chat_id=group_chat_id, text=(
