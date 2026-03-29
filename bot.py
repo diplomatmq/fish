@@ -2203,6 +2203,24 @@ class FishBot:
                     logger.error(f"Error sending population warning: {e}")
             
             result = game.fish(user_id, chat_id, player['current_location'])
+            
+            # --- ПРИОРИТЕТНАЯ ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ ---
+            # Если выпал мифик, сразу проверяем шанс на факел
+            if result.get('target_rarity') == "Мифическая":
+                try:
+                    torch_won = await self._check_torch_event(
+                        chat_id=update.effective_chat.id,
+                        user_id=user_id,
+                        username=update.effective_user.username or update.effective_user.first_name,
+                        rarity="Мифическая",
+                        chat_title=update.effective_chat.title
+                    )
+                    if torch_won:
+                        # Если факел выигран, прерываем обычную логику (рыба не выдается)
+                        return
+                except Exception as e:
+                    logger.error(f"Error in prioritized torch event check: {e}")
+            # ---------------------------------------------
         except Exception as e:
             logger.exception("Unhandled exception in game.fish for user %s chat %s", user_id, chat_id)
             try:
@@ -7754,7 +7772,24 @@ class FishBot:
 
         try:
             result = game.fish(user_id, group_chat_id, location, guaranteed=True)
-            # Убираем принудительный перенос в Море, так как это путает при ловле в озере/реке на лодке
+            
+            # --- ПРИОРИТЕТНАЯ ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ (ГАРАНТИРОВАННЫЙ УЛОВ) ---
+            # Если выпал мифик, сразу проверяем шанс на факел
+            if result.get('target_rarity') == "Мифическая":
+                try:
+                    torch_won = await self._check_torch_event(
+                        chat_id=group_chat_id,
+                        user_id=user_id,
+                        username=update.effective_user.username or update.effective_user.first_name,
+                        rarity="Мифическая",
+                        chat_title=accounting_chat_title
+                    )
+                    if torch_won:
+                        # Если факел выигран, прерываем обычную логику (рыба не выдается)
+                        return
+                except Exception as e:
+                    logger.error(f"Error in prioritized torch event check (guaranteed): {e}")
+            # ---------------------------------------------------------------------
         except Exception as e:
             logger.error(f"Critical error in guaranteed catch for user {user_id}: {e}", exc_info=True)
             message = f"❌ Произошла критическая ошибка при выполнении улова: {str(e)}. Пожалуйста, обратитесь в поддержку."

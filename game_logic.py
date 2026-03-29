@@ -530,6 +530,7 @@ class FishingGame:
                 "snap": True,
                 "message": "🪝 Легендарная рыба сорвалась!",
                 "location": location,
+                "target_rarity": target_rarity
             }
         
         # Получаем список рыб для локации и сезона
@@ -609,7 +610,8 @@ class FishingGame:
                         "snap": True,
                         "message": random.choice(snap_messages),
                         "location": location,
-                        "wrong_bait": player['current_bait']
+                        "wrong_bait": player['current_bait'],
+                        "target_rarity": target_rarity
                     }
             else:
                 # 10% - попытка поймать рыбу на чужую наживку = СРЫВ
@@ -626,7 +628,8 @@ class FishingGame:
                     "snap": True,
                     "message": random.choice(snap_messages),
                     "location": location,
-                    "wrong_bait": player['current_bait']
+                    "wrong_bait": player['current_bait'],
+                    "target_rarity": target_rarity
                 }
         
         # Наживка уже учтена при выборе рыбы
@@ -652,7 +655,8 @@ class FishingGame:
             return {
                 "success": False,
                 "message": f"Рыба {caught_fish['name']} ({weight}кг) слишком тяжелая для вашей удочки и сорвалась!",
-                "location": location
+                "location": location,
+                "target_rarity": target_rarity
             }
 
         # Успешная ловля - рыба больше не продается автоматически
@@ -728,7 +732,8 @@ class FishingGame:
             "current_durability": current_dur,
             "max_durability": max_dur,
             "is_on_boat": is_on_boat,
-            "temp_rod_broken": temp_rod_result.get("broken", False)
+            "temp_rod_broken": temp_rod_result.get("broken", False),
+            "target_rarity": target_rarity
         }
     
     def _guaranteed_catch(self, user_id: int, location: str, player: Dict[str, Any], chat_id: int, feeder_bonus: int = 0) -> Dict[str, Any]:
@@ -1054,7 +1059,8 @@ class FishingGame:
             "rod_broken": rod_broken,
             "current_durability": current_dur,
             "max_durability": max_dur,
-            "temp_rod_broken": temp_rod_result.get("broken", False)
+            "temp_rod_broken": temp_rod_result.get("broken", False),
+            "target_rarity": target_rarity
         }
     
     def _update_fish_population(self, location: str, delta: int):
