@@ -6,44 +6,42 @@ from pathlib import Path
 root_path = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root_path))
 
-from database import DB_PATH
+from database import db
 
 def update_fish_location(fish_name, new_location):
     """
     Находит рыбу по названию и обновляет её локацию ТОЛЬКО в таблице caught_fish.
     """
-    print(f"Поиск рыбы '{fish_name}' в таблице caught_fish ({DB_PATH})...")
-    
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    print(f"Поиск рыбы '{fish_name}' в таблице caught_fish...")
     
     try:
-        # 1. Проверяем, есть ли вообще такая рыба в инвентарях
-        cursor.execute("SELECT COUNT(*), GROUP_CONCAT(DISTINCT location) FROM caught_fish WHERE fish_name = ?", (fish_name,))
-        count, old_locations = cursor.fetchone()
-        
-        if count == 0:
-            print(f"❌ Ошибка: Рыба с названием '{fish_name}' не найдена в таблице caught_fish (инвентарях).")
-            return
+        with db._connect() as conn:
+            cursor = conn.cursor()
             
-        print(f"✅ Найдено записей с рыбой '{fish_name}': {count}. Текущие локации в инвентарях: '{old_locations}'")
+            # 1. Проверяем, есть ли вообще такая рыба в инвентарях
+            cursor.execute("SELECT COUNT(*) FROM caught_fish WHERE fish_name = ?", (fish_name,))
+            row = cursor.fetchone()
+            count = row[0] if row else 0
+            
+            if count == 0:
+                print(f"❌ Ошибка: Рыба с названием '{fish_name}' не найдена в таблице caught_fish (инвентарях).")
+                return
+                
+            print(f"✅ Найдено записей с рыбой '{fish_name}': {count}.")
 
-        # 2. Обновляем локацию ТОЛЬКО в уже пойманных рыбах (таблица caught_fish)
-        cursor.execute("UPDATE caught_fish SET location = ? WHERE fish_name = ?", (new_location, fish_name))
-        caught_updated = cursor.rowcount
-        
-        conn.commit()
-        
-        print("\n--- РЕЗУЛЬТАТЫ ОБНОВЛЕНИЯ ---")
-        print(f"🔹 Инвентари (таблица caught_fish): {caught_updated} записей обновлено.")
-        print(f" Локация для всех '{fish_name}' в инвентарях успешно изменена на '{new_location}'!")
-        print("ℹ️ Справочник рыб (таблица fish) и улов на лодках НЕ изменялись.")
+            # 2. Обновляем локацию ТОЛЬКО в уже пойманных рыбах (таблица caught_fish)
+            cursor.execute("UPDATE caught_fish SET location = ? WHERE fish_name = ?", (new_location, fish_name))
+            caught_updated = cursor.rowcount
+            
+            conn.commit()
+            
+            print("\n--- РЕЗУЛЬТАТЫ ОБНОВЛЕНИЯ ---")
+            print(f"🔹 Инвентари (таблица caught_fish): {caught_updated} записей обновлено.")
+            print(f"🚀 Локация для всех '{fish_name}' в инвентарях успешно изменена на '{new_location}'!")
+            print("ℹ️ Справочник рыб (таблица fish) и улов на лодках НЕ изменялись.")
 
     except Exception as e:
-        conn.rollback()
         print(f"❌ Произошла ошибка при обновлении: {e}")
-    finally:
-        conn.close()
 
 if __name__ == "__main__":
     # Проверка наличия аргументов командной строки
