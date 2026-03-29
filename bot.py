@@ -1559,46 +1559,37 @@ class FishBot:
             return None
 
     async def _check_torch_event(self, chat_id: int, user_id: int, username: str, rarity: str, chat_title: Optional[str] = None):
-        """Проверка и выдача второго факела (доступен с 23:00 МСК)."""
+        """Проверка и выдача рюкзака (Mood Pack)."""
         # Настройки ивента
         EVENT_CHAT_ID = -1003039856115
         ADMIN_ID = 793216884
         
-        from datetime import datetime, timezone, timedelta
-        # Текущее время в МСК (UTC+3)
-        msk_now = datetime.now(timezone.utc) + timedelta(hours=3)
-        hour = msk_now.hour
-
-        # Ивент для второго факела начинается строго с 23:00
-        if hour < 23:
-            return False
-
-        # Теперь ивент срабатывает только при поимке "Легендарная" или выше
+        # Срабатывает при поимке "Легендарная" или выше
         if chat_id != EVENT_CHAT_ID or rarity not in ["Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
             return False
 
         # Генерируем ролл для логов
         torch_roll = random.random()
-        # Шанс 25% (порог 0.75 означает, что значения 0.75-1.00 выигрывают)
-        win_threshold = 0.75
+        # Шанс 8% (порог 0.92 означает, что значения 0.92-1.00 выигрывают)
+        win_threshold = 0.92
         is_winner = torch_roll >= win_threshold
 
         # Логирование каждой попытки (для поиска по ключевому слову TORCH_LOG)
         logger.info(
-            f"[TORCH_LOG] Second Torch Attempt: chat_id={chat_id}, user_id={user_id}, username={username}, "
+            f"[TORCH_LOG] Mood Pack Attempt: chat_id={chat_id}, user_id={user_id}, username={username}, "
             f"rarity={rarity}, roll={torch_roll:.4f}, threshold={win_threshold:.2f}, winner={is_winner}"
         )
 
         if not is_winner:
             return False
 
-        prize_key = f"torch_2_won_{chat_id}"
-        prize_link = "https://t.me/nft/ChillFlame-92692"
+        prize_key = f"moodpack_won_{chat_id}"
+        prize_link = "https://t.me/nft/MoodPack-62966"
             
         # Проверяем, не выигран ли этот приз уже в этом чате
         already_won = db.get_system_flag(prize_key)
         if already_won == "1":
-            logger.info(f"[TORCH_LOG] Second Prize {prize_key} already won in chat {chat_id}. Skipping.")
+            logger.info(f"[TORCH_LOG] Mood Pack {prize_key} already won in chat {chat_id}. Skipping.")
             return False
             
         # Помечаем как выигранный
@@ -1610,14 +1601,14 @@ class FishBot:
             return False
         
         # Поздравляем пользователя
-        congrats_text = f"Поздравляю, факел найден! 🔥\n\n{prize_link}"
+        congrats_text = f"Поздравляю, рюкзак найден! 🎒\n\n{prize_link}"
         msg = await self._safe_send_message(chat_id=chat_id, text=congrats_text, parse_mode="HTML")
         if msg:
-            logger.info(f"[TORCH_LOG] Congrats message sent to chat {chat_id}")
+            logger.info(f"[TORCH_LOG] Congrats message (Mood Pack) sent to chat {chat_id}")
         
         # Уведомляем админа
         admin_msg = (
-            f"🔥 <b>ВТОРОЙ ФАКЕЛ НАЙДЕН!</b>\n\n"
+            f"🎒 <b>РЮКЗАК НАЙДЕН!</b>\n\n"
             f"👤 Пользователь: @{username} (ID: {user_id})\n"
             f"📍 Чат: {chat_title or chat_id} (ID: {chat_id})\n"
             f"🔗 Ссылка: {prize_link}"
