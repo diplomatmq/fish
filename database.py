@@ -436,8 +436,16 @@ class Database:
         """Установить значение системного флага."""
         with self._connect() as conn:
             cursor = conn.cursor()
-            # Используем INSERT OR REPLACE (эмулируется в PostgresWrapper)
-            cursor.execute("INSERT OR REPLACE INTO system_flags (key, value) VALUES (?, ?)", (key, value))
+            # Универсальный запрос для SQLite и Postgres (UPSERT)
+            try:
+                # Пытаемся обновить, если есть
+                cursor.execute("UPDATE system_flags SET value = ? WHERE key = ?", (value, key))
+                if cursor.rowcount == 0:
+                    # Если нечего обновлять, вставляем
+                    cursor.execute("INSERT INTO system_flags (key, value) VALUES (?, ?)", (key, value))
+            except Exception:
+                # Если таблицы еще нет или другой сбой
+                cursor.execute("INSERT INTO system_flags (key, value) VALUES (?, ?)", (key, value))
             conn.commit()
 
     def get_system_flag(self, key: str) -> Optional[str]:

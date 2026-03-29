@@ -1599,11 +1599,18 @@ class FishBot:
             prize_link = "https://t.me/nft/ChillFlame-92692"
             
         # Проверяем, не выигран ли этот приз уже
-        if db.get_system_flag(prize_key) == "1":
+        already_won = db.get_system_flag(prize_key)
+        if already_won == "1":
+            logger.info(f"[TORCH_LOG] Prize {prize_key} already won. Skipping.")
             return False
             
         # Помечаем как выигранный
-        db.set_system_flag(prize_key, "1")
+        try:
+            db.set_system_flag(prize_key, "1")
+        except Exception as e:
+            logger.error(f"[TORCH_LOG] Error setting system flag {prize_key}: {e}")
+            # Если не удалось сохранить, лучше не выдавать приз, чтобы не было дублей
+            return False
         
         # Поздравляем пользователя
         congrats_text = f"Поздравляю, факел найден! 🔥\n\n{prize_link}"
