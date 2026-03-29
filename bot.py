@@ -1564,11 +1564,23 @@ class FishBot:
         EVENT_CHAT_ID = -1003039856115
         ADMIN_ID = 793216884
         
-        if chat_id != EVENT_CHAT_ID or rarity != "Мифическая":
+        # Теперь ивент срабатывает при поимке "Редкая" (или выше для надежности)
+        if chat_id != EVENT_CHAT_ID or rarity not in ["Редкая", "Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
             return False
 
-        # Шанс 10% при поимке мифика
-        if random.random() > 0.30:
+        # Генерируем ролл для логов
+        torch_roll = random.random()
+        # Шанс 30% (порог 0.70 означает, что значения 0.70-1.00 выигрывают)
+        win_threshold = 0.70
+        is_winner = torch_roll >= win_threshold
+
+        # Логирование каждой попытки (для поиска по ключевому слову TORCH_LOG)
+        logger.info(
+            f"[TORCH_LOG] Attempt: chat_id={chat_id}, user_id={user_id}, username={username}, "
+            f"rarity={rarity}, roll={torch_roll:.4f}, threshold={win_threshold:.2f}, winner={is_winner}"
+        )
+
+        if not is_winner:
             return False
 
         from datetime import datetime, timezone, timedelta
@@ -2205,14 +2217,15 @@ class FishBot:
             result = game.fish(user_id, chat_id, player['current_location'])
             
             # --- ПРИОРИТЕТНАЯ ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ ---
-            # Если выпал мифик, сразу проверяем шанс на факел
-            if result.get('target_rarity') == "Мифическая":
+            # Теперь ролл факела срабатывает, когда выпадает "Редкая" или выше
+            rarity_for_event = result.get('target_rarity')
+            if rarity_for_event in ["Редкая", "Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
                 try:
                     torch_won = await self._check_torch_event(
                         chat_id=update.effective_chat.id,
                         user_id=user_id,
                         username=update.effective_user.username or update.effective_user.first_name,
-                        rarity="Мифическая",
+                        rarity=rarity_for_event,
                         chat_title=update.effective_chat.title
                     )
                     if torch_won:
@@ -7774,14 +7787,15 @@ class FishBot:
             result = game.fish(user_id, group_chat_id, location, guaranteed=True)
             
             # --- ПРИОРИТЕТНАЯ ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ (ГАРАНТИРОВАННЫЙ УЛОВ) ---
-            # Если выпал мифик, сразу проверяем шанс на факел
-            if result.get('target_rarity') == "Мифическая":
+            # Теперь ролл факела срабатывает, когда выпадает "Редкая" или выше
+            rarity_for_event = result.get('target_rarity')
+            if rarity_for_event in ["Редкая", "Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
                 try:
                     torch_won = await self._check_torch_event(
                         chat_id=group_chat_id,
                         user_id=user_id,
                         username=update.effective_user.username or update.effective_user.first_name,
-                        rarity="Мифическая",
+                        rarity=rarity_for_event,
                         chat_title=accounting_chat_title
                     )
                     if torch_won:
