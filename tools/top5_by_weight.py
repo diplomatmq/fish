@@ -7,7 +7,7 @@ from datetime import datetime
 from database import Database
 
 
-
+def main():
     parser = argparse.ArgumentParser(description="Суммарный вес по списку пользователей за период")
     parser.add_argument('--user_ids', type=str, required=True, help='Список user_id через запятую, без пробелов')
     parser.add_argument('--start', type=str, required=True, help='Время начала (YYYY-MM-DD HH:MM:SS)')
