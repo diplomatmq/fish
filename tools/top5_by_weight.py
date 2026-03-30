@@ -40,9 +40,12 @@ def main():
         ''', (args.chat_id, start_dt, end_dt))
         rows = cursor.fetchall()
         print(f"Топ 5 пользователей по весу в чате {args.chat_id} с {args.start} по {args.end}:")
-        for i, row in enumerate(rows, 1):
-            username, user_id, total_weight = row
-            print(f"{i}. {username} (user_id={user_id}): {total_weight:.2f} кг")
+        if not rows:
+            print("Нет данных за выбранный период.")
+        else:
+            for i, row in enumerate(rows, 1):
+                username, user_id, total_weight = row
+                print(f"{i}. {username} (user_id={user_id}): {total_weight:.2f} кг")
 
 if __name__ == '__main__':
     main()
