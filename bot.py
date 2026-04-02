@@ -5,6 +5,7 @@ import requests
 import random
 import asyncio
 import re
+import shlex
 from pathlib import Path
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message
@@ -15,6 +16,7 @@ import requests
 import random
 import asyncio
 import re
+import shlex
 from pathlib import Path
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
@@ -8641,7 +8643,6 @@ def main():
         if getattr(update.effective_user, 'id', None) != owner_id:
             await update.message.reply_text("Нет доступа.")
             return
-
         parts = (update.message.text or '').split()
         if len(parts) < 3:
             await update.message.reply_text("Использование: /grant_net <user_id> <net_name|netN> [count]")
@@ -8688,6 +8689,91 @@ def main():
                 await update.message.reply_text("Не удалось отправить личное сообщение получателю.")
         else:
             await update.message.reply_text(f"Не удалось выдать сеть '{net_name}'. Проверьте имя сети.")
+
+    async def add_caught_manual_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Owner-only: ручное добавление рыбы в caught_fish через личку с ботом.
+
+        Формат:
+        /add <user_id> "<fish_name>" "<location>" <weight> <length>
+        """
+        owner_id = 793216884
+        user_id = getattr(update.effective_user, 'id', None)
+        if user_id != owner_id:
+            await update.message.reply_text("Нет доступа.")
+            return
+
+        if not update.message:
+            return
+
+        if getattr(update.effective_chat, 'type', '') != 'private':
+            await update.message.reply_text("Команда /add доступна только в личке с ботом.")
+            return
+
+        raw_text = (update.message.text or '').strip()
+        try:
+            parts = shlex.split(raw_text)
+        except ValueError:
+            await update.message.reply_text(
+                "Неверный формат кавычек.\n"
+                "Использование: /add <user_id> \"<рыба>\" \"<локация>\" <вес> <длина>"
+            )
+            return
+
+        if len(parts) != 6:
+            await update.message.reply_text(
+                "Использование: /add <user_id> \"<рыба>\" \"<локация>\" <вес> <длина>\n"
+                "Пример: /add 123456 \"Белуга\" \"Городской пруд\" 12.5 140.2"
+            )
+            return
+
+        _, target_user_raw, fish_name, location_name, weight_raw, length_raw = parts
+
+        try:
+            target_user = int(target_user_raw)
+        except (TypeError, ValueError):
+            await update.message.reply_text("Неверный user_id. Пример: /add 123456 \"Белуга\" \"Городской пруд\" 12.5 140.2")
+            return
+
+        try:
+            weight = float(str(weight_raw).replace(',', '.'))
+            length = float(str(length_raw).replace(',', '.'))
+        except (TypeError, ValueError):
+            await update.message.reply_text("Вес и длина должны быть числами. Пример: 12.5 140.2")
+            return
+
+        if weight <= 0:
+            await update.message.reply_text("Вес должен быть больше 0.")
+            return
+        if length < 0:
+            await update.message.reply_text("Длина не может быть отрицательной.")
+            return
+
+        caught_at = update.message.date or datetime.utcnow()
+        saved = db.add_caught_fish_owner_manual(
+            user_id=target_user,
+            fish_name=fish_name,
+            location=location_name,
+            weight=weight,
+            length=length,
+            caught_at=caught_at,
+        )
+
+        if not saved:
+            await update.message.reply_text("Не удалось добавить запись в caught_fish.")
+            return
+
+        await update.message.reply_text(
+            "✅ Запись добавлена в caught_fish:\n"
+            f"id={saved['id']}\n"
+            f"user_id={saved['user_id']}\n"
+            f"chat_id={saved['chat_id']}\n"
+            f"fish={saved['fish_name']}\n"
+            f"location={saved['location']}\n"
+            f"weight={saved['weight']}\n"
+            f"length={saved['length']}\n"
+            f"sold={saved['sold']}\n"
+            f"caught_at={saved['caught_at']}"
+        )
 
     async def grant_rod_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         owner_id = 793216884
@@ -8748,6 +8834,7 @@ def main():
     application.add_handler(CommandHandler("drop_trigger", drop_trigger_command))
     # Owner can upload a backup file as a document with caption 'upload_backup'
     application.add_handler(MessageHandler(filters.Document.ALL & filters.CaptionRegex('(?i)upload_backup') & filters.User(793216884), upload_backup_handler))
+    application.add_handler(CommandHandler("add", add_caught_manual_command))
     application.add_handler(CommandHandler("grant_net", grant_net_command))
     application.add_handler(CommandHandler("grant_rod", grant_rod_command))
     application.add_handler(CommandHandler("chatstar", chatstar_command))

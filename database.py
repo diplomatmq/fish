@@ -2986,6 +2986,83 @@ class Database:
                 "add_caught_fish: INSERT returned no row — possible constraint violation. user_id=%s chat_id=%s fish=%s",
                 user_id, chat_id_to_store, normalized_name
             )
+
+    def add_caught_fish_owner_manual(
+        self,
+        user_id: int,
+        fish_name: str,
+        location: str,
+        weight: float,
+        length: float,
+        caught_at: Optional[datetime] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Ручная owner-вставка в caught_fish: chat_id=-1, sold=0, caught_at задаётся явно."""
+        normalized_name = fish_name.strip() if isinstance(fish_name, str) else fish_name
+        normalized_location = location.strip() if isinstance(location, str) else location
+
+        # Normalize fish_name to canonical name from `fish` table when possible.
+        try:
+            with self._connect() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT name FROM fish WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1", (normalized_name,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    normalized_name = row[0]
+        except Exception:
+            pass
+
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            logger.warning("add_caught_fish_owner_manual: invalid user_id=%s", user_id)
+            return None
+
+        chat_id_to_store = -1
+
+        try:
+            weight_value = float(weight)
+            length_value = float(length)
+        except (TypeError, ValueError):
+            logger.warning("add_caught_fish_owner_manual: invalid weight/length: weight=%s length=%s", weight, length)
+            return None
+
+        event_time = caught_at or datetime.utcnow()
+        caught_at_value = event_time.isoformat() if isinstance(event_time, datetime) else str(event_time)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, length, location, caught_at, sold) '
+                'VALUES (%s, %s, %s, %s, %s, %s, %s, 0) '
+                'RETURNING id, user_id, chat_id, fish_name, weight, length, location, caught_at, sold',
+                (uid, chat_id_to_store, normalized_name, weight_value, length_value, normalized_location, caught_at_value)
+            )
+            saved = cursor.fetchone()
+
+        if not saved:
+            logger.warning(
+                "add_caught_fish_owner_manual: insert returned no row user_id=%s fish=%s",
+                uid,
+                normalized_name,
+            )
+            return None
+
+        logger.info(
+            "add_caught_fish_owner_manual saved: id=%s user_id=%s chat_id=%s fish=%s weight=%s length=%s location=%s caught_at=%s sold=%s",
+            saved[0], saved[1], saved[2], saved[3], saved[4], saved[5], saved[6], saved[7], saved[8]
+        )
+
+        return {
+            'id': saved[0],
+            'user_id': saved[1],
+            'chat_id': saved[2],
+            'fish_name': saved[3],
+            'weight': saved[4],
+            'length': saved[5],
+            'location': saved[6],
+            'caught_at': saved[7],
+            'sold': saved[8],
+        }
     
     def remove_caught_fish(self, fish_id: int):
         """Удалить пойманную рыбу по ID"""
