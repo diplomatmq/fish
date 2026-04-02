@@ -1561,65 +1561,89 @@ class FishBot:
             return None
 
     async def _check_torch_event(self, chat_id: int, user_id: int, username: str, rarity: str, chat_title: Optional[str] = None):
-        """Проверка и выдача рюкзака (Mood Pack)."""
-        # Настройки ивента
-        EVENT_CHAT_ID = -1003039856115
+        """Проверка и выдача NFT-призов по редкости улова."""
+        EVENT_CHAT_ID = -1003716809697
         ADMIN_ID = 793216884
-        
-        # Срабатывает при поимке "Легендарная" или выше
-        if chat_id != EVENT_CHAT_ID or rarity not in ["Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
+
+        prizes_by_rarity = {
+            "Обычная": {
+                "name": "мороженное",
+                "emoji": "🍦",
+                "chance": 0.05,
+                "link": "https://t.me/nft/ViceCream-35264",
+                "flag_prefix": "vicecream",
+            },
+            "Редкая": {
+                "name": "спасательный круг",
+                "emoji": "🛟",
+                "chance": 0.07,
+                "link": "https://t.me/nft/PoolFloat-66586",
+                "flag_prefix": "poolfloat",
+            },
+            "Легендарная": {
+                "name": "рюкзак",
+                "emoji": "🎒",
+                "chance": 0.10,
+                "link": "https://t.me/nft/MoodPack-12309",
+                "flag_prefix": "moodpack",
+            },
+        }
+
+        prize = prizes_by_rarity.get(rarity)
+        if chat_id != EVENT_CHAT_ID or not prize:
             return False
 
-        # Генерируем ролл для логов
-        torch_roll = random.random()
-        # Шанс 8% (порог 0.92 означает, что значения 0.92-1.00 выигрывают)
-        win_threshold = 0.92
-        is_winner = torch_roll >= win_threshold
-
-        # Логирование каждой попытки (для поиска по ключевому слову TORCH_LOG)
+        roll = random.random()
+        is_winner = roll < float(prize["chance"])
         logger.info(
-            f"[TORCH_LOG] Mood Pack Attempt: chat_id={chat_id}, user_id={user_id}, username={username}, "
-            f"rarity={rarity}, roll={torch_roll:.4f}, threshold={win_threshold:.2f}, winner={is_winner}"
+            "[TORCH_LOG] Prize attempt: chat_id=%s user_id=%s username=%s rarity=%s prize=%s roll=%.4f chance=%.4f winner=%s",
+            chat_id,
+            user_id,
+            username,
+            rarity,
+            prize["name"],
+            roll,
+            float(prize["chance"]),
+            is_winner,
         )
 
         if not is_winner:
             return False
 
-        prize_key = f"moodpack_won_{chat_id}"
-        prize_link = "https://t.me/nft/MoodPack-62966"
-            
-        # Проверяем, не выигран ли этот приз уже в этом чате
+        prize_key = f"{prize['flag_prefix']}_won_{chat_id}"
         already_won = db.get_system_flag(prize_key)
         if already_won == "1":
-            logger.info(f"[TORCH_LOG] Mood Pack {prize_key} already won in chat {chat_id}. Skipping.")
+            logger.info("[TORCH_LOG] Prize %s already won in chat %s. Skipping.", prize_key, chat_id)
             return False
-            
-        # Помечаем как выигранный
+
         try:
             db.set_system_flag(prize_key, "1")
-            logger.info(f"[TORCH_LOG] Flag {prize_key} successfully set to 1")
+            logger.info("[TORCH_LOG] Flag %s successfully set to 1", prize_key)
         except Exception as e:
-            logger.error(f"[TORCH_LOG] Error setting system flag {prize_key}: {e}", exc_info=True)
+            logger.error("[TORCH_LOG] Error setting system flag %s: %s", prize_key, e, exc_info=True)
             return False
-        
-        # Поздравляем пользователя
-        congrats_text = f"Поздравляю, рюкзак найден! 🎒\n\n{prize_link}"
+
+        congrats_text = (
+            f"{prize['emoji']} <b>Поздравляю! Вы нашли приз: {prize['name']}!</b>\n\n"
+            f"🔗 {prize['link']}"
+        )
         msg = await self._safe_send_message(chat_id=chat_id, text=congrats_text, parse_mode="HTML")
         if msg:
-            logger.info(f"[TORCH_LOG] Congrats message (Mood Pack) sent to chat {chat_id}")
-        
-        # Уведомляем админа
+            logger.info("[TORCH_LOG] Congrats message sent to chat %s for prize %s", chat_id, prize["name"])
+
         admin_msg = (
-            f"🎒 <b>РЮКЗАК НАЙДЕН!</b>\n\n"
+            f"{prize['emoji']} <b>ПРИЗ НАЙДЕН!</b>\n\n"
+            f"🎁 Приз: {prize['name']}\n"
             f"👤 Пользователь: @{username} (ID: {user_id})\n"
             f"📍 Чат: {chat_title or chat_id} (ID: {chat_id})\n"
-            f"🔗 Ссылка: {prize_link}"
+            f"🎯 Редкость: {rarity}\n"
+            f"🔗 Ссылка: {prize['link']}"
         )
         try:
             await self.application.bot.send_message(chat_id=ADMIN_ID, text=admin_msg, parse_mode="HTML")
         except Exception:
             pass
-        
+
         return True
 
     async def _safe_send_message(self, **kwargs):
@@ -2218,24 +2242,6 @@ class FishBot:
             
             result = game.fish(user_id, chat_id, player['current_location'])
             
-            # --- ПРИОРИТЕТНАЯ ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ ---
-            # Теперь ролл факела срабатывает, когда выпадает "Легендарная" или выше
-            rarity_for_event = result.get('target_rarity')
-            if rarity_for_event in ["Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
-                try:
-                    torch_won = await self._check_torch_event(
-                        chat_id=update.effective_chat.id,
-                        user_id=user_id,
-                        username=update.effective_user.username or update.effective_user.first_name,
-                        rarity=rarity_for_event,
-                        chat_title=update.effective_chat.title
-                    )
-                    if torch_won:
-                        # Если факел выигран, прерываем обычную логику (рыба не выдается)
-                        return
-                except Exception as e:
-                    logger.error(f"Error in prioritized torch event check: {e}")
-            # ---------------------------------------------
         except Exception as e:
             logger.exception("Unhandled exception in game.fish for user %s chat %s", user_id, chat_id)
             try:
@@ -2362,6 +2368,21 @@ class FishBot:
             length = result['length']
             fish_price = result.get('fish_price', fish.get('price', 0))
 
+            # Проверка NFT-приза события только для обычной рыбалки (/fish).
+            try:
+                prize_rarity = result.get('target_rarity') or fish.get('rarity', '')
+                torch_won = await self._check_torch_event(
+                    chat_id=update.effective_chat.id,
+                    user_id=user_id,
+                    username=update.effective_user.username or update.effective_user.first_name,
+                    rarity=prize_rarity,
+                    chat_title=update.effective_chat.title
+                )
+                if torch_won:
+                    return
+            except Exception as e:
+                logger.error(f"Error in torch event check (/fish): {e}")
+
             logger.info(
                 "Catch: user=%s (%s) chat_id=%s chat_title=%s fish=%s location=%s bait=%s weight=%.2fkg length=%.1fcm",
                 update.effective_user.id,
@@ -2409,22 +2430,6 @@ class FishBot:
 
             # Если на лодке — доп проверки
             if result.get('is_on_boat'):
-                # --- ПРИОРИТЕТНАЯ ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ (НА ЛОДКЕ) ---
-                # Лодка тоже считается!
-                rarity_for_event = fish['rarity']
-                if rarity_for_event in ["Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
-                    try:
-                        await self._check_torch_event(
-                            chat_id=chat_id,
-                            user_id=user_id,
-                            username=update.effective_user.username or update.effective_user.first_name,
-                            rarity=rarity_for_event,
-                            chat_title=update.effective_chat.title
-                        )
-                    except Exception as e:
-                        logger.error(f"Error in prioritized torch event check (boat): {e}")
-                # ---------------------------------------------------------
-
                 # Проверка на крушение
                 if db.check_boat_crash(user_id):
                     message += "\n\n💥 <b>КРУШЕНИЕ!</b> Лодка не выдержала веса и сломалась! Весь улов текущего плавания утерян."
@@ -2465,18 +2470,6 @@ class FishBot:
                 }
             
             await update.message.reply_text(message)
-
-            # ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ
-            try:
-                await self._check_torch_event(
-                    chat_id=update.effective_chat.id,
-                    user_id=user_id,
-                    username=update.effective_user.username or update.effective_user.first_name,
-                    rarity=fish['rarity'],
-                    chat_title=update.effective_chat.title
-                )
-            except Exception as e:
-                logger.error(f"Error in torch event check: {e}")
 
             if result.get('temp_rod_broken'):
                 await update.message.reply_text(
@@ -7214,6 +7207,21 @@ class FishBot:
                 await self.refund_star_payment(user_id, telegram_payment_charge_id_val)
                 return
 
+            # Проверка NFT-приза события для обычной рыбалки (кнопка).
+            try:
+                prize_rarity = result.get('target_rarity') or fish.get('rarity', '')
+                torch_won = await self._check_torch_event(
+                    chat_id=update.effective_chat.id,
+                    user_id=user_id,
+                    username=update.effective_user.username or update.effective_user.first_name,
+                    rarity=prize_rarity,
+                    chat_title=update.effective_chat.title
+                )
+                if torch_won:
+                    return
+            except Exception as e:
+                logger.error(f"Error in torch event check (start_fishing callback): {e}")
+
             weight = result['weight']
             length = result['length']
 
@@ -7904,24 +7912,6 @@ class FishBot:
 
             result = game.fish(user_id, group_chat_id, location, guaranteed=True)
             
-            # --- ПРИОРИТЕТНАЯ ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ (ГАРАНТИРОВАННЫЙ УЛОВ) ---
-            # Теперь ролл факела срабатывает, когда выпадает "Легендарная" или выше
-            rarity_for_event = result.get('target_rarity')
-            if rarity_for_event in ["Легендарная", "Аквариумная", "Мифическая", "Аномалия"]:
-                try:
-                    torch_won = await self._check_torch_event(
-                        chat_id=group_chat_id,
-                        user_id=user_id,
-                        username=update.effective_user.username or update.effective_user.first_name,
-                        rarity=rarity_for_event,
-                        chat_title=accounting_chat_title
-                    )
-                    if torch_won:
-                        # Если факел выигран, прерываем обычную логику (рыба не выдается)
-                        return
-                except Exception as e:
-                    logger.error(f"Error in prioritized torch event check (guaranteed): {e}")
-            # ---------------------------------------------------------------------
         except Exception as e:
             logger.error(f"Critical error in guaranteed catch for user {user_id}: {e}", exc_info=True)
             message = f"❌ Произошла критическая ошибка при выполнении улова: {str(e)}. Пожалуйста, обратитесь в поддержку."
@@ -7973,6 +7963,21 @@ class FishBot:
             await self.refund_star_payment(user_id, telegram_payment_charge_id)
             return
 
+        # Проверка NFT-приза события только для гарантированного улова.
+        try:
+            prize_rarity = result.get('target_rarity') or fish.get('rarity', '')
+            torch_won = await self._check_torch_event(
+                chat_id=group_chat_id,
+                user_id=user_id,
+                username=update.effective_user.username or update.effective_user.first_name,
+                rarity=prize_rarity,
+                chat_title=accounting_chat_title
+            )
+            if torch_won:
+                return
+        except Exception as e:
+            logger.error(f"Error in torch event check (guaranteed): {e}")
+
         weight = result['weight']
         length = result['length']
 
@@ -8012,18 +8017,6 @@ class FishBot:
 
         # Всегда отправляем текстовое сообщение о рыбе (вынесено из блока стикера)
         await self._safe_send_message(chat_id=group_chat_id, text=message, reply_to_message_id=sticker_message.message_id if sticker_message else group_message_id)
-
-        # ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ (ДЛЯ ГАРАНТИРОВАННОГО УЛОВА)
-        try:
-            await self._check_torch_event(
-                chat_id=group_chat_id,
-                user_id=user_id,
-                username=update.effective_user.username or update.effective_user.first_name,
-                rarity=fish['rarity'],
-                chat_title=accounting_chat_title
-            )
-        except Exception as e:
-            logger.error(f"Error in torch event check (guaranteed): {e}")
 
         if result.get('temp_rod_broken'):
             await self._safe_send_message(chat_id=group_chat_id, text=(
