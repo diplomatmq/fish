@@ -2363,7 +2363,18 @@ class FishBot:
 
             # Проверка NFT-приза события только для обычной рыбалки (/fish).
             try:
-                prize_rarity = result.get('target_rarity') or fish.get('rarity', '')
+                rolled_rarity = result.get('target_rarity')
+                caught_rarity = fish.get('rarity', '')
+                if rolled_rarity and caught_rarity and rolled_rarity != caught_rarity:
+                    logger.info(
+                        "[TORCH_LOG] Rarity mismatch (/fish): user_id=%s chat_id=%s location=%s rolled=%s caught=%s",
+                        user_id,
+                        update.effective_chat.id,
+                        result.get('location'),
+                        rolled_rarity,
+                        caught_rarity,
+                    )
+                prize_rarity = caught_rarity or rolled_rarity or ''
                 torch_won = await self._check_torch_event(
                     chat_id=update.effective_chat.id,
                     user_id=user_id,
@@ -7202,7 +7213,18 @@ class FishBot:
 
             # Проверка NFT-приза события для обычной рыбалки (кнопка).
             try:
-                prize_rarity = result.get('target_rarity') or fish.get('rarity', '')
+                rolled_rarity = result.get('target_rarity')
+                caught_rarity = fish.get('rarity', '')
+                if rolled_rarity and caught_rarity and rolled_rarity != caught_rarity:
+                    logger.info(
+                        "[TORCH_LOG] Rarity mismatch (start_fishing): user_id=%s chat_id=%s location=%s rolled=%s caught=%s",
+                        user_id,
+                        update.effective_chat.id,
+                        result.get('location'),
+                        rolled_rarity,
+                        caught_rarity,
+                    )
+                prize_rarity = caught_rarity or rolled_rarity or ''
                 torch_won = await self._check_torch_event(
                     chat_id=update.effective_chat.id,
                     user_id=user_id,
@@ -7958,7 +7980,18 @@ class FishBot:
 
         # Проверка NFT-приза события только для гарантированного улова.
         try:
-            prize_rarity = result.get('target_rarity') or fish.get('rarity', '')
+            rolled_rarity = result.get('target_rarity')
+            caught_rarity = fish.get('rarity', '')
+            if rolled_rarity and caught_rarity and rolled_rarity != caught_rarity:
+                logger.info(
+                    "[TORCH_LOG] Rarity mismatch (guaranteed): user_id=%s chat_id=%s location=%s rolled=%s caught=%s",
+                    user_id,
+                    group_chat_id,
+                    result.get('location'),
+                    rolled_rarity,
+                    caught_rarity,
+                )
+            prize_rarity = caught_rarity or rolled_rarity or ''
             torch_won = await self._check_torch_event(
                 chat_id=group_chat_id,
                 user_id=user_id,
