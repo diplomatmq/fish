@@ -670,6 +670,8 @@ class FishingGame:
             return {
                 "success": False,
                 "fish_inspector": True,
+                "is_on_boat": is_on_boat,
+                "location": location,
                 "message": f"🚨 Вас поймал рыбнадзор! Ваш улов конфискован, а вы арестованы на {ban_hours} час. Можно откупиться за 15 звезд командой /payfine"
             }
         

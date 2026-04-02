@@ -985,6 +985,85 @@ class Database:
             return True
         return False
 
+    def sink_active_boat_by_storm(self, user_id: int, cooldown_hours: int = 18) -> Dict[str, Any]:
+        """Шторм на активной лодке: завершить плавание, удалить boat_catch и поставить КД."""
+        self._ensure_boat_tables()
+        self._ensure_boat_catch_table()
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT b.id, b.user_id
+                FROM boats b
+                JOIN boat_members bm ON bm.boat_id = b.id
+                WHERE bm.user_id = ? AND b.is_active = 1
+                LIMIT 1
+                ''',
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {"applied": False, "reason": "no_active_boat"}
+
+            boat_id = int(row[0])
+            owner_id = int(row[1]) if row[1] is not None else int(user_id)
+
+            cursor.execute(
+                'SELECT COUNT(*), COALESCE(SUM(weight), 0) FROM boat_catch WHERE boat_id = ?',
+                (boat_id,),
+            )
+            catch_stats = cursor.fetchone() or (0, 0)
+            lost_count = int(catch_stats[0] or 0)
+            lost_weight = float(catch_stats[1] or 0)
+
+            from datetime import datetime, timedelta, timezone
+            now_utc = datetime.now(timezone.utc)
+            cooldown_until = now_utc + timedelta(hours=cooldown_hours)
+            return_time = now_utc.isoformat()
+
+            cursor.execute('DELETE FROM boat_catch WHERE boat_id = ?', (boat_id,))
+            cursor.execute('DELETE FROM boat_members WHERE boat_id = ? AND is_owner = 0', (boat_id,))
+            cursor.execute(
+                '''
+                UPDATE boats
+                SET is_active = 0, current_weight = 0, cooldown_until = ?
+                WHERE id = ?
+                ''',
+                (cooldown_until.isoformat(), boat_id),
+            )
+
+            cursor.execute(
+                'UPDATE players SET last_boat_return_time = ? WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1)',
+                (return_time, owner_id),
+            )
+            if getattr(cursor, 'rowcount', 0) == 0:
+                cursor.execute(
+                    'UPDATE players SET last_boat_return_time = ? WHERE user_id = ?',
+                    (return_time, owner_id),
+                )
+
+            conn.commit()
+
+            logger.warning(
+                '[boat] STORM SINK: boat_id=%s triggered_by=%s owner_id=%s lost_count=%s lost_weight=%.2f cooldown_until=%s',
+                boat_id,
+                user_id,
+                owner_id,
+                lost_count,
+                lost_weight,
+                cooldown_until.isoformat(),
+            )
+
+            return {
+                "applied": True,
+                "boat_id": boat_id,
+                "owner_id": owner_id,
+                "lost_count": lost_count,
+                "lost_weight": lost_weight,
+                "cooldown_until": cooldown_until.isoformat(),
+            }
+
     def reset_boat_trip(self, user_id: int):
         """Принудительно завершить плавание (например, при крушении)."""
         boat = self.get_user_boat(user_id)
@@ -1339,6 +1418,7 @@ class Database:
                     current_bait TEXT DEFAULT 'Черви',
                     current_location TEXT DEFAULT 'Городской пруд',
                     last_fish_time TEXT,
+                    last_population_action_time TEXT,
                     last_boat_return_time TEXT,
                     last_dynamite_use_time TEXT,
                     dynamite_ban_until TEXT,
@@ -1792,6 +1872,7 @@ class Database:
             ensure_column('players', 'last_fishing_location', 'TEXT')
             ensure_column('players', 'population_penalty', 'REAL DEFAULT 0.0')
             ensure_column('players', 'penalty_recovery_casts', 'INTEGER DEFAULT 0')
+            ensure_column('players', 'last_population_action_time', 'TEXT')
             ensure_column('players', 'consecutive_dynamite_at_location', 'INTEGER DEFAULT 0')
             ensure_column('players', 'last_dynamite_location', 'TEXT')
             ensure_column('players', 'dynamite_penalty', 'REAL DEFAULT 0.0')
@@ -5645,7 +5726,8 @@ class Database:
             
             # Получаем текущее состояние игрока
             cursor.execute('''
-                SELECT consecutive_casts_at_location, last_fishing_location, population_penalty, last_fish_time, penalty_recovery_casts
+                SELECT consecutive_casts_at_location, last_fishing_location, population_penalty,
+                       last_fish_time, penalty_recovery_casts, last_population_action_time
                 FROM players
                 WHERE user_id = %s AND chat_id = -1
             ''', (user_id,))
@@ -5658,15 +5740,16 @@ class Database:
                 population_penalty = 0.0
                 recovery_casts = 0
             else:
-                last_casts, last_location, population_penalty, last_fish_time, recovery_casts = row
+                last_casts, last_location, population_penalty, last_fish_time, recovery_casts, last_population_action_time = row
                 last_casts = last_casts or 0
                 population_penalty = population_penalty or 0.0
                 recovery_casts = recovery_casts or 0
 
                 # Таймер простоя: 60+ минут без ловли полностью снимает штраф и серию.
-                if last_fish_time:
+                activity_time_raw = last_population_action_time or last_fish_time
+                if activity_time_raw:
                     try:
-                        last_dt = datetime.fromisoformat(str(last_fish_time))
+                        last_dt = datetime.fromisoformat(str(activity_time_raw))
                         now_dt = datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.now()
                         if now_dt - last_dt >= timedelta(minutes=60):
                             last_casts = 0
@@ -5709,14 +5792,16 @@ class Database:
                             population_penalty = 0.0
             
             # Обновляем состояние в базе
+            now_iso = datetime.now().isoformat()
             cursor.execute('''
                 UPDATE players
                 SET consecutive_casts_at_location = %s,
                     last_fishing_location = %s,
                     population_penalty = %s,
-                    penalty_recovery_casts = %s
+                    penalty_recovery_casts = %s,
+                    last_population_action_time = %s
                 WHERE user_id = %s AND chat_id = -1
-            ''', (consecutive_casts, current_location, population_penalty, recovery_casts, user_id))
+            ''', (consecutive_casts, current_location, population_penalty, recovery_casts, now_iso, user_id))
             conn.commit()
             
             # show_warning если достигли 30 забросов

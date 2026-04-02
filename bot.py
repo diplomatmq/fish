@@ -2580,8 +2580,19 @@ class FishBot:
             else:
                 # Если арест рыбнадзора — не показываем кнопку платного заброса
                 if result.get('fish_inspector') or "рыбнадзор" in result.get('message', '').lower():
+                    storm_result = None
                     # Стикер рыбнадзора — только при свежем аресте (не при повторных попытках)
                     if result.get('fish_inspector'):
+                        is_on_boat_trip = bool(result.get('is_on_boat')) or db.is_user_on_boat_trip(user_id)
+                        if is_on_boat_trip:
+                            storm_result = db.sink_active_boat_by_storm(user_id, cooldown_hours=18)
+                            logger.info(
+                                "[boat] fish_inspector storm: user_id=%s applied=%s boat_id=%s lost_count=%s",
+                                user_id,
+                                bool(storm_result.get('applied')),
+                                storm_result.get('boat_id'),
+                                storm_result.get('lost_count'),
+                            )
                         try:
                             inspector_image = FISH_STICKERS.get("Рыбнадзор")
                             if inspector_image:
@@ -2595,7 +2606,17 @@ class FishBot:
                                         )
                         except Exception as e:
                             logger.warning(f"Could not send fish inspector sticker: {e}")
-                    await update.message.reply_text(result['message'], parse_mode=None)
+
+                    inspector_message = result['message']
+                    if storm_result and storm_result.get('applied'):
+                        inspector_message += (
+                            "\n\n🌪️ Во время рейда рыбнадзора поднялся шторм."
+                            "\n🧺 Весь улов текущего плавания утерян и не записан в caught_fish."
+                            "\n⏳ Лодка ушла в КД на 18 часов."
+                            "\n🎣 Вы больше не в плавании и ловите с берега."
+                        )
+
+                    await update.message.reply_text(inspector_message, parse_mode=None)
                     return
                 # Отправляем сообщение с причиной и кнопкой оплаты
                 reply_markup = await self._build_guaranteed_invoice_markup(user_id, chat_id)
@@ -2694,9 +2715,6 @@ class FishBot:
             keyboard.insert(0, [
                 InlineKeyboardButton(f"▶️ Выплыть ({members_count}/{capacity})", callback_data=f"boat_start_{user_id}")
             ])
-        # Если есть КД лодки — кнопка сброса КД
-        if db.has_boat_cooldown(user_id):
-            keyboard.insert(1, [InlineKeyboardButton("⏩ Сбросить КД лодки (20⭐)", callback_data=f"skip_boat_cd_{user_id}")])
         # Если есть морская болезнь — кнопка лечения
         if db.is_user_seasick(user_id):
             keyboard.insert(1, [InlineKeyboardButton("🚑 Вылечить морскую болезнь (10⭐)", callback_data=f"cure_seasick_{user_id}")])
@@ -6338,6 +6356,13 @@ class FishBot:
         weather = db.get_or_update_weather(location)
         weather_bonus = weather_system.get_weather_bonus(weather['condition']) if weather else 0
         feeder_bonus = db.get_active_feeder_bonus(user_id, chat_id)
+
+        # Любой динамитный заброс учитываем в системе восстановления штрафа популяции.
+        try:
+            db.update_population_state(user_id, location)
+        except Exception:
+            logger.exception("Failed to update population state from dynamite for user=%s location=%s", user_id, location)
+
         population_penalty = db.get_population_penalty(user_id)
         # Update dynamite usage state and get dynamite-specific penalty
         # Update dynamite usage state (returns new penalty and consecutive count)
@@ -7341,6 +7366,45 @@ class FishBot:
                         )
                     )
                 return
+            elif result.get('fish_inspector') or "рыбнадзор" in result.get('message', '').lower():
+                storm_result = None
+                if result.get('fish_inspector'):
+                    is_on_boat_trip = bool(result.get('is_on_boat')) or db.is_user_on_boat_trip(user_id)
+                    if is_on_boat_trip:
+                        storm_result = db.sink_active_boat_by_storm(user_id, cooldown_hours=18)
+                        logger.info(
+                            "[boat] callback fish_inspector storm: user_id=%s applied=%s boat_id=%s lost_count=%s",
+                            user_id,
+                            bool(storm_result.get('applied')),
+                            storm_result.get('boat_id'),
+                            storm_result.get('lost_count'),
+                        )
+
+                    try:
+                        inspector_image = FISH_STICKERS.get("Рыбнадзор")
+                        if inspector_image:
+                            image_path = Path(__file__).parent / inspector_image
+                            if image_path.exists():
+                                with open(image_path, 'rb') as f:
+                                    await self.application.bot.send_document(
+                                        chat_id=update.effective_chat.id,
+                                        document=f,
+                                        reply_to_message_id=query.message.message_id if query and query.message else None
+                                    )
+                    except Exception as e:
+                        logger.warning(f"Could not send fish inspector sticker from callback: {e}")
+
+                inspector_message = result.get('message', '🚨 Вас поймал рыбнадзор!')
+                if storm_result and storm_result.get('applied'):
+                    inspector_message += (
+                        "\n\n🌪️ Во время рейда рыбнадзора поднялся шторм."
+                        "\n🧺 Весь улов текущего плавания утерян и не записан в caught_fish."
+                        "\n⏳ Лодка ушла в КД на 18 часов."
+                        "\n🎣 Вы больше не в плавании и ловите с берега."
+                    )
+
+                await query.edit_message_text(inspector_message)
+                return
             elif result.get('no_bite'):
                 # Отправляем сообщение с причиной и кнопкой оплаты
                 reply_markup = await self._build_guaranteed_invoice_markup(user_id, chat_id)
@@ -7348,7 +7412,7 @@ class FishBot:
                 message = f"""
 😔 {result['message']}
 
-📍 Локация: {result['location']}
+📍 Локация: {result.get('location', player.get('current_location', 'Неизвестно'))}
                 """
                 
                 await query.edit_message_text(message, reply_markup=reply_markup)
@@ -7360,7 +7424,7 @@ class FishBot:
                 message = f"""
 😔 {result['message']}
 
-📍 Локация: {result['location']}
+📍 Локация: {result.get('location', player.get('current_location', 'Неизвестно'))}
                 """
                 
                 await query.edit_message_text(message, reply_markup=reply_markup)
@@ -7832,6 +7896,12 @@ class FishBot:
                     return
 
         try:
+            # Гарантированный фиш-заброс тоже должен засчитываться для снятия штрафа популяции.
+            try:
+                db.update_population_state(user_id, location)
+            except Exception:
+                logger.exception("Failed to update population state from guaranteed catch for user=%s location=%s", user_id, location)
+
             result = game.fish(user_id, group_chat_id, location, guaranteed=True)
             
             # --- ПРИОРИТЕТНАЯ ПРОВЕРКА ИВЕНТА С ФАКЕЛОМ (ГАРАНТИРОВАННЫЙ УЛОВ) ---
