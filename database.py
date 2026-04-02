@@ -3361,6 +3361,13 @@ class Database:
         base_price = fish.get('price', 0) or 0
         rarity = fish.get('rarity', 'Обычная')
 
+        # Аномалия: отдельная экономика продажи.
+        # Всегда минимум 10 000 + явный бонус за вес.
+        if rarity == 'Аномалия':
+            safe_weight = max(0.0, float(weight or 0))
+            weight_bonus = int(round(safe_weight * 1000))
+            return 10000 + weight_bonus
+
         rarity_multipliers = {
             'Обычная': 1.15,
             'Редкая': 1.5,
