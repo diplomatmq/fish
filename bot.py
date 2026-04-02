@@ -1566,13 +1566,6 @@ class FishBot:
         ADMIN_ID = 793216884
 
         prizes_by_rarity = {
-            "Обычная": {
-                "name": "мороженное",
-                "emoji": "🍦",
-                "chance": 0.05,
-                "link": "https://t.me/nft/ViceCream-35264",
-                "flag_prefix": "vicecream",
-            },
             "Редкая": {
                 "name": "спасательный круг",
                 "emoji": "🛟",
