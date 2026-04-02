@@ -2759,8 +2759,27 @@ class FishBot:
     async def handle_boat_return(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка кнопки Вернуться (делёж улова)"""
         user_id = update.effective_user.id
-        
-        results, boat_id, status = db.return_boat_trip_and_split_catch(user_id)
+        chat_id = update.effective_chat.id if update.effective_chat else 0
+
+        logger.info("[boat] Return requested: user_id=%s chat_id=%s", user_id, chat_id)
+        try:
+            results, boat_id, status = db.return_boat_trip_and_split_catch(user_id)
+        except Exception as e:
+            logger.exception("[boat] Return failed: user_id=%s chat_id=%s error=%s", user_id, chat_id, e)
+            await update.callback_query.answer("Ошибка при возврате лодки. Попробуйте ещё раз.", show_alert=True)
+            await self.show_fishing_menu(update, context)
+            return
+
+        total_assigned = sum(int(item[2] or 0) for item in results) if results else 0
+        logger.info(
+            "[boat] Return result: user_id=%s chat_id=%s boat_id=%s status=%s recipients=%s assigned=%s",
+            user_id,
+            chat_id,
+            boat_id,
+            status,
+            len(results or []),
+            total_assigned,
+        )
         if status == 'not_found':
             await update.callback_query.answer("Ошибка: активная лодка не найдена.", show_alert=True)
             await self.show_fishing_menu(update, context)
@@ -2791,6 +2810,11 @@ class FishBot:
         # Проверка прав доступа
         if not query.data.endswith(f"_{user_id}"):
             await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
+        # Во время плавания на лодке смена локации запрещена
+        if db.get_active_boat_by_user(user_id):
+            await query.answer("⛵ Нельзя менять локацию, пока вы в плавании. Сначала нажмите «Вернуться».", show_alert=True)
             return
         
         await query.answer()
@@ -3157,6 +3181,12 @@ class FishBot:
         # Проверка прав доступа
         if not query.data.endswith(f"_{user_id}"):
             await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
+        # Дублируем запрет для защиты от старых/кэшированных кнопок выбора локации
+        if db.get_active_boat_by_user(user_id):
+            await query.answer("⛵ Во время плавания локацию менять нельзя. Сначала завершите плавание.", show_alert=True)
+            await self.show_fishing_menu(update, context)
             return
         
         await query.answer()

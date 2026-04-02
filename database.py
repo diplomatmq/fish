@@ -526,6 +526,13 @@ class Database:
             cursor.execute('''
                 UPDATE boats SET cooldown_until = NULL, is_active = 1 WHERE user_id = ?
             ''', (user_id,))
+            # Сбрасываем и КД по времени последнего возврата (новая логика на players)
+            cursor.execute(
+                'UPDATE players SET last_boat_return_time = NULL WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1)',
+                (user_id,)
+            )
+            if getattr(cursor, 'rowcount', 0) == 0:
+                cursor.execute('UPDATE players SET last_boat_return_time = NULL WHERE user_id = ?', (user_id,))
             conn.commit()
         return True
 
@@ -554,7 +561,7 @@ class Database:
             cursor = conn.cursor()
             # Найти активную лодку, где пользователь — участник
             cursor.execute('''
-                SELECT b.id FROM boats b
+                SELECT b.id, b.user_id, b.type, b.capacity FROM boats b
                 JOIN boat_members bm ON bm.boat_id = b.id
                 WHERE bm.user_id = ? AND b.is_active = 1 LIMIT 1
             ''', (user_id,))
@@ -563,6 +570,27 @@ class Database:
                 logger.warning(f"[boat] Не найдена активная лодка для пользователя {user_id} при возврате.")
                 return [], None, 'not_found'
             boat_id = row[0]
+            boat_owner_id = int(row[1]) if row[1] is not None else user_id
+            boat_type = str(row[2] or "")
+            try:
+                boat_capacity = int(row[3]) if row[3] is not None else 1
+            except (TypeError, ValueError):
+                boat_capacity = 1
+
+            def _mark_boat_return_time(owner_id: int):
+                """Фиксирует время завершения плавания в профиле игрока."""
+                from datetime import datetime, timezone
+                returned_at = datetime.now(timezone.utc).isoformat()
+                cursor.execute(
+                    'UPDATE players SET last_boat_return_time = ? WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1)',
+                    (returned_at, owner_id),
+                )
+                if getattr(cursor, 'rowcount', 0) == 0:
+                    cursor.execute(
+                        'UPDATE players SET last_boat_return_time = ? WHERE user_id = ?',
+                        (returned_at, owner_id),
+                    )
+                logger.info("[boat] last_boat_return_time updated: owner_id=%s returned_at=%s", owner_id, returned_at)
 
             # Предварительная проверка на крушение перед возвратом
             cursor.execute('SELECT current_weight, max_weight FROM boats WHERE id = ?', (boat_id,))
@@ -578,6 +606,7 @@ class Database:
                     SET is_active = 0, current_weight = 0, durability = 0, cooldown_until = ? 
                     WHERE id = ?
                 ''', (cd_until.isoformat(), boat_id))
+                _mark_boat_return_time(boat_owner_id)
                 conn.commit()
                 logger.info(f"[boat] Крушение лодки {boat_id}, весь улов утерян.")
                 return [], boat_id, 'sunk'
@@ -592,7 +621,7 @@ class Database:
                 return [], boat_id, 'no_members'
             # Получить улов
             cursor.execute('''
-                SELECT fish_id, weight, chat_id, location, caught_at FROM boat_catch WHERE boat_id = ?
+                SELECT fish_id, weight, chat_id, location, caught_at, item_name FROM boat_catch WHERE boat_id = ?
             ''', (boat_id,))
             catch = cursor.fetchall()
             logger.info(f"[boat] Улов лодки {boat_id}: {catch}")
@@ -607,46 +636,95 @@ class Database:
                     SET is_active = 0, current_weight = 0, cooldown_until = ? 
                     WHERE id = ?
                 ''', (cd_until.isoformat(), boat_id))
+                _mark_boat_return_time(boat_owner_id)
                 conn.commit()
                 logger.info(f"[boat] Нет улова в лодке {boat_id} при возврате.")
                 return [], boat_id, 'empty'
-            per_user = total_fish // len(members)
-            remainder = total_fish % len(members)
+
+            # Бесплатная/одноместная лодка не делит улов: весь улов забирает владелец.
+            if boat_type == 'free' or boat_capacity <= 1:
+                distribution_members = [boat_owner_id]
+                logger.info(
+                    "[boat] Лодка %s (%s, capacity=%s): делёж отключён, весь улов владельцу %s",
+                    boat_id,
+                    boat_type,
+                    boat_capacity,
+                    boat_owner_id,
+                )
+            else:
+                distribution_members = members
+
+            per_user = total_fish // len(distribution_members)
+            remainder = total_fish % len(distribution_members)
+            remainder_receiver = user_id if user_id in distribution_members else distribution_members[0]
             # Получить имена
             usernames = {}
-            for uid in members:
+            for uid in distribution_members:
                 player = self.get_player(uid, 0)
                 usernames[uid] = player.get('username', f'id{uid}') if player else f'id{uid}'
             # Раздать рыбу
             idx = 0
             results = []
-            for uid in members:
-                count = per_user + (1 if uid == user_id and remainder > 0 else 0)
+            assigned_count = 0
+            inserted_count = 0
+            skipped_count = 0
+            for uid in distribution_members:
+                # Весь остаток отдаём вызывающему (как было задумано ранее), без потери записей.
+                count = per_user + (remainder if uid == remainder_receiver else 0)
                 user_catch = catch[idx:idx+count]
                 idx += count
-                total_weight = sum([w for _, w, _, _, _ in user_catch])
+                assigned_count += count
+                total_weight = sum(float(item[1] or 0) for item in user_catch)
                 if not user_catch:
                     logger.warning(f"[boat] Для пользователя {uid} не нашлось рыбы для распределения (user_catch пустой)")
                 else:
                     logger.info(f"[boat] Рыба для пользователя {uid}: {user_catch}")
                 # Добавить в caught_fish
-                for fish_id, weight, item_chat_id, catch_location, catch_time in user_catch:
-                    # Корректный запрос из таблицы видов рыб: name, min_length, max_length
-                    cursor.execute('SELECT name, min_length, max_length FROM fish WHERE id = ?', (fish_id,))
-                    fish_row = cursor.fetchone()
-                    if not fish_row:
-                        logger.warning(f"[boat] Не найден fish_id={fish_id} в таблице fish при возврате лодки {boat_id}")
+                for fish_id, weight, item_chat_id, catch_location, catch_time, item_name in user_catch:
+                    fish_name = None
+                    length = 0.0
+
+                    # Основной сценарий: fish_id указывает на рыбу из справочника.
+                    if fish_id:
+                        cursor.execute('SELECT name, min_length, max_length FROM fish WHERE id = ?', (fish_id,))
+                        fish_row = cursor.fetchone()
+                        if fish_row:
+                            fish_name = fish_row[0]
+                            min_len, max_len = fish_row[1], fish_row[2]
+                            # Генерируем длину на основе диапазона, если он валиден.
+                            if min_len is not None and max_len is not None and float(max_len) >= float(min_len):
+                                length = round(random.uniform(float(min_len), float(max_len)), 1)
+
+                    # Fallback для мусора/особых предметов, где fish_id может быть 0.
+                    if not fish_name and item_name:
+                        fish_name = str(item_name).strip()
+                        length = 0.0
+                        logger.info(
+                            "[boat] Fallback insert by item_name: boat_id=%s user_id=%s fish_id=%s item_name=%s",
+                            boat_id,
+                            uid,
+                            fish_id,
+                            fish_name,
+                        )
+
+                    if not fish_name:
+                        skipped_count += 1
+                        logger.warning(
+                            "[boat] Пропуск записи при возврате: boat_id=%s user_id=%s fish_id=%s item_name=%s",
+                            boat_id,
+                            uid,
+                            fish_id,
+                            item_name,
+                        )
                         continue
-                    fish_name = fish_row[0]
-                    min_len, max_len = fish_row[1], fish_row[2]
-                    # Генерируем длину на основе веса/случайности
-                    length = round(random.uniform(min_len, max_len), 1)
+
                     # Используем сохраненную локацию, если она есть
                     final_location = catch_location if catch_location else "Море"
                     cursor.execute('''
                         INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, location, length, caught_at, sold)
                         VALUES (?, ?, ?, ?, ?, ?, ?, 0)
                     ''', (uid, item_chat_id, fish_name, weight, final_location, length, catch_time))
+                    inserted_count += 1
                     logger.info(f"[boat] Записана рыба: user_id={uid}, chat_id={item_chat_id}, fish_name={fish_name}, weight={weight}, location={final_location}, length={length}, caught_at={catch_time}")
                 if user_catch:
                     logger.info(f"[boat] Пользователь {uid} получил {len(user_catch)} рыб(ы), общий вес: {total_weight:.2f} кг. Улов не пропал, а распределён.")
@@ -661,8 +739,23 @@ class Database:
                 SET is_active = 0, current_weight = 0, cooldown_until = ? 
                 WHERE id = ?
             ''', (cd_until.isoformat(), boat_id))
+            _mark_boat_return_time(boat_owner_id)
             conn.commit()
-            logger.info(f"[boat] Возврат лодки {boat_id} завершён. Итоги: {results}")
+            logger.info(
+                "[boat] Возврат лодки %s завершён. assigned=%s inserted_to_caught_fish=%s skipped=%s results=%s",
+                boat_id,
+                assigned_count,
+                inserted_count,
+                skipped_count,
+                results,
+            )
+            if skipped_count > 0:
+                logger.warning(
+                    "[boat] Возврат лодки %s: пропущены записи в caught_fish (%s из %s)",
+                    boat_id,
+                    skipped_count,
+                    assigned_count,
+                )
             return results, boat_id, 'ok'
     def _ensure_boat_invites_table(self):
         """Создать таблицу boat_invites, если её нет."""
@@ -908,6 +1001,7 @@ class Database:
                     id SERIAL PRIMARY KEY,
                     boat_id INTEGER NOT NULL,
                     fish_id INTEGER NOT NULL,
+                    item_name TEXT DEFAULT '',
                     weight REAL NOT NULL,
                     chat_id BIGINT DEFAULT 0,
                     location TEXT DEFAULT 'Море',
@@ -934,6 +1028,13 @@ class Database:
             except Exception:
                 try:
                     cursor.execute("ALTER TABLE boat_catch ADD COLUMN caught_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                except:
+                    pass
+            try:
+                cursor.execute("ALTER TABLE boat_catch ADD COLUMN IF NOT EXISTS item_name TEXT DEFAULT ''")
+            except Exception:
+                try:
+                    cursor.execute("ALTER TABLE boat_catch ADD COLUMN item_name TEXT DEFAULT ''")
                 except:
                     pass
             conn.commit()
@@ -976,15 +1077,29 @@ class Database:
             if not row:
                 return False
             boat_id = row[0]
+
+            fish_name = ""
+            try:
+                cursor.execute('SELECT name FROM fish WHERE id = ? LIMIT 1', (fish_id,))
+                fish_row = cursor.fetchone()
+                if fish_row and fish_row[0]:
+                    fish_name = str(fish_row[0])
+            except Exception:
+                fish_name = ""
+
             cursor.execute('''
-                INSERT INTO boat_catch (boat_id, fish_id, weight, chat_id, location, caught_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (boat_id, fish_id, weight, chat_id_to_store, location, datetime.now()))
+                INSERT INTO boat_catch (boat_id, fish_id, item_name, weight, chat_id, location, caught_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (boat_id, fish_id, fish_name, weight, chat_id_to_store, location, datetime.now()))
             # Обновить текущий вес лодки
             cursor.execute('''
                 UPDATE boats SET current_weight = current_weight + ? WHERE id = ?
             ''', (weight, boat_id))
             conn.commit()
+            logger.info(
+                "[boat] add_fish_to_boat saved: boat_id=%s user_id=%s fish_id=%s item_name=%s weight=%s chat_id=%s location=%s",
+                boat_id, user_id, fish_id, fish_name, weight, chat_id_to_store, location,
+            )
             return True
 
     def get_active_boat_by_user(self, user_id: int):
@@ -1011,17 +1126,23 @@ class Database:
         except (TypeError, ValueError):
             chat_id_to_store = 0
 
+        item_name_to_store = str(item_name).strip() if item_name else ""
+
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT id FROM fish WHERE name = ? LIMIT 1', (item_name,))
+            cursor.execute('SELECT id FROM fish WHERE name = ? LIMIT 1', (item_name_to_store,))
             row = cursor.fetchone()
             item_id = row[0] if row else 0
             cursor.execute('''
-                INSERT INTO boat_catch (boat_id, fish_id, weight, chat_id, location, caught_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (boat_id, item_id, weight, chat_id_to_store, location, datetime.now()))
+                INSERT INTO boat_catch (boat_id, fish_id, item_name, weight, chat_id, location, caught_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (boat_id, item_id, item_name_to_store, weight, chat_id_to_store, location, datetime.now()))
             cursor.execute('UPDATE boats SET current_weight = current_weight + ? WHERE id = ?', (weight, boat_id))
             conn.commit()
+            logger.info(
+                "[boat] add_boat_catch saved: boat_id=%s item_name=%s fish_id=%s weight=%s chat_id=%s location=%s",
+                boat_id, item_name_to_store, item_id, weight, chat_id_to_store, location,
+            )
             return True
 
     def get_user_boat(self, user_id: int) -> dict:
@@ -1070,16 +1191,42 @@ class Database:
         """Можно ли выплыть: True/False и сколько осталось секунд КД."""
         boat = self.get_user_boat(user_id)
         cooldown_until = boat.get('cooldown_until')
-        from datetime import datetime, timezone
-        if cooldown_until:
+        from datetime import datetime, timezone, timedelta
+
+        def _parse_dt(raw_value):
+            if not raw_value:
+                return None
             try:
-                dt = datetime.fromisoformat(str(cooldown_until))
-                now = datetime.now(timezone.utc)
-                delta = (dt - now).total_seconds()
-                if delta > 0:
-                    return False, delta
+                dt_val = datetime.fromisoformat(str(raw_value))
+                if dt_val.tzinfo is None:
+                    dt_val = dt_val.replace(tzinfo=timezone.utc)
+                return dt_val
             except Exception:
-                pass
+                return None
+
+        now = datetime.now(timezone.utc)
+        cooldown_candidates: List[float] = []
+
+        # Старый КД по лодке (сохраняем для обратной совместимости)
+        dt_boat = _parse_dt(cooldown_until)
+        if dt_boat:
+            delta_boat = (dt_boat - now).total_seconds()
+            if delta_boat > 0:
+                cooldown_candidates.append(delta_boat)
+
+        # Новый КД: 12 часов с момента последнего возврата, хранится в players
+        player = self.get_player(user_id, 0)
+        last_return_raw = player.get('last_boat_return_time') if player else None
+        dt_last_return = _parse_dt(last_return_raw)
+        if dt_last_return:
+            allowed_at = dt_last_return + timedelta(hours=12)
+            delta_player = (allowed_at - now).total_seconds()
+            if delta_player > 0:
+                cooldown_candidates.append(delta_player)
+
+        if cooldown_candidates:
+            return False, max(cooldown_candidates)
+
         return True, 0
 
     def has_boat_cooldown(self, user_id: int) -> bool:
@@ -1192,6 +1339,7 @@ class Database:
                     current_bait TEXT DEFAULT 'Черви',
                     current_location TEXT DEFAULT 'Городской пруд',
                     last_fish_time TEXT,
+                    last_boat_return_time TEXT,
                     last_dynamite_use_time TEXT,
                     dynamite_ban_until TEXT,
                     is_banned INTEGER DEFAULT 0,
@@ -1649,6 +1797,7 @@ class Database:
             ensure_column('players', 'dynamite_penalty', 'REAL DEFAULT 0.0')
             ensure_column('players', 'dynamite_recovery_explosions', 'INTEGER DEFAULT 0')
             ensure_column('players', 'last_dynamite_use_time', 'TEXT')
+            ensure_column('players', 'last_boat_return_time', 'TEXT')
             ensure_column('players', 'diamonds', 'INTEGER DEFAULT 0')
             ensure_column('players', 'dynamite_ban_until', 'TEXT')
 
@@ -2642,7 +2791,7 @@ class Database:
         # Allow only specific fields to be updated to avoid SQL injection
         allowed_fields = {
             'username', 'coins', 'stars', 'xp', 'level', 'current_rod', 'current_bait',
-            'current_location', 'last_fish_time', 'last_dynamite_use_time', 'dynamite_ban_until', 'is_banned', 'ban_until', 'ref', 'ref_link', 'last_net_use_time', 'diamonds'
+            'current_location', 'last_fish_time', 'last_boat_return_time', 'last_dynamite_use_time', 'dynamite_ban_until', 'is_banned', 'ban_until', 'ref', 'ref_link', 'last_net_use_time', 'diamonds'
         }
 
         # Prevent passing chat_id as a kwarg (it is a positional arg here)
