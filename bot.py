@@ -1340,6 +1340,28 @@ class FishBot:
         except (TypeError, ValueError):
             return None
 
+    def _build_raf_create_payload(self, user_id: int, event_id: int) -> str:
+        """Payload для оплаты создания RAF-ивента."""
+        return f"raf_create_{event_id}_{user_id}_{int(datetime.now().timestamp())}"
+
+    def _parse_raf_create_payload(self, payload: str) -> Optional[Dict[str, int]]:
+        """Парсит payload вида raf_create_{event_id}_{user_id}_{ts}."""
+        if not payload or not payload.startswith("raf_create_"):
+            return None
+        body = payload[len("raf_create_"):]
+        parts = body.rsplit("_", 2)
+        if len(parts) != 3:
+            return None
+        event_part, user_part, ts_part = parts
+        try:
+            return {
+                "event_id": int(event_part),
+                "payload_user_id": int(user_part),
+                "created_ts": int(ts_part),
+            }
+        except (TypeError, ValueError):
+            return None
+
     def _get_feeder_by_code(self, feeder_code: str) -> Optional[Dict[str, Any]]:
         legacy_aliases = {
             "feeder_basic": "feeder_3",
@@ -1494,6 +1516,42 @@ class FishBot:
         self._paid_payloads_max: int = 5000
         # Время запуска бота — сообщения, отправленные ДО этого времени, игнорируются
         self.bot_start_time = datetime.utcnow()
+        self.RAF_CREATE_COST_STARS = 10
+        self.RAF_RARITY_OPTIONS = [
+            "срыв",
+            "мусор",
+            "обычная",
+            "редкая",
+            "легендарная",
+            "аквариумная",
+            "мифическая",
+            "аномалия",
+        ]
+        self.RAF_RARITY_ALIASES = {
+            "срыв": "срыв",
+            "snap": "срыв",
+            "no_bite": "срыв",
+            "не клюет": "срыв",
+            "не клюёт": "срыв",
+            "мусор": "мусор",
+            "trash": "мусор",
+            "обычная": "обычная",
+            "common": "обычная",
+            "редкая": "редкая",
+            "rare": "редкая",
+            "легендарная": "легендарная",
+            "legendary": "легендарная",
+            "аквариумная": "аквариумная",
+            "aquarium": "аквариумная",
+            "мифическая": "мифическая",
+            "mythic": "мифическая",
+            "аномалия": "аномалия",
+            "anomaly": "аномалия",
+        }
+        self.RAF_RESPONSIBILITY_NOTE = (
+            "⚠️ Ответственность за выдачу призов несёт создатель ивента. "
+            "Создатель бота не отвечает за выдачу призов."
+        )
         self.TOUR_TYPES = {
             'longest_fish': 'Самая длинная рыба',
             'biggest_weight': 'Самая большая рыба (вес)',
@@ -1518,6 +1576,459 @@ class FishBot:
             except Exception:
                 continue
         return None
+
+    def _normalize_raf_rarity(self, raw_value: str) -> Optional[str]:
+        key = str(raw_value or '').strip().lower()
+        if not key:
+            return None
+        return self.RAF_RARITY_ALIASES.get(key)
+
+    async def _parse_raf_chat_target(self, raw_value: str) -> Optional[Dict[str, Any]]:
+        """Нормализует chat_id из id/ссылки. Для приватных c/<id> приводит к -100<id>."""
+        value = str(raw_value or '').strip()
+        if not value:
+            return None
+
+        # Приватная ссылка вида https://t.me/c/<internal_chat_id>/<message_id>
+        m_private = re.match(r'^https?://t\.me/c/(\d+)/(\d+)$', value, flags=re.IGNORECASE)
+        if m_private:
+            internal_id = m_private.group(1)
+            return {
+                "chat_id": int(f"-100{internal_id}"),
+                "message_link": value,
+            }
+
+        # Публичная ссылка вида https://t.me/<username>/<message_id>
+        m_public = re.match(r'^https?://t\.me/([A-Za-z0-9_]{4,})/(\d+)$', value, flags=re.IGNORECASE)
+        if m_public:
+            username = m_public.group(1)
+            try:
+                chat_obj = await self.application.bot.get_chat(f"@{username}")
+                return {
+                    "chat_id": int(chat_obj.id),
+                    "message_link": value,
+                }
+            except Exception:
+                return None
+
+        # Чистый chat_id
+        if re.fullmatch(r'-?\d+', value):
+            if value.startswith('-100'):
+                return {"chat_id": int(value), "message_link": None}
+            if value.startswith('-'):
+                return {"chat_id": int(value), "message_link": None}
+            # Если префикса нет, считаем private/supergroup id и добавляем -100
+            return {"chat_id": int(f"-100{value}"), "message_link": None}
+
+        return None
+
+    def _extract_raf_outcome_rarity(self, result: Dict[str, Any]) -> Optional[str]:
+        if result.get('is_trash'):
+            return 'мусор'
+        if result.get('snap') or result.get('no_bite'):
+            return 'срыв'
+        fish = result.get('fish') or {}
+        raw_rarity = fish.get('rarity') or result.get('target_rarity')
+        return self._normalize_raf_rarity(str(raw_rarity or ''))
+
+    def _format_raf_prizes_summary(self, prizes: List[Dict[str, Any]]) -> str:
+        lines = []
+        for idx, prize in enumerate(prizes, start=1):
+            prize_text = html.escape(str(prize.get('prize_text') or 'Приз'))
+            rarity_key = html.escape(str(prize.get('rarity_key') or ''))
+            try:
+                chance = float(prize.get('chance_percent') or 0)
+            except (TypeError, ValueError):
+                chance = 0.0
+            lines.append(f"{idx}. {prize_text} — {rarity_key} ({chance:.2f}%)")
+        return "\n".join(lines) if lines else "—"
+
+    async def _process_raf_event_roll(
+        self,
+        chat_id: int,
+        user_id: int,
+        username: str,
+        chat_title: Optional[str],
+        result: Dict[str, Any],
+        trigger_source: str,
+    ) -> None:
+        rarity_key = self._extract_raf_outcome_rarity(result)
+        if not rarity_key:
+            return
+
+        winner_username = str(username or '').strip()
+        won_location = result.get('location')
+        try:
+            won_prize = db.try_roll_raf_prize(
+                chat_id=chat_id,
+                rarity_key=rarity_key,
+                winner_user_id=user_id,
+                winner_username=winner_username,
+                won_location=won_location,
+                trigger_source=trigger_source,
+            )
+        except Exception:
+            logger.exception("[RAF_LOG] try_roll_raf_prize failed chat_id=%s user_id=%s", chat_id, user_id)
+            return
+
+        if not won_prize:
+            return
+
+        prize_text = html.escape(str(won_prize.get('prize_text') or 'Приз'))
+        event_title = html.escape(str(won_prize.get('event_title') or 'RAF-ивент'))
+        chance = float(won_prize.get('chance_percent') or 0)
+        roll_value = float(won_prize.get('roll_value') or 0)
+        rarity_label = html.escape(rarity_key)
+
+        announce_text = (
+            f"🎉 <b>Победа в RAF-ивенте!</b>\n\n"
+            f"🏷 Ивент: {event_title}\n"
+            f"🎁 Приз: {prize_text}\n"
+            f"🎯 Редкость: {rarity_label}\n"
+            f"📊 Шанс: {chance:.2f}% (ролл {roll_value:.2f})\n\n"
+            f"{html.escape(self.RAF_RESPONSIBILITY_NOTE)}"
+        )
+        await self._safe_send_message(chat_id=chat_id, text=announce_text, parse_mode="HTML")
+
+        creator_id = won_prize.get('creator_user_id')
+        if creator_id:
+            try:
+                creator_int = int(creator_id)
+            except (TypeError, ValueError):
+                creator_int = None
+            if creator_int:
+                winner_display = f"@{winner_username}" if winner_username else f"id{user_id}"
+                owner_text = (
+                    f"🎉 Ваш RAF-ивент выдал приз!\n\n"
+                    f"🏷 Ивент: {event_title}\n"
+                    f"🎁 Приз: {prize_text}\n"
+                    f"👤 Победитель: {winner_display} (ID: {user_id})\n"
+                    f"📍 Чат: {chat_title or chat_id}\n"
+                    f"🎯 Редкость: {rarity_label}\n"
+                    f"📊 Шанс: {chance:.2f}% (ролл {roll_value:.2f})"
+                )
+                await self._safe_send_message(chat_id=creator_int, text=owner_text, parse_mode="HTML")
+
+    async def raf_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Создание RAF-ивента через личный wizard."""
+        if update.effective_chat.type != 'private':
+            await update.message.reply_text("Команда /raf работает только в личных сообщениях с ботом.")
+            return
+
+        user_id = update.effective_user.id
+        context.user_data['raf_draft'] = {
+            'step': 'title',
+            'creator_user_id': user_id,
+            'creator_private_chat_id': update.effective_chat.id,
+            'title': None,
+            'duration_hours': None,
+            'target_chat_id': None,
+            'source_message_link': None,
+            'prizes_total': 0,
+            'current_prize_index': 0,
+            'current_prize_text': None,
+            'current_prize_rarity': None,
+            'prizes': [],
+            'event_id': None,
+        }
+
+        await update.message.reply_text(
+            "🎯 Создание RAF-ивента\n\n"
+            "Шаг 1/5: Введите название ивента."
+        )
+
+    async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Отменить создание RAF-ивента."""
+        if update.effective_chat.type != 'private':
+            await update.message.reply_text("Команда /cancel работает только в личных сообщениях с ботом.")
+            return
+
+        user_id = update.effective_user.id
+        draft = context.user_data.pop('raf_draft', None)
+        cancelled = False
+        event_id = None
+
+        if draft:
+            event_id = draft.get('event_id')
+            if event_id:
+                cancelled = db.cancel_raf_event_creation(int(event_id), int(user_id))
+            else:
+                cancelled = True
+        else:
+            pending = db.get_latest_raf_pending_event(int(user_id))
+            if pending:
+                event_id = pending.get('id')
+                cancelled = db.cancel_raf_event_creation(int(event_id), int(user_id))
+
+        if cancelled:
+            if event_id:
+                await update.message.reply_text(f"✅ Создание RAF-ивента отменено (ID: {event_id}).")
+            else:
+                await update.message.reply_text("✅ Создание RAF-ивента отменено.")
+        else:
+            await update.message.reply_text("Нет активного создания RAF-ивента для отмены.")
+
+    async def handle_raf_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """Пошаговый ввод параметров RAF-ивента."""
+        draft = context.user_data.get('raf_draft')
+        if not draft:
+            return False
+
+        if update.effective_chat.type != 'private':
+            return False
+
+        if int(draft.get('creator_user_id') or 0) != int(update.effective_user.id):
+            return False
+
+        message = update.effective_message
+        if not message or not message.text:
+            return True
+
+        text = message.text.strip()
+        step = draft.get('step')
+
+        if step == 'title':
+            if len(text) < 2:
+                await update.message.reply_text("Название слишком короткое. Введите название ивента ещё раз.")
+                return True
+            draft['title'] = text[:200]
+            draft['duration_hours'] = None
+            draft['step'] = 'target_chat'
+            context.user_data['raf_draft'] = draft
+            await update.message.reply_text(
+                "Шаг 2/5: Отправьте chat_id или ссылку на сообщение в чате, где будет ивент.\n"
+                "Примеры:\n"
+                "-1003716809697\n"
+                "https://t.me/c/1234567890/555"
+            )
+            return True
+
+        if step == 'duration':
+            # Backward compatibility for drafts created before removing duration step.
+            draft['duration_hours'] = None
+            draft['step'] = 'target_chat'
+            context.user_data['raf_draft'] = draft
+            step = 'target_chat'
+
+        if step == 'target_chat':
+            parsed = await self._parse_raf_chat_target(text)
+            if not parsed:
+                await update.message.reply_text(
+                    "Не удалось распознать чат. Отправьте chat_id или ссылку вида https://t.me/c/<id>/<msg>."
+                )
+                return True
+
+            draft['target_chat_id'] = int(parsed['chat_id'])
+            draft['source_message_link'] = parsed.get('message_link')
+            draft['step'] = 'prizes_total'
+            context.user_data['raf_draft'] = draft
+            await update.message.reply_text("Шаг 3/5: Введите количество призов (1-20).")
+            return True
+
+        if step == 'prizes_total':
+            try:
+                prizes_total = int(text)
+            except Exception:
+                await update.message.reply_text("Введите целое число от 1 до 20.")
+                return True
+
+            if prizes_total < 1 or prizes_total > 20:
+                await update.message.reply_text("Количество призов должно быть от 1 до 20.")
+                return True
+
+            draft['prizes_total'] = prizes_total
+            draft['current_prize_index'] = 1
+            draft['step'] = 'prize_text'
+            context.user_data['raf_draft'] = draft
+            await update.message.reply_text("Шаг 4/5: Введите описание приза #1 (текст или ссылка).")
+            return True
+
+        if step == 'prize_text':
+            if len(text) < 1:
+                await update.message.reply_text("Описание приза не может быть пустым. Введите снова.")
+                return True
+
+            draft['current_prize_text'] = text[:1000]
+            draft['step'] = 'prize_rarity'
+            context.user_data['raf_draft'] = draft
+            await update.message.reply_text(
+                "Введите редкость для этого приза:\n"
+                "срыв, мусор, обычная, редкая, легендарная, аквариумная, мифическая, аномалия"
+            )
+            return True
+
+        if step == 'prize_rarity':
+            rarity_key = self._normalize_raf_rarity(text)
+            if not rarity_key or rarity_key not in self.RAF_RARITY_OPTIONS:
+                await update.message.reply_text(
+                    "Неверная редкость. Допустимо:\n"
+                    "срыв, мусор, обычная, редкая, легендарная, аквариумная, мифическая, аномалия"
+                )
+                return True
+
+            draft['current_prize_rarity'] = rarity_key
+            draft['step'] = 'prize_chance'
+            context.user_data['raf_draft'] = draft
+            await update.message.reply_text("Введите шанс этого приза в процентах (например, 7.5).")
+            return True
+
+        if step == 'prize_chance':
+            try:
+                chance_percent = float(text.replace(',', '.'))
+            except Exception:
+                await update.message.reply_text("Введите число от 0 до 100 (например, 7 или 7.5).")
+                return True
+
+            if chance_percent <= 0 or chance_percent > 100:
+                await update.message.reply_text("Шанс должен быть больше 0 и не больше 100.")
+                return True
+
+            prizes = draft.get('prizes') or []
+            prizes.append(
+                {
+                    'prize_text': draft.get('current_prize_text'),
+                    'rarity_key': draft.get('current_prize_rarity'),
+                    'chance_percent': chance_percent,
+                }
+            )
+            draft['prizes'] = prizes
+            draft['current_prize_text'] = None
+            draft['current_prize_rarity'] = None
+
+            current_idx = int(draft.get('current_prize_index') or 1)
+            total = int(draft.get('prizes_total') or 1)
+            if current_idx < total:
+                draft['current_prize_index'] = current_idx + 1
+                draft['step'] = 'prize_text'
+                context.user_data['raf_draft'] = draft
+                await update.message.reply_text(
+                    f"Введите описание приза #{current_idx + 1} (текст или ссылка)."
+                )
+                return True
+
+            event_id = db.create_raf_event_draft(
+                creator_user_id=int(draft['creator_user_id']),
+                title=str(draft.get('title') or 'RAF Event'),
+                target_chat_id=int(draft.get('target_chat_id')),
+                source_message_link=draft.get('source_message_link'),
+                duration_hours=draft.get('duration_hours'),
+                prizes=prizes,
+            )
+            if not event_id:
+                context.user_data.pop('raf_draft', None)
+                await update.message.reply_text("❌ Не удалось создать черновик RAF-ивента. Попробуйте снова.")
+                return True
+
+            draft['event_id'] = int(event_id)
+            draft['step'] = 'await_payment'
+            context.user_data['raf_draft'] = draft
+
+            from config import BOT_TOKEN, STAR_NAME
+            tg_api = TelegramBotAPI(BOT_TOKEN)
+            payload = self._build_raf_create_payload(int(draft['creator_user_id']), int(event_id))
+
+            invoice_url = await tg_api.create_invoice_link(
+                title="Создание RAF-ивента",
+                description=f"Оплата создания RAF-ивента ({self.RAF_CREATE_COST_STARS} {STAR_NAME})",
+                payload=payload,
+                currency="XTR",
+                prices=[{"label": "Создание RAF-ивента", "amount": self.RAF_CREATE_COST_STARS}],
+            )
+            if not invoice_url:
+                await update.message.reply_text(
+                    "❌ Не удалось создать инвойс на оплату. Повторите /raf или отмените через /cancel."
+                )
+                return True
+
+            await self.send_invoice_url_button(
+                chat_id=update.effective_chat.id,
+                invoice_url=invoice_url,
+                text=(
+                    f"✅ Черновик RAF-ивента создан (ID: {event_id}).\n"
+                    f"Теперь оплатите {self.RAF_CREATE_COST_STARS} ⭐ для продолжения."
+                ),
+                user_id=int(draft['creator_user_id']),
+                reply_to_message_id=update.effective_message.message_id if update.effective_message else None,
+            )
+            return True
+
+        if step == 'await_payment':
+            await update.message.reply_text(
+                "Ожидается оплата создания RAF-ивента. После оплаты я пришлю кнопку 'Начать'.\n"
+                "Если хотите прервать создание — /cancel"
+            )
+            return True
+
+        return False
+
+    async def handle_raf_start_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Запуск оплаченного RAF-ивента (кнопка из лички)."""
+        query = update.callback_query
+        await query.answer()
+
+        parts = (query.data or '').split('_')
+        if len(parts) != 4:
+            await query.answer("Некорректная кнопка", show_alert=True)
+            return
+
+        try:
+            event_id = int(parts[2])
+            owner_id = int(parts[3])
+        except (TypeError, ValueError):
+            await query.answer("Некорректные данные", show_alert=True)
+            return
+
+        user_id = update.effective_user.id
+        if user_id != owner_id:
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
+        event = db.get_raf_event(event_id)
+        if not event or int(event.get('creator_user_id') or 0) != user_id:
+            await query.answer("Ивент не найден", show_alert=True)
+            return
+
+        activated = db.activate_raf_event(event_id, user_id)
+        if not activated:
+            await query.answer("Ивент уже запущен или не оплачен", show_alert=True)
+            return
+
+        prizes = db.get_raf_event_prizes(event_id)
+        prizes_text = self._format_raf_prizes_summary(prizes)
+
+        ends_at = activated.get('ends_at')
+        if ends_at:
+            event_time_line = f"⏱ Действует до: {ends_at}"
+        else:
+            event_time_line = "⏱ Время: без ограничения (до выдачи всех призов)"
+
+        announce_text = (
+            f"🎉 <b>Стартовал RAF-ивент!</b>\n\n"
+            f"🏷 Название: {html.escape(str(activated.get('title') or 'RAF-ивент'))}\n"
+            f"{event_time_line}\n\n"
+            f"🎁 Призы:\n{prizes_text}\n\n"
+            f"🎣 Ловите как обычно. Для каждого приза работает своя редкость и шанс.\n\n"
+            f"{html.escape(self.RAF_RESPONSIBILITY_NOTE)}"
+        )
+
+        target_chat_id = int(activated.get('target_chat_id'))
+        sent_msg = await self._safe_send_message(
+            chat_id=target_chat_id,
+            text=announce_text,
+            parse_mode="HTML",
+        )
+
+        if sent_msg:
+            await query.edit_message_text(
+                f"✅ Ивент запущен и опубликован в чате {target_chat_id}.",
+                reply_markup=None,
+            )
+        else:
+            await query.edit_message_text(
+                f"⚠️ Ивент запущен, но не удалось отправить анонс в чат {target_chat_id}.\n"
+                "Проверьте, что бот есть в чате и имеет право писать.",
+                reply_markup=None,
+            )
 
     # --- Safe API wrappers to handle Flood control (RetryAfter) ---
     async def _send_catch_image(self, chat_id: int, item_name: str, item_type: str = "fish", reply_to_message_id: Optional[int] = None) -> Optional[Message]:
@@ -2234,6 +2745,18 @@ class FishBot:
                     logger.error(f"Error sending population warning: {e}")
             
             result = game.fish(user_id, chat_id, player['current_location'])
+
+            try:
+                await self._process_raf_event_roll(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    username=update.effective_user.username or update.effective_user.first_name,
+                    chat_title=update.effective_chat.title,
+                    result=result,
+                    trigger_source='fish_command',
+                )
+            except Exception:
+                logger.exception("RAF roll failed in /fish flow user=%s chat=%s", user_id, chat_id)
             
         except Exception as e:
             logger.exception("Unhandled exception in game.fish for user %s chat %s", user_id, chat_id)
@@ -6796,6 +7319,11 @@ class FishBot:
             if msg_ts < self.bot_start_time:
                 return
 
+        if context.user_data.get('raf_draft'):
+            consumed_raf = await self.handle_raf_input(update, context)
+            if consumed_raf:
+                return
+
         if context.user_data.get('new_tour'):
             consumed = await self.handle_new_tour_input(update, context)
             if consumed:
@@ -7153,6 +7681,18 @@ class FishBot:
         
         # Начинаем рыбалку на текущей локации
         result = game.fish(user_id, chat_id, player['current_location'])
+
+        try:
+            await self._process_raf_event_roll(
+                chat_id=chat_id,
+                user_id=user_id,
+                username=update.effective_user.username or update.effective_user.first_name,
+                chat_title=update.effective_chat.title,
+                result=result,
+                trigger_source='start_fishing_callback',
+            )
+        except Exception:
+            logger.exception("RAF roll failed in start_fishing flow user=%s chat=%s", user_id, chat_id)
         
         if result['success']:
             if result.get('is_trash'):
@@ -7567,6 +8107,33 @@ class FishBot:
             if isinstance(created_ts, int) and now_ts - created_ts > 900:
                 await query.answer(ok=False, error_message="Срок действия инвойса истек. Запросите новый.")
                 return
+        elif payload.startswith("raf_create_"):
+            parsed_raf = self._parse_raf_create_payload(payload)
+            if not parsed_raf:
+                await query.answer(ok=False, error_message="Инвойс RAF-ивента некорректен. Создайте новый через /raf.")
+                return
+
+            if parsed_raf.get("payload_user_id") != user_id:
+                await query.answer(ok=False, error_message="Этот инвойс RAF создан для другого пользователя.")
+                return
+
+            event_id = int(parsed_raf.get("event_id") or 0)
+            event = db.get_raf_event(event_id) if event_id else None
+            if not event:
+                await query.answer(ok=False, error_message="RAF-ивент не найден. Создайте новый через /raf.")
+                return
+
+            if int(event.get('creator_user_id') or 0) != int(user_id):
+                await query.answer(ok=False, error_message="Этот RAF-ивент принадлежит другому пользователю.")
+                return
+
+            status = str(event.get('status') or '').strip().lower()
+            if status != 'draft':
+                if status == 'paid':
+                    await query.answer(ok=False, error_message="RAF-ивент уже оплачен. Нажмите кнопку запуска.")
+                else:
+                    await query.answer(ok=False, error_message="Этот RAF-ивент нельзя оплатить в текущем статусе.")
+                return
         # Проверяем, не был ли этот инвойс уже оплачен
         if payload and payload in self.paid_payloads:
             await query.answer(ok=False, error_message="Этот инвойс уже был оплачен. Запросите новый.")
@@ -7600,6 +8167,7 @@ class FishBot:
         parsed_booster_payload = None
         parsed_dynamite_payload = None
         parsed_dynamite_fine_payload = None
+        parsed_raf_payload = None
         if payload.startswith("guaranteed_"):
             parsed_guaranteed_payload = self._parse_guaranteed_payload(payload)
             if parsed_guaranteed_payload and parsed_guaranteed_payload.get("group_chat_id"):
@@ -7631,6 +8199,8 @@ class FishBot:
                 accounting_chat_id = int(parsed_dynamite_fine_payload["group_chat_id"])
             else:
                 accounting_chat_id = active_invoice.get("group_chat_id") or chat_id
+        elif payload.startswith("raf_create_"):
+            parsed_raf_payload = self._parse_raf_create_payload(payload)
         elif active_invoice.get("group_chat_id"):
             try:
                 accounting_chat_id = int(active_invoice.get("group_chat_id"))
@@ -7856,6 +8426,79 @@ class FishBot:
                 reply_to_message_id=booster_reply_id,
             )
             return
+        elif payload and payload.startswith("raf_create_"):
+            if not parsed_raf_payload:
+                parsed_raf_payload = self._parse_raf_create_payload(payload)
+
+            if not parsed_raf_payload:
+                await self._safe_send_message(
+                    chat_id=chat_id,
+                    text="❌ Не удалось распознать оплату RAF-ивента. Повторите /raf.",
+                )
+                if telegram_payment_charge_id:
+                    await self.refund_star_payment(user_id, telegram_payment_charge_id)
+                return
+
+            event_id = int(parsed_raf_payload.get("event_id") or 0)
+            payload_user_id = int(parsed_raf_payload.get("payload_user_id") or 0)
+            if payload_user_id != user_id:
+                await self._safe_send_message(
+                    chat_id=chat_id,
+                    text="❌ Этот платеж RAF не соответствует вашему аккаунту. Оформлен возврат.",
+                )
+                if telegram_payment_charge_id:
+                    await self.refund_star_payment(user_id, telegram_payment_charge_id)
+                return
+
+            event = db.get_raf_event(event_id) if event_id else None
+            if not event or int(event.get('creator_user_id') or 0) != user_id:
+                await self._safe_send_message(
+                    chat_id=chat_id,
+                    text="❌ RAF-ивент не найден или недоступен. Оформлен возврат.",
+                )
+                if telegram_payment_charge_id:
+                    await self.refund_star_payment(user_id, telegram_payment_charge_id)
+                return
+
+            current_status = str(event.get('status') or '').strip().lower()
+            payment_marked = False
+            if current_status == 'draft':
+                payment_marked = db.mark_raf_event_paid(event_id, user_id, telegram_payment_charge_id or '')
+
+            if not payment_marked:
+                refreshed = db.get_raf_event(event_id)
+                refreshed_status = str((refreshed or {}).get('status') or '').strip().lower()
+                if refreshed_status != 'paid':
+                    await self._safe_send_message(
+                        chat_id=chat_id,
+                        text="❌ Не удалось подтвердить оплату RAF-ивента. Оформлен возврат.",
+                    )
+                    if telegram_payment_charge_id:
+                        await self.refund_star_payment(user_id, telegram_payment_charge_id)
+                    return
+
+            if user_id in self.active_invoices:
+                del self.active_invoices[user_id]
+
+            context.user_data.pop('raf_draft', None)
+
+            start_markup = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🚀 Начать RAF-ивент", callback_data=f"raf_start_{event_id}_{user_id}")]]
+            )
+
+            event_title = html.escape(str(event.get('title') or f"RAF-ивент #{event_id}"))
+            target_chat_id = event.get('target_chat_id')
+            await self._safe_send_message(
+                chat_id=chat_id,
+                text=(
+                    f"✅ Оплата получена для <b>{event_title}</b> (ID: {event_id}).\n"
+                    f"🎯 Целевой чат: {target_chat_id}\n\n"
+                    "Нажмите кнопку ниже, чтобы запустить ивент."
+                ),
+                reply_markup=start_markup,
+                parse_mode="HTML",
+            )
+            return
         elif payload and payload.startswith("guaranteed_"):
             parsed = parsed_guaranteed_payload or self._parse_guaranteed_payload(payload)
             if parsed:
@@ -7938,6 +8581,18 @@ class FishBot:
             # Возвращаем звезды, если оплата прошла, но улов не был обработан
             await self.refund_star_payment(user_id, telegram_payment_charge_id)
             return
+
+        try:
+            await self._process_raf_event_roll(
+                chat_id=group_chat_id,
+                user_id=user_id,
+                username=update.effective_user.username or update.effective_user.first_name,
+                chat_title=accounting_chat_title,
+                result=result,
+                trigger_source='guaranteed_fish',
+            )
+        except Exception:
+            logger.exception("RAF roll failed in guaranteed flow user=%s chat=%s", user_id, group_chat_id)
         
         # If result indicates trash (even when success==False in game logic), handle it here
         if result.get('is_trash'):
@@ -8930,6 +9585,8 @@ def main():
     application.add_handler(CommandHandler("ref", bot_instance.ref_command))
     application.add_handler(CommandHandler("new_ref", bot_instance.new_ref_command))
     application.add_handler(CommandHandler("check", bot_instance.check_command))
+    application.add_handler(CommandHandler("raf", bot_instance.raf_command))
+    application.add_handler(CommandHandler("cancel", bot_instance.cancel_command))
     application.add_handler(CommandHandler("new_tour", bot_instance.new_tour_command))
     application.add_handler(CommandHandler("tour", bot_instance.tour_command))
     application.add_handler(CommandHandler("ozero", bot_instance.ozero_command))
@@ -8992,6 +9649,7 @@ def main():
     application.add_handler(MessageHandler(filters.ALL, bot_instance.refunded_payment_callback))
     
     # Обработчики callback
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_raf_start_callback, pattern=r"^raf_start_\d+_\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_start_fishing, pattern="^start_fishing_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_change_location, pattern="^change_location_"))
     # Важно: более специфичные паттерны должны идти первыми

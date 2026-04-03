@@ -1668,6 +1668,53 @@ class Database:
                     UNIQUE(user_id, chat_id, treasure_name)
                 )
             ''')
+
+            # RAF-ивенты (розыгрыши по редкости улова)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS raf_events (
+                    id SERIAL PRIMARY KEY,
+                    creator_user_id BIGINT NOT NULL,
+                    title TEXT NOT NULL,
+                    target_chat_id BIGINT NOT NULL,
+                    source_message_link TEXT,
+                    duration_hours INTEGER,
+                    status TEXT DEFAULT 'draft',
+                    payment_charge_id TEXT,
+                    starts_at TIMESTAMP,
+                    ends_at TIMESTAMP,
+                    activated_at TIMESTAMP,
+                    start_message_id BIGINT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS raf_event_prizes (
+                    id SERIAL PRIMARY KEY,
+                    event_id BIGINT NOT NULL,
+                    prize_order INTEGER DEFAULT 1,
+                    prize_text TEXT NOT NULL,
+                    rarity_key TEXT NOT NULL,
+                    chance_percent REAL NOT NULL,
+                    is_claimed INTEGER DEFAULT 0,
+                    winner_user_id BIGINT,
+                    winner_username TEXT,
+                    won_at TIMESTAMP,
+                    won_location TEXT,
+                    trigger_source TEXT,
+                    FOREIGN KEY (event_id) REFERENCES raf_events(id)
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_raf_events_chat_status
+                ON raf_events (target_chat_id, status)
+            ''')
+
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_raf_prizes_event_claimed
+                ON raf_event_prizes (event_id, is_claimed)
+            ''')
             
             # Initialize boat-related tables
             self._ensure_boat_tables()
@@ -3916,6 +3963,336 @@ class Database:
                 return None
             cols = [d[0] for d in cursor.description]
             return dict(zip(cols, row))
+
+    def create_raf_event_draft(
+        self,
+        creator_user_id: int,
+        title: str,
+        target_chat_id: int,
+        source_message_link: Optional[str],
+        duration_hours: Optional[int],
+        prizes: List[Dict[str, Any]],
+    ) -> Optional[int]:
+        """Создать RAF-ивент в статусе draft и связанные призы."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            try:
+                safe_duration = int(duration_hours) if duration_hours is not None else None
+                safe_title = (title or "RAF Event").strip()[:200]
+                safe_link = (source_message_link or "").strip()[:1000] or None
+
+                cursor.execute(
+                    '''
+                    INSERT INTO raf_events (
+                        creator_user_id, title, target_chat_id,
+                        source_message_link, duration_hours, status
+                    )
+                    VALUES (?, ?, ?, ?, ?, 'draft')
+                    RETURNING id
+                    ''',
+                    (int(creator_user_id), safe_title, int(target_chat_id), safe_link, safe_duration),
+                )
+                row = cursor.fetchone()
+                event_id = int(row[0]) if row and row[0] is not None else None
+
+                if not event_id:
+                    conn.rollback()
+                    return None
+
+                for idx, prize in enumerate(prizes or [], start=1):
+                    cursor.execute(
+                        '''
+                        INSERT INTO raf_event_prizes (
+                            event_id, prize_order, prize_text, rarity_key, chance_percent
+                        )
+                        VALUES (?, ?, ?, ?, ?)
+                        ''',
+                        (
+                            event_id,
+                            idx,
+                            str(prize.get('prize_text') or '').strip()[:1000],
+                            str(prize.get('rarity_key') or '').strip().lower(),
+                            float(prize.get('chance_percent') or 0),
+                        ),
+                    )
+
+                conn.commit()
+                return event_id
+            except Exception:
+                logger.exception("create_raf_event_draft failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return None
+
+    def get_raf_event(self, event_id: int) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM raf_events WHERE id = ? LIMIT 1', (int(event_id),))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+
+    def get_raf_event_prizes(self, event_id: int) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM raf_event_prizes
+                WHERE event_id = ?
+                ORDER BY prize_order ASC, id ASC
+                ''',
+                (int(event_id),),
+            )
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, row)) for row in rows]
+
+    def get_latest_raf_pending_event(self, creator_user_id: int) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM raf_events
+                WHERE creator_user_id = ?
+                  AND status IN ('draft', 'paid')
+                ORDER BY id DESC
+                LIMIT 1
+                ''',
+                (int(creator_user_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+
+    def cancel_raf_event_creation(self, event_id: int, creator_user_id: int) -> bool:
+        """Отменить создание RAF-ивента в статусах draft/paid."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT status FROM raf_events WHERE id = ? AND creator_user_id = ? LIMIT 1',
+                (int(event_id), int(creator_user_id)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return False
+            status = str(row[0] or '')
+            if status not in ('draft', 'paid'):
+                return False
+
+            cursor.execute(
+                "UPDATE raf_events SET status = 'cancelled' WHERE id = ? AND creator_user_id = ?",
+                (int(event_id), int(creator_user_id)),
+            )
+            conn.commit()
+            return True
+
+    def mark_raf_event_paid(self, event_id: int, creator_user_id: int, payment_charge_id: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE raf_events
+                SET status = 'paid', payment_charge_id = ?
+                WHERE id = ?
+                  AND creator_user_id = ?
+                  AND status = 'draft'
+                ''',
+                (str(payment_charge_id or ''), int(event_id), int(creator_user_id)),
+            )
+            conn.commit()
+            return bool(getattr(cursor, 'rowcount', 0))
+
+    def activate_raf_event(self, event_id: int, creator_user_id: int) -> Optional[Dict[str, Any]]:
+        """Запустить RAF-ивент. Вернет событие после успешного запуска."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT duration_hours
+                FROM raf_events
+                WHERE id = ?
+                  AND creator_user_id = ?
+                  AND status = 'paid'
+                LIMIT 1
+                ''',
+                (int(event_id), int(creator_user_id)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            duration_hours = row[0]
+            now_dt = datetime.utcnow()
+            ends_at = None
+            if duration_hours is not None:
+                try:
+                    ends_at = now_dt + timedelta(hours=int(duration_hours))
+                except Exception:
+                    ends_at = None
+
+            cursor.execute(
+                '''
+                UPDATE raf_events
+                SET status = 'active', starts_at = ?, activated_at = ?, ends_at = ?
+                WHERE id = ?
+                  AND creator_user_id = ?
+                  AND status = 'paid'
+                ''',
+                (now_dt, now_dt, ends_at, int(event_id), int(creator_user_id)),
+            )
+            if not bool(getattr(cursor, 'rowcount', 0)):
+                conn.rollback()
+                return None
+
+            conn.commit()
+            return self.get_raf_event(int(event_id))
+
+    def _close_expired_raf_events(self, chat_id: int):
+        """Служебно: закрыть истекшие RAF-ивенты в чате."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE raf_events
+                SET status = 'finished'
+                WHERE target_chat_id = ?
+                  AND status = 'active'
+                  AND ends_at IS NOT NULL
+                  AND ends_at < CURRENT_TIMESTAMP
+                ''',
+                (int(chat_id),),
+            )
+            conn.commit()
+
+    def try_roll_raf_prize(
+        self,
+        chat_id: int,
+        rarity_key: str,
+        winner_user_id: int,
+        winner_username: str,
+        won_location: Optional[str] = None,
+        trigger_source: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Проверить активные RAF-ивенты и попытаться выдать приз под конкретную редкость."""
+        self._close_expired_raf_events(chat_id)
+        normalized_rarity = str(rarity_key or '').strip().lower()
+        if not normalized_rarity:
+            return None
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    p.id,
+                    p.event_id,
+                    p.prize_text,
+                    p.rarity_key,
+                    p.chance_percent,
+                    e.title,
+                    e.creator_user_id,
+                    e.target_chat_id
+                FROM raf_event_prizes p
+                JOIN raf_events e ON e.id = p.event_id
+                WHERE e.target_chat_id = ?
+                  AND e.status = 'active'
+                  AND (e.starts_at IS NULL OR e.starts_at <= CURRENT_TIMESTAMP)
+                  AND (e.ends_at IS NULL OR e.ends_at >= CURRENT_TIMESTAMP)
+                  AND p.is_claimed = 0
+                  AND LOWER(TRIM(p.rarity_key)) = LOWER(TRIM(?))
+                ORDER BY e.activated_at ASC, p.prize_order ASC, p.id ASC
+                ''',
+                (int(chat_id), normalized_rarity),
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                return None
+
+            cols = [d[0] for d in cursor.description]
+            candidates = [dict(zip(cols, row)) for row in rows]
+
+            for cand in candidates:
+                chance = float(cand.get('chance_percent') or 0)
+                if chance <= 0:
+                    continue
+                roll = random.uniform(0, 100)
+                logger.info(
+                    "[RAF_LOG] Attempt: event_id=%s prize_id=%s rarity=%s chance=%.2f roll=%.4f user_id=%s chat_id=%s",
+                    cand.get('event_id'),
+                    cand.get('id'),
+                    normalized_rarity,
+                    chance,
+                    roll,
+                    winner_user_id,
+                    chat_id,
+                )
+                if roll > chance:
+                    continue
+
+                won_at = datetime.utcnow().isoformat()
+                cursor.execute(
+                    '''
+                    UPDATE raf_event_prizes
+                    SET is_claimed = 1,
+                        winner_user_id = ?,
+                        winner_username = ?,
+                        won_at = ?,
+                        won_location = ?,
+                        trigger_source = ?
+                    WHERE id = ?
+                      AND is_claimed = 0
+                    RETURNING id
+                    ''',
+                    (
+                        int(winner_user_id),
+                        str(winner_username or ''),
+                        won_at,
+                        won_location,
+                        trigger_source,
+                        int(cand['id']),
+                    ),
+                )
+                claimed_row = cursor.fetchone()
+                if not claimed_row:
+                    continue
+
+                event_id = int(cand['event_id'])
+                cursor.execute(
+                    'SELECT COUNT(*) FROM raf_event_prizes WHERE event_id = ? AND is_claimed = 0',
+                    (event_id,),
+                )
+                remain_row = cursor.fetchone()
+                remaining = int(remain_row[0] or 0) if remain_row else 0
+                if remaining <= 0:
+                    cursor.execute(
+                        "UPDATE raf_events SET status = 'finished' WHERE id = ? AND status = 'active'",
+                        (event_id,),
+                    )
+
+                conn.commit()
+
+                return {
+                    'event_id': event_id,
+                    'prize_id': int(cand['id']),
+                    'event_title': cand.get('title'),
+                    'prize_text': cand.get('prize_text'),
+                    'rarity_key': normalized_rarity,
+                    'chance_percent': chance,
+                    'roll_value': roll,
+                    'creator_user_id': cand.get('creator_user_id'),
+                    'target_chat_id': cand.get('target_chat_id'),
+                    'remaining_prizes': remaining,
+                }
+
+            return None
 
     def get_tour_leaderboard_weight(self, starts_at: datetime, ends_at: datetime, limit: int = 10) -> List[Dict[str, Any]]:
         with self._connect() as conn:
