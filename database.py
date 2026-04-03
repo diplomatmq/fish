@@ -4224,15 +4224,19 @@ class Database:
                 if chance <= 0:
                     continue
                 roll = random.uniform(0, 100)
+                is_winner = roll <= chance
                 logger.info(
-                    "[RAF_LOG] Attempt: event_id=%s prize_id=%s rarity=%s chance=%.2f roll=%.4f user_id=%s chat_id=%s",
+                    "[RAF_LOG] Prize attempt: chat_id=%s user_id=%s username=%s event_id=%s prize_id=%s prize=%s rarity=%s roll=%.4f chance=%.2f winner=%s",
+                    chat_id,
+                    winner_user_id,
+                    winner_username,
                     cand.get('event_id'),
                     cand.get('id'),
+                    cand.get('prize_text'),
                     normalized_rarity,
-                    chance,
                     roll,
-                    winner_user_id,
-                    chat_id,
+                    chance,
+                    is_winner,
                 )
                 if roll > chance:
                     continue
@@ -4262,6 +4266,10 @@ class Database:
                 )
                 claimed_row = cursor.fetchone()
                 if not claimed_row:
+                    logger.info(
+                        "[RAF_LOG] Prize %s already claimed concurrently. Skip.",
+                        cand.get('id'),
+                    )
                     continue
 
                 event_id = int(cand['event_id'])
@@ -4275,6 +4283,23 @@ class Database:
                     cursor.execute(
                         "UPDATE raf_events SET status = 'finished' WHERE id = ? AND status = 'active'",
                         (event_id,),
+                    )
+
+                logger.info(
+                    "[RAF_LOG] Prize WIN: event_id=%s prize_id=%s prize=%s winner_user_id=%s winner_username=%s chance=%.2f roll=%.4f remaining_prizes=%s",
+                    event_id,
+                    cand.get('id'),
+                    cand.get('prize_text'),
+                    winner_user_id,
+                    winner_username,
+                    chance,
+                    roll,
+                    remaining,
+                )
+                if remaining <= 0:
+                    logger.info(
+                        "[RAF_LOG] Event finished: event_id=%s all prizes claimed.",
+                        event_id,
                     )
 
                 conn.commit()

@@ -1552,6 +1552,11 @@ class FishBot:
             "⚠️ Ответственность за выдачу призов несёт создатель ивента. "
             "Создатель бота не отвечает за выдачу призов."
         )
+        self.RAF_ALLOWED_TRIGGER_SOURCES = {
+            'fish_command',
+            'start_fishing_callback',
+            'guaranteed_fish',
+        }
         self.TOUR_TYPES = {
             'longest_fish': 'Самая длинная рыба',
             'biggest_weight': 'Самая большая рыба (вес)',
@@ -1643,6 +1648,25 @@ class FishBot:
             lines.append(f"{idx}. {prize_text} — {rarity_key} ({chance:.2f}%)")
         return "\n".join(lines) if lines else "—"
 
+    def _format_raf_datetime(self, value: Any) -> str:
+        """Форматирует datetime/ISO-строку в вид DD.MM.YYYY HH:MM."""
+        if value is None:
+            return "-"
+        if isinstance(value, datetime):
+            return value.strftime("%d.%m.%Y %H:%M")
+
+        text = str(value).strip()
+        if not text:
+            return "-"
+
+        # Часто из БД приходит ISO, включая вариант с timezone/Z.
+        normalized = text.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+            return parsed.strftime("%d.%m.%Y %H:%M")
+        except Exception:
+            return text
+
     async def _process_raf_event_roll(
         self,
         chat_id: int,
@@ -1652,6 +1676,13 @@ class FishBot:
         result: Dict[str, Any],
         trigger_source: str,
     ) -> None:
+        if trigger_source not in self.RAF_ALLOWED_TRIGGER_SOURCES:
+            logger.info(
+                "[RAF_LOG] Skip roll: source=%s is not eligible for RAF event participation",
+                trigger_source,
+            )
+            return
+
         rarity_key = self._extract_raf_outcome_rarity(result)
         if not rarity_key:
             return
@@ -1688,9 +1719,20 @@ class FishBot:
             f"📊 Шанс: {chance:.2f}% (ролл {roll_value:.2f})\n\n"
             f"{html.escape(self.RAF_RESPONSIBILITY_NOTE)}"
         )
-        await self._safe_send_message(chat_id=chat_id, text=announce_text, parse_mode="HTML")
+        chat_win_msg = await self._safe_send_message(chat_id=chat_id, text=announce_text, parse_mode="HTML")
+        logger.info(
+            "[RAF_LOG] Winner announced: event_id=%s prize_id=%s user_id=%s username=%s chance=%.2f roll=%.4f sent_to_chat=%s",
+            won_prize.get('event_id'),
+            won_prize.get('prize_id'),
+            user_id,
+            winner_username,
+            chance,
+            roll_value,
+            bool(chat_win_msg),
+        )
 
         creator_id = won_prize.get('creator_user_id')
+        creator_int = None
         if creator_id:
             try:
                 creator_int = int(creator_id)
@@ -1698,16 +1740,58 @@ class FishBot:
                 creator_int = None
             if creator_int:
                 winner_display = f"@{winner_username}" if winner_username else f"id{user_id}"
+                winner_display_safe = html.escape(winner_display)
                 owner_text = (
                     f"🎉 Ваш RAF-ивент выдал приз!\n\n"
                     f"🏷 Ивент: {event_title}\n"
                     f"🎁 Приз: {prize_text}\n"
-                    f"👤 Победитель: {winner_display} (ID: {user_id})\n"
+                    f"👤 Победитель: {winner_display_safe} (ID: {user_id})\n"
                     f"📍 Чат: {chat_title or chat_id}\n"
                     f"🎯 Редкость: {rarity_label}\n"
                     f"📊 Шанс: {chance:.2f}% (ролл {roll_value:.2f})"
                 )
-                await self._safe_send_message(chat_id=creator_int, text=owner_text, parse_mode="HTML")
+                owner_win_msg = await self._safe_send_message(chat_id=creator_int, text=owner_text, parse_mode="HTML")
+                logger.info(
+                    "[RAF_LOG] Owner DM sent: event_id=%s creator_id=%s winner_id=%s sent=%s",
+                    won_prize.get('event_id'),
+                    creator_int,
+                    user_id,
+                    bool(owner_win_msg),
+                )
+
+        remaining_prizes = int(won_prize.get('remaining_prizes') or 0)
+        if remaining_prizes <= 0:
+            finish_text = (
+                f"🏁 <b>RAF-ивент завершен!</b>\n\n"
+                f"🏷 Ивент: {event_title}\n"
+                f"✅ Все призы были разыграны.\n\n"
+                f"{html.escape(self.RAF_RESPONSIBILITY_NOTE)}"
+            )
+            finish_chat_msg = await self._safe_send_message(chat_id=chat_id, text=finish_text, parse_mode="HTML")
+            logger.info(
+                "[RAF_LOG] Event completion announced in chat: event_id=%s chat_id=%s sent=%s",
+                won_prize.get('event_id'),
+                chat_id,
+                bool(finish_chat_msg),
+            )
+
+            if creator_int:
+                owner_finish_text = (
+                    f"🏁 Ваш RAF-ивент завершен.\n\n"
+                    f"🏷 Ивент: {event_title}\n"
+                    "✅ Все призы были разыграны."
+                )
+                finish_owner_msg = await self._safe_send_message(
+                    chat_id=creator_int,
+                    text=owner_finish_text,
+                    parse_mode="HTML",
+                )
+                logger.info(
+                    "[RAF_LOG] Event completion DM sent: event_id=%s creator_id=%s sent=%s",
+                    won_prize.get('event_id'),
+                    creator_int,
+                    bool(finish_owner_msg),
+                )
 
     async def raf_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Создание RAF-ивента через личный wizard."""
@@ -1996,11 +2080,14 @@ class FishBot:
         prizes = db.get_raf_event_prizes(event_id)
         prizes_text = self._format_raf_prizes_summary(prizes)
 
+        starts_at = activated.get('starts_at') or activated.get('activated_at')
         ends_at = activated.get('ends_at')
-        if ends_at:
-            event_time_line = f"⏱ Действует до: {ends_at}"
-        else:
-            event_time_line = "⏱ Время: без ограничения (до выдачи всех призов)"
+        starts_at_text = self._format_raf_datetime(starts_at)
+        ends_at_text = self._format_raf_datetime(ends_at) if ends_at else "-"
+
+        event_time_line = f"⏱ Время ивента: с {starts_at_text} по {ends_at_text}"
+        if not ends_at:
+            event_time_line += " (без ограничения, до выдачи всех призов)"
 
         announce_text = (
             f"🎉 <b>Стартовал RAF-ивент!</b>\n\n"
