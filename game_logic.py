@@ -408,7 +408,7 @@ class FishingGame:
                 level_info = db.add_player_xp(user_id, chat_id, xp_earned)
 
                 if is_on_boat:
-                    db.add_boat_catch(active_boat['id'], trash['name'], trash['weight'], chat_id, location=location)
+                    db.add_boat_catch(active_boat['id'], trash['name'], trash['weight'], chat_id, location=location, user_id=user_id)
                     db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
                 else:
                     db.update_player(user_id, chat_id,
@@ -805,7 +805,7 @@ class FishingGame:
                                 last_fish_time=datetime.now().isoformat())
                 
                 if is_on_boat:
-                    db.add_boat_catch(active_boat['id'], trash['name'], trash['weight'], chat_id, location=location)
+                    db.add_boat_catch(active_boat['id'], trash['name'], trash['weight'], chat_id, location=location, user_id=user_id)
 
                 temp_rod_result = self._consume_temp_rod_use(user_id, chat_id, player['current_rod'])
 

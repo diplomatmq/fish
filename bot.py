@@ -1675,17 +1675,17 @@ class FishBot:
         chat_title: Optional[str],
         result: Dict[str, Any],
         trigger_source: str,
-    ) -> None:
+    ) -> bool:
         if trigger_source not in self.RAF_ALLOWED_TRIGGER_SOURCES:
             logger.info(
                 "[RAF_LOG] Skip roll: source=%s is not eligible for RAF event participation",
                 trigger_source,
             )
-            return
+            return False
 
         rarity_key = self._extract_raf_outcome_rarity(result)
         if not rarity_key:
-            return
+            return False
 
         winner_username = str(username or '').strip()
         won_location = result.get('location')
@@ -1700,28 +1700,30 @@ class FishBot:
             )
         except Exception:
             logger.exception("[RAF_LOG] try_roll_raf_prize failed chat_id=%s user_id=%s", chat_id, user_id)
-            return
+            return False
 
         if not won_prize:
-            return
+            return False
 
-        prize_text = html.escape(str(won_prize.get('prize_text') or 'Приз'))
-        event_title = html.escape(str(won_prize.get('event_title') or 'RAF-ивент'))
+        rollback_info = {}
+        try:
+            rollback_info = db.rollback_reward_after_raf_win(user_id, chat_id, result)
+        except Exception:
+            logger.exception("[RAF_LOG] rollback failed after prize win user=%s chat=%s", user_id, chat_id)
+
+        event_title_raw = str(won_prize.get('event_title') or 'RAF-ивент')
+        prize_raw = str(won_prize.get('prize_text') or 'Приз')
+        event_title = html.escape(event_title_raw)
+        prize_text = html.escape(prize_raw)
         chance = float(won_prize.get('chance_percent') or 0)
         roll_value = float(won_prize.get('roll_value') or 0)
         rarity_label = html.escape(rarity_key)
 
-        announce_text = (
-            f"🎉 <b>Победа в RAF-ивенте!</b>\n\n"
-            f"🏷 Ивент: {event_title}\n"
-            f"🎁 Приз: {prize_text}\n"
-            f"🎯 Редкость: {rarity_label}\n"
-            f"📊 Шанс: {chance:.2f}% (ролл {roll_value:.2f})\n\n"
-            f"{html.escape(self.RAF_RESPONSIBILITY_NOTE)}"
-        )
-        chat_win_msg = await self._safe_send_message(chat_id=chat_id, text=announce_text, parse_mode="HTML")
+        chat_prize_text = f"🎁 Приз найден — {prize_raw}"
+        chat_win_msg = await self._safe_send_message(chat_id=chat_id, text=chat_prize_text)
+
         logger.info(
-            "[RAF_LOG] Winner announced: event_id=%s prize_id=%s user_id=%s username=%s chance=%.2f roll=%.4f sent_to_chat=%s",
+            "[RAF_LOG] Winner announced: event_id=%s prize_id=%s user_id=%s username=%s chance=%.2f roll=%.4f sent_to_chat=%s rollback=%s",
             won_prize.get('event_id'),
             won_prize.get('prize_id'),
             user_id,
@@ -1729,6 +1731,7 @@ class FishBot:
             chance,
             roll_value,
             bool(chat_win_msg),
+            rollback_info,
         )
 
         creator_id = won_prize.get('creator_user_id')
@@ -1741,14 +1744,16 @@ class FishBot:
             if creator_int:
                 winner_display = f"@{winner_username}" if winner_username else f"id{user_id}"
                 winner_display_safe = html.escape(winner_display)
+                chat_display_safe = html.escape(str(chat_title or chat_id))
                 owner_text = (
-                    f"🎉 Ваш RAF-ивент выдал приз!\n\n"
+                    f"🎉 <b>Победа в RAF-ивенте!</b>\n\n"
                     f"🏷 Ивент: {event_title}\n"
                     f"🎁 Приз: {prize_text}\n"
                     f"👤 Победитель: {winner_display_safe} (ID: {user_id})\n"
-                    f"📍 Чат: {chat_title or chat_id}\n"
+                    f"📍 Чат: {chat_display_safe}\n"
                     f"🎯 Редкость: {rarity_label}\n"
-                    f"📊 Шанс: {chance:.2f}% (ролл {roll_value:.2f})"
+                    f"📊 Шанс: {chance:.2f}% (ролл {roll_value:.2f})\n\n"
+                    f"{html.escape(self.RAF_RESPONSIBILITY_NOTE)}"
                 )
                 owner_win_msg = await self._safe_send_message(chat_id=creator_int, text=owner_text, parse_mode="HTML")
                 logger.info(
@@ -1792,6 +1797,8 @@ class FishBot:
                     creator_int,
                     bool(finish_owner_msg),
                 )
+
+        return True
 
     async def raf_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Создание RAF-ивента через личный wizard."""
@@ -1992,6 +1999,7 @@ class FishBot:
 
             event_id = db.create_raf_event_draft(
                 creator_user_id=int(draft['creator_user_id']),
+                creator_username=update.effective_user.username or update.effective_user.first_name,
                 title=str(draft.get('title') or 'RAF Event'),
                 target_chat_id=int(draft.get('target_chat_id')),
                 source_message_link=draft.get('source_message_link'),
@@ -2834,7 +2842,7 @@ class FishBot:
             result = game.fish(user_id, chat_id, player['current_location'])
 
             try:
-                await self._process_raf_event_roll(
+                raf_won = await self._process_raf_event_roll(
                     chat_id=chat_id,
                     user_id=user_id,
                     username=update.effective_user.username or update.effective_user.first_name,
@@ -2842,6 +2850,8 @@ class FishBot:
                     result=result,
                     trigger_source='fish_command',
                 )
+                if raf_won:
+                    return
             except Exception:
                 logger.exception("RAF roll failed in /fish flow user=%s chat=%s", user_id, chat_id)
             
@@ -7770,7 +7780,7 @@ class FishBot:
         result = game.fish(user_id, chat_id, player['current_location'])
 
         try:
-            await self._process_raf_event_roll(
+            raf_won = await self._process_raf_event_roll(
                 chat_id=chat_id,
                 user_id=user_id,
                 username=update.effective_user.username or update.effective_user.first_name,
@@ -7778,6 +7788,8 @@ class FishBot:
                 result=result,
                 trigger_source='start_fishing_callback',
             )
+            if raf_won:
+                return
         except Exception:
             logger.exception("RAF roll failed in start_fishing flow user=%s chat=%s", user_id, chat_id)
         
@@ -8670,7 +8682,7 @@ class FishBot:
             return
 
         try:
-            await self._process_raf_event_roll(
+            raf_won = await self._process_raf_event_roll(
                 chat_id=group_chat_id,
                 user_id=user_id,
                 username=update.effective_user.username or update.effective_user.first_name,
@@ -8678,6 +8690,8 @@ class FishBot:
                 result=result,
                 trigger_source='guaranteed_fish',
             )
+            if raf_won:
+                return
         except Exception:
             logger.exception("RAF roll failed in guaranteed flow user=%s chat=%s", user_id, group_chat_id)
         

@@ -1080,6 +1080,7 @@ class Database:
                     id SERIAL PRIMARY KEY,
                     boat_id INTEGER NOT NULL,
                     fish_id INTEGER NOT NULL,
+                    user_id BIGINT DEFAULT 0,
                     item_name TEXT DEFAULT '',
                     weight REAL NOT NULL,
                     chat_id BIGINT DEFAULT 0,
@@ -1114,6 +1115,13 @@ class Database:
             except Exception:
                 try:
                     cursor.execute("ALTER TABLE boat_catch ADD COLUMN item_name TEXT DEFAULT ''")
+                except:
+                    pass
+            try:
+                cursor.execute("ALTER TABLE boat_catch ADD COLUMN IF NOT EXISTS user_id BIGINT DEFAULT 0")
+            except Exception:
+                try:
+                    cursor.execute("ALTER TABLE boat_catch ADD COLUMN user_id BIGINT DEFAULT 0")
                 except:
                     pass
             conn.commit()
@@ -1167,9 +1175,9 @@ class Database:
                 fish_name = ""
 
             cursor.execute('''
-                INSERT INTO boat_catch (boat_id, fish_id, item_name, weight, chat_id, location, caught_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (boat_id, fish_id, fish_name, weight, chat_id_to_store, location, datetime.now()))
+                INSERT INTO boat_catch (boat_id, fish_id, user_id, item_name, weight, chat_id, location, caught_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (boat_id, fish_id, int(user_id), fish_name, weight, chat_id_to_store, location, datetime.now()))
             # Обновить текущий вес лодки
             cursor.execute('''
                 UPDATE boats SET current_weight = current_weight + ? WHERE id = ?
@@ -1197,7 +1205,7 @@ class Database:
                 return dict(zip(columns, row))
             return None
 
-    def add_boat_catch(self, boat_id: int, item_name: str, weight: float, chat_id: Any = 0, location: str = "Море") -> bool:
+    def add_boat_catch(self, boat_id: int, item_name: str, weight: float, chat_id: Any = 0, location: str = "Море", user_id: int = 0) -> bool:
         self._ensure_boat_catch_table()
         # Гарантируем, что chat_id - это число (BIGINT)
         try:
@@ -1213,14 +1221,14 @@ class Database:
             row = cursor.fetchone()
             item_id = row[0] if row else 0
             cursor.execute('''
-                INSERT INTO boat_catch (boat_id, fish_id, item_name, weight, chat_id, location, caught_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (boat_id, item_id, item_name_to_store, weight, chat_id_to_store, location, datetime.now()))
+                INSERT INTO boat_catch (boat_id, fish_id, user_id, item_name, weight, chat_id, location, caught_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (boat_id, item_id, int(user_id or 0), item_name_to_store, weight, chat_id_to_store, location, datetime.now()))
             cursor.execute('UPDATE boats SET current_weight = current_weight + ? WHERE id = ?', (weight, boat_id))
             conn.commit()
             logger.info(
-                "[boat] add_boat_catch saved: boat_id=%s item_name=%s fish_id=%s weight=%s chat_id=%s location=%s",
-                boat_id, item_name_to_store, item_id, weight, chat_id_to_store, location,
+                "[boat] add_boat_catch saved: boat_id=%s user_id=%s item_name=%s fish_id=%s weight=%s chat_id=%s location=%s",
+                boat_id, int(user_id or 0), item_name_to_store, item_id, weight, chat_id_to_store, location,
             )
             return True
 
@@ -1674,6 +1682,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS raf_events (
                     id SERIAL PRIMARY KEY,
                     creator_user_id BIGINT NOT NULL,
+                    creator_username TEXT,
                     title TEXT NOT NULL,
                     target_chat_id BIGINT NOT NULL,
                     source_message_link TEXT,
@@ -1928,6 +1937,7 @@ class Database:
             ensure_column('players', 'last_boat_return_time', 'TEXT')
             ensure_column('players', 'diamonds', 'INTEGER DEFAULT 0')
             ensure_column('players', 'dynamite_ban_until', 'TEXT')
+            ensure_column('raf_events', 'creator_username', 'TEXT')
 
             # Ensure unique index for ON CONFLICT targets that expect (user_id, chat_id)
             try:
@@ -3198,6 +3208,140 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM caught_fish WHERE id = ?', (fish_id,))
             conn.commit()
+
+    def rollback_reward_after_raf_win(self, user_id: int, chat_id: int, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Откатывает улов/награды, если вместо улова выпал RAF-приз."""
+        info: Dict[str, Any] = {
+            'boat_catch_removed': False,
+            'caught_fish_removed': False,
+            'coins_reverted': 0,
+            'treasure_removed': False,
+        }
+
+        fish_data = result.get('fish') or {}
+        trash_data = result.get('trash') or {}
+        is_trash = bool(result.get('is_trash'))
+
+        item_name = ''
+        item_weight = 0.0
+        if is_trash:
+            item_name = str(trash_data.get('name') or '').strip()
+            try:
+                item_weight = float(trash_data.get('weight') or 0)
+            except (TypeError, ValueError):
+                item_weight = 0.0
+        elif result.get('success') and fish_data:
+            item_name = str(fish_data.get('name') or '').strip()
+            try:
+                item_weight = float(result.get('weight') or 0)
+            except (TypeError, ValueError):
+                item_weight = 0.0
+
+        location = str(result.get('location') or '').strip()
+        is_on_boat = bool(result.get('is_on_boat')) or self.is_user_on_boat_trip(int(user_id))
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            try:
+                if is_on_boat and item_name:
+                    cursor.execute(
+                        '''
+                        SELECT bc.id, bc.boat_id, COALESCE(bc.weight, 0)
+                        FROM boat_catch bc
+                        JOIN boat_members bm ON bm.boat_id = bc.boat_id
+                        WHERE bm.user_id = ?
+                          AND COALESCE(bc.user_id, 0) = ?
+                          AND LOWER(TRIM(COALESCE(bc.item_name, ''))) = LOWER(TRIM(?))
+                          AND (? = '' OR LOWER(TRIM(COALESCE(bc.location, ''))) = LOWER(TRIM(?)))
+                        ORDER BY bc.id DESC
+                        LIMIT 1
+                        ''',
+                        (int(user_id), int(user_id), item_name, location, location),
+                    )
+                    boat_row = cursor.fetchone()
+                    if boat_row:
+                        boat_catch_id = int(boat_row[0])
+                        boat_id = int(boat_row[1])
+                        removed_weight = float(boat_row[2] or item_weight or 0)
+                        cursor.execute('DELETE FROM boat_catch WHERE id = ?', (boat_catch_id,))
+                        cursor.execute(
+                            '''
+                            UPDATE boats
+                            SET current_weight = CASE WHEN current_weight - ? > 0 THEN current_weight - ? ELSE 0 END
+                            WHERE id = ?
+                            ''',
+                            (removed_weight, removed_weight, boat_id),
+                        )
+                        info['boat_catch_removed'] = True
+
+                if (not is_on_boat) and result.get('success') and fish_data and item_name:
+                    cursor.execute(
+                        '''
+                        SELECT id
+                        FROM caught_fish
+                        WHERE user_id = ?
+                          AND chat_id = ?
+                          AND COALESCE(sold, 0) = 0
+                          AND LOWER(TRIM(COALESCE(fish_name, ''))) = LOWER(TRIM(?))
+                          AND (? = '' OR LOWER(TRIM(COALESCE(location, ''))) = LOWER(TRIM(?)))
+                        ORDER BY id DESC
+                        LIMIT 1
+                        ''',
+                        (int(user_id), int(chat_id), item_name, location, location),
+                    )
+                    fish_row = cursor.fetchone()
+                    if fish_row:
+                        cursor.execute('DELETE FROM caught_fish WHERE id = ?', (int(fish_row[0]),))
+                        info['caught_fish_removed'] = True
+
+                coins_to_revert = 0
+                if not is_on_boat:
+                    if is_trash:
+                        try:
+                            coins_to_revert = int(round(float(result.get('earned') or trash_data.get('price') or 0)))
+                        except (TypeError, ValueError):
+                            coins_to_revert = 0
+                    elif result.get('success') and fish_data and bool(result.get('guaranteed')):
+                        try:
+                            coins_to_revert = int(round(float(result.get('earned') or 0)))
+                        except (TypeError, ValueError):
+                            coins_to_revert = 0
+
+                if coins_to_revert > 0:
+                    cursor.execute(
+                        '''
+                        UPDATE players
+                        SET coins = CASE WHEN COALESCE(coins, 0) - ? > 0 THEN COALESCE(coins, 0) - ? ELSE 0 END
+                        WHERE user_id = ? AND chat_id = ?
+                        ''',
+                        (coins_to_revert, coins_to_revert, int(user_id), int(chat_id)),
+                    )
+                    info['coins_reverted'] = coins_to_revert
+
+                treasure_name = str(result.get('treasure_name') or '').strip()
+                if treasure_name:
+                    cursor.execute(
+                        '''
+                        UPDATE player_treasures
+                        SET quantity = CASE WHEN quantity - 1 > 0 THEN quantity - 1 ELSE 0 END
+                        WHERE user_id = ?
+                          AND chat_id = ?
+                          AND treasure_name = ?
+                          AND quantity > 0
+                        ''',
+                        (int(user_id), int(chat_id), treasure_name),
+                    )
+                    info['treasure_removed'] = bool(getattr(cursor, 'rowcount', 0))
+
+                conn.commit()
+            except Exception:
+                logger.exception("rollback_reward_after_raf_win failed for user=%s chat=%s", user_id, chat_id)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+        return info
     
     def mark_fish_as_sold(self, fish_ids: List[int]):
         """Пометить рыбу как проданную"""
@@ -3967,6 +4111,7 @@ class Database:
     def create_raf_event_draft(
         self,
         creator_user_id: int,
+        creator_username: Optional[str],
         title: str,
         target_chat_id: int,
         source_message_link: Optional[str],
@@ -3980,17 +4125,25 @@ class Database:
                 safe_duration = int(duration_hours) if duration_hours is not None else None
                 safe_title = (title or "RAF Event").strip()[:200]
                 safe_link = (source_message_link or "").strip()[:1000] or None
+                safe_creator_username = (creator_username or "").strip()[:128] or None
 
                 cursor.execute(
                     '''
                     INSERT INTO raf_events (
-                        creator_user_id, title, target_chat_id,
+                        creator_user_id, creator_username, title, target_chat_id,
                         source_message_link, duration_hours, status
                     )
-                    VALUES (?, ?, ?, ?, ?, 'draft')
+                    VALUES (?, ?, ?, ?, ?, ?, 'draft')
                     RETURNING id
                     ''',
-                    (int(creator_user_id), safe_title, int(target_chat_id), safe_link, safe_duration),
+                    (
+                        int(creator_user_id),
+                        safe_creator_username,
+                        safe_title,
+                        int(target_chat_id),
+                        safe_link,
+                        safe_duration,
+                    ),
                 )
                 row = cursor.fetchone()
                 event_id = int(row[0]) if row and row[0] is not None else None
