@@ -231,7 +231,15 @@ class EmojiBot(ExtBot):
             except (BadRequest, Forbidden) as exc:
                 # Ошибки Telegram API (например, Chat not found, Forbidden) не лечатся retry'ем
                 exc_str = str(exc)
+                exc_lower = exc_str.lower()
                 if "Message is not modified" in exc_str:
+                    return None
+                if (
+                    "query is too old" in exc_lower
+                    or "query id is invalid" in exc_lower
+                    or "response timeout expired" in exc_lower
+                ):
+                    logger.info("EmojiBot.%s stale callback query ignored: %s", method_name, exc)
                     return None
                 if any(fragment in exc_str for fragment in ("Not enough rights", "Chat not found", "Forbidden")):
                     return None
@@ -1229,20 +1237,47 @@ class FishBot:
         if reply_to_message_id is not None:
             send_kwargs["reply_to_message_id"] = reply_to_message_id
 
-        msg = await self.application.bot.send_message(**send_kwargs)
+        msg = await self._safe_send_message(**send_kwargs)
+        if not msg:
+            logger.warning("[INVOICE] Failed to send invoice button message chat_id=%s user_id=%s", chat_id, user_id)
+            return None
         # Сохраняем активный инвойс для пользователя
-        self.active_invoices[user_id] = {
-            "invoice_id": invoice_id,
-            "msg_id": msg.message_id,
-            "created_at": datetime.now(),
-            "chat_id": chat_id,
-        }
+        self._store_active_invoice_context(
+            user_id=user_id,
+            chat_id=chat_id,
+            message_id=msg.message_id,
+            invoice_url=invoice_url,
+            invoice_id=invoice_id,
+        )
+        return msg
         # If you want to handle errors here, add try/except and proper indentation.
         # Example:
         # try:
         #     ...
         # except Exception:
         #     await update.message.reply_text("\u26A0\uFE0F Произошла ошибка. Попробуйте позже.")
+
+    def _store_active_invoice_context(
+        self,
+        user_id: int,
+        chat_id: int,
+        message_id: int,
+        invoice_url: Optional[str] = None,
+        invoice_id: Optional[str] = None,
+    ) -> None:
+        """Сохраняет chat/message якорь инвойса для корректных reply после оплаты."""
+        if invoice_id is None:
+            invoice_id = f"{user_id}_{int(datetime.now().timestamp())}"
+        self.active_invoices[user_id] = {
+            "invoice_id": invoice_id,
+            "invoice_url": invoice_url,
+            "msg_id": message_id,
+            "message_id": message_id,
+            "group_message_id": message_id,
+            "created_at": datetime.now(),
+            "chat_id": chat_id,
+            "group_chat_id": chat_id,
+        }
 
 
     def _build_guaranteed_payload(self, user_id: int, chat_id: int) -> str:
@@ -2251,8 +2286,31 @@ class FishBot:
                 return await self.application.bot.send_message(**kwargs)
             except (BadRequest, Forbidden) as e:
                 exc_str = str(e)
+                exc_lower = exc_str.lower()
                 if any(fragment in exc_str for fragment in ("Not enough rights", "Chat not found", "Forbidden")):
                     return None
+                if (
+                    kwargs.get('reply_to_message_id') is not None
+                    and (
+                        "message to be replied not found" in exc_lower
+                        or "reply message not found" in exc_lower
+                    )
+                ):
+                    retry_kwargs = dict(kwargs)
+                    retry_kwargs.pop('reply_to_message_id', None)
+                    logger.info(
+                        "_safe_send_message: reply target missing, retrying without reply_to_message_id (chat_id=%s)",
+                        kwargs.get('chat_id'),
+                    )
+                    try:
+                        return await self.application.bot.send_message(**retry_kwargs)
+                    except Exception as retry_exc:
+                        logger.warning(
+                            "_safe_send_message: fallback without reply_to_message_id failed (chat_id=%s): %s",
+                            kwargs.get('chat_id'),
+                            retry_exc,
+                        )
+                        return None
                 logger.warning("_safe_send_message: non-retryable error (chat_id=%s): %s", kwargs.get('chat_id'), e)
                 return None
             except RetryAfter as e:
@@ -2291,10 +2349,33 @@ class FishBot:
                 return await self.application.bot.send_document(**kwargs)
             except (BadRequest, Forbidden) as e:
                 exc_str = str(e)
+                exc_lower = exc_str.lower()
                 if "File must be non-empty" in exc_str:
                     return None
                 if any(fragment in exc_str for fragment in ("Not enough rights", "Chat not found", "Forbidden")):
                     return None
+                if (
+                    kwargs.get('reply_to_message_id') is not None
+                    and (
+                        "message to be replied not found" in exc_lower
+                        or "reply message not found" in exc_lower
+                    )
+                ):
+                    retry_kwargs = dict(kwargs)
+                    retry_kwargs.pop('reply_to_message_id', None)
+                    logger.info(
+                        "_safe_send_document: reply target missing, retrying without reply_to_message_id (chat_id=%s)",
+                        kwargs.get('chat_id'),
+                    )
+                    try:
+                        return await self.application.bot.send_document(**retry_kwargs)
+                    except Exception as retry_exc:
+                        logger.warning(
+                            "_safe_send_document: fallback without reply_to_message_id failed (chat_id=%s): %s",
+                            kwargs.get('chat_id'),
+                            retry_exc,
+                        )
+                        return None
                 logger.warning("_safe_send_document: non-retryable error (chat_id=%s): %s", kwargs.get('chat_id'), e)
                 return None
             except RetryAfter as e:
@@ -2376,7 +2457,7 @@ class FishBot:
         if user_id in self.active_invoices:
             invoice_info = self.active_invoices[user_id]
             chat_id = invoice_info.get('group_chat_id') or invoice_info.get('chat_id')
-            message_id = invoice_info.get('group_message_id') or invoice_info.get('message_id')
+            message_id = invoice_info.get('group_message_id') or invoice_info.get('message_id') or invoice_info.get('msg_id')
             
             try:
                 # Обновляем предыдущий инвойс с неактивной кнопкой
@@ -2920,7 +3001,10 @@ class FishBot:
                             reply_to_message_id=sticker_message.message_id
                         )
                     else:
-                        await update.message.reply_text(treasure_message_text)
+                        await update.message.reply_text(
+                            treasure_message_text,
+                            reply_to_message_id=update.message.message_id
+                        )
 
                     if result.get('temp_rod_broken'):
                         await update.message.reply_text(
@@ -2956,7 +3040,7 @@ class FishBot:
                 if sticker_message:
                     await update.message.reply_text(message, reply_to_message_id=sticker_message.message_id)
                 else:
-                    await update.message.reply_text(message)
+                    await update.message.reply_text(message, reply_to_message_id=update.message.message_id)
 
                 # Если на лодке — доп проверки
                 if result.get('is_on_boat'):
@@ -3093,7 +3177,10 @@ class FishBot:
                     "rarity": fish['rarity']
                 }
             
-            await update.message.reply_text(message)
+            await update.message.reply_text(
+                message,
+                reply_to_message_id=sticker_message.message_id if sticker_message else update.message.message_id
+            )
 
             if result.get('temp_rod_broken'):
                 await update.message.reply_text(
@@ -3132,6 +3219,7 @@ class FishBot:
                 return
             elif result.get('is_trash') or result.get('no_bite'):
                 # Мусор или неудачный заброс — предлагаем гарантированный улов
+                sticker_message = None
                 if result.get('is_trash'):
                     xp_line = ""
                     progress_line = ""
@@ -3152,7 +3240,7 @@ class FishBot:
                             image_path = Path(__file__).parent / trash_image
                             if image_path.exists():
                                 with open(image_path, 'rb') as f:
-                                    sticker_message = await self.application.bot.send_document(
+                                    sticker_message = await self._safe_send_document(
                                         chat_id=update.effective_chat.id,
                                         document=f,
                                         reply_to_message_id=update.message.message_id
@@ -3189,7 +3277,11 @@ class FishBot:
                         invoice_url=invoice_url,
                         text=f"{message}\n\n⭐ Оплатите 1 Telegram Stars для гарантированного улова!",
                         user_id=user_id,
-                        reply_to_message_id=update.effective_message.message_id if update.effective_message else None
+                        reply_to_message_id=(
+                            sticker_message.message_id
+                            if result.get('is_trash') and sticker_message
+                            else (update.effective_message.message_id if update.effective_message else None)
+                        )
                     )
                 else:
                     await update.message.reply_text(f"{message}\n\n(Ошибка генерации ссылки для оплаты)")
@@ -3216,7 +3308,7 @@ class FishBot:
                                 image_path = Path(__file__).parent / inspector_image
                                 if image_path.exists():
                                     with open(image_path, 'rb') as f:
-                                        await self.application.bot.send_document(
+                                        await self._safe_send_document(
                                             chat_id=update.effective_chat.id,
                                             document=f,
                                             reply_to_message_id=update.message.message_id
@@ -3237,10 +3329,16 @@ class FishBot:
                     return
                 # Отправляем сообщение с причиной и кнопкой оплаты
                 reply_markup = await self._build_guaranteed_invoice_markup(user_id, chat_id)
-                await update.message.reply_text(
+                invoice_msg = await update.message.reply_text(
                     f"😔 {result['message']}",
                     reply_markup=reply_markup
                 )
+                if reply_markup and invoice_msg:
+                    self._store_active_invoice_context(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        message_id=invoice_msg.message_id,
+                    )
                 return
     
     async def menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7761,6 +7859,7 @@ class FishBot:
             return
         
         await query.answer()
+        reply_anchor_id = query.message.message_id if query and query.message else None
         
         player = db.get_player(user_id, chat_id)
         
@@ -7774,6 +7873,12 @@ class FishBot:
                 f"⏰ {message}", 
                 reply_markup=reply_markup
             )
+            if reply_markup and query and query.message:
+                self._store_active_invoice_context(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    message_id=query.message.message_id,
+                )
             return
         
         # Начинаем рыбалку на текущей локации
@@ -7815,10 +7920,10 @@ class FishBot:
                         trash_image = trash_sticker_file
                         image_path = Path(__file__).parent / trash_image
                         if image_path.exists():
-                            reply_to_id = query.message.message_id if query and query.message else None
+                            reply_to_id = reply_anchor_id
                             try:
                                 with open(image_path, 'rb') as f:
-                                    sticker_message = await self.application.bot.send_document(
+                                    sticker_message = await self._safe_send_document(
                                         chat_id=update.effective_chat.id,
                                         document=f,
                                         reply_to_message_id=reply_to_id
@@ -7834,7 +7939,11 @@ class FishBot:
                 else:
                     logger.warning(f"Trash sticker not found for name: '{trash_name}' (normalized: '{trash_name_normalized}')")
 
-                await query.edit_message_text(message)
+                await self._safe_send_message(
+                    chat_id=update.effective_chat.id,
+                    text=message,
+                    reply_to_message_id=sticker_message.message_id if sticker_message else reply_anchor_id,
+                )
                 return
 
             fish = result.get('fish')
@@ -7919,7 +8028,7 @@ class FishBot:
                 chat_id=update.effective_chat.id,
                 item_name=fish['name'],
                 item_type="fish",
-                reply_to_message_id=query.message.reply_to_message.message_id if query.message.reply_to_message else None
+                reply_to_message_id=reply_anchor_id
             )
             if sticker_message:
                 context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
@@ -7931,7 +8040,11 @@ class FishBot:
                     "rarity": fish['rarity']
                 }
             
-            await query.edit_message_text(message)
+            await self._safe_send_message(
+                chat_id=update.effective_chat.id,
+                text=message,
+                reply_to_message_id=sticker_message.message_id if sticker_message else reply_anchor_id,
+            )
 
             if result.get('temp_rod_broken'):
                 await self.application.bot.send_message(
@@ -7969,12 +8082,13 @@ class FishBot:
         else:
             if result.get('snap'):
                 # Срыв на неправильной наживке
+                wrong_bait_text = result.get('wrong_bait') or "неизвестная наживка"
                 snap_message = f"""
 ⚠️ СРЫВ РЫБЫ!
 
 {result['message']}
 
-🪱 Вы использовали: {result['wrong_bait']}
+🪱 Вы использовали: {wrong_bait_text}
 📍 Локация: {result['location']}
 
 💡 Совет: Попробуйте другую наживку!
@@ -8013,12 +8127,16 @@ class FishBot:
                     chat_id=update.effective_chat.id,
                     item_name=result['trash']['name'],
                     item_type="trash",
-                    reply_to_message_id=query.message.reply_to_message.message_id if query.message.reply_to_message else None
+                    reply_to_message_id=reply_anchor_id
                 )
                 if sticker_message:
                     context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
-                
-                await query.edit_message_text(message)
+
+                await self._safe_send_message(
+                    chat_id=update.effective_chat.id,
+                    text=message,
+                    reply_to_message_id=sticker_message.message_id if sticker_message else reply_anchor_id,
+                )
                 if result.get('temp_rod_broken'):
                     await self.application.bot.send_message(
                         chat_id=update.effective_chat.id,
@@ -8048,7 +8166,7 @@ class FishBot:
                             image_path = Path(__file__).parent / inspector_image
                             if image_path.exists():
                                 with open(image_path, 'rb') as f:
-                                    await self.application.bot.send_document(
+                                    await self._safe_send_document(
                                         chat_id=update.effective_chat.id,
                                         document=f,
                                         reply_to_message_id=query.message.message_id if query and query.message else None
@@ -8078,6 +8196,12 @@ class FishBot:
                 """
                 
                 await query.edit_message_text(message, reply_markup=reply_markup)
+                if reply_markup and query and query.message:
+                    self._store_active_invoice_context(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        message_id=query.message.message_id,
+                    )
                 return
             else:
                 # Отправляем сообщение с причиной и кнопкой оплаты
@@ -8090,6 +8214,12 @@ class FishBot:
                 """
                 
                 await query.edit_message_text(message, reply_markup=reply_markup)
+                if reply_markup and query and query.message:
+                    self._store_active_invoice_context(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        message_id=query.message.message_id,
+                    )
                 return
         
         await query.edit_message_text(message)
@@ -8246,6 +8376,7 @@ class FishBot:
         chat_id = update.effective_chat.id
         payload = payment.invoice_payload or ""
         active_invoice = self.active_invoices.get(user_id) or {}
+        active_invoice_chat_id = active_invoice.get("group_chat_id") or active_invoice.get("chat_id") or chat_id
 
         # Защита от двойной выдачи: если payload уже обработан — игнорируем
         if payload and payload in self.paid_payloads:
@@ -8285,24 +8416,24 @@ class FishBot:
                 _parts = payload.split("_")
                 accounting_chat_id = int(_parts[4])
             except (ValueError, IndexError):
-                accounting_chat_id = active_invoice.get("group_chat_id") or chat_id
+                accounting_chat_id = active_invoice_chat_id
         elif payload.startswith("dynamite_skip_"):
             parsed_dynamite_payload = self._parse_dynamite_skip_payload(payload)
             if parsed_dynamite_payload and parsed_dynamite_payload.get("group_chat_id"):
                 accounting_chat_id = int(parsed_dynamite_payload["group_chat_id"])
             else:
-                accounting_chat_id = active_invoice.get("group_chat_id") or chat_id
+                accounting_chat_id = active_invoice_chat_id
         elif payload.startswith("dynamite_fine_"):
             parsed_dynamite_fine_payload = self._parse_dynamite_fine_payload(payload)
             if parsed_dynamite_fine_payload and parsed_dynamite_fine_payload.get("group_chat_id"):
                 accounting_chat_id = int(parsed_dynamite_fine_payload["group_chat_id"])
             else:
-                accounting_chat_id = active_invoice.get("group_chat_id") or chat_id
+                accounting_chat_id = active_invoice_chat_id
         elif payload.startswith("raf_create_"):
             parsed_raf_payload = self._parse_raf_create_payload(payload)
-        elif active_invoice.get("group_chat_id"):
+        elif active_invoice.get("group_chat_id") or active_invoice.get("chat_id"):
             try:
-                accounting_chat_id = int(active_invoice.get("group_chat_id"))
+                accounting_chat_id = int(active_invoice_chat_id)
             except (TypeError, ValueError):
                 accounting_chat_id = chat_id
 
@@ -8349,7 +8480,11 @@ class FishBot:
             # Сброс кулдауна всех сетей
             skip_reply_id = None
             if user_id in self.active_invoices:
-                skip_reply_id = self.active_invoices[user_id].get('group_message_id')
+                skip_reply_id = (
+                    self.active_invoices[user_id].get('group_message_id')
+                    or self.active_invoices[user_id].get('message_id')
+                    or self.active_invoices[user_id].get('msg_id')
+                )
                 del self.active_invoices[user_id]
             db.reset_net_cooldowns(user_id)
             await self._safe_send_message(
@@ -8376,7 +8511,11 @@ class FishBot:
 
             dynamite_reply_id = None
             if user_id in self.active_invoices:
-                dynamite_reply_id = self.active_invoices[user_id].get('group_message_id')
+                dynamite_reply_id = (
+                    self.active_invoices[user_id].get('group_message_id')
+                    or self.active_invoices[user_id].get('message_id')
+                    or self.active_invoices[user_id].get('msg_id')
+                )
                 del self.active_invoices[user_id]
 
             try:
@@ -8404,7 +8543,11 @@ class FishBot:
 
             fine_reply_id = None
             if user_id in self.active_invoices:
-                fine_reply_id = self.active_invoices[user_id].get('group_message_id')
+                fine_reply_id = (
+                    self.active_invoices[user_id].get('group_message_id')
+                    or self.active_invoices[user_id].get('message_id')
+                    or self.active_invoices[user_id].get('msg_id')
+                )
                 del self.active_invoices[user_id]
 
             db.clear_dynamite_ban(user_id, group_chat_id)
@@ -8419,7 +8562,11 @@ class FishBot:
             rod_name = payload.replace("repair_rod_", "")
             repair_reply_id = None
             if user_id in self.active_invoices:
-                repair_reply_id = self.active_invoices[user_id].get('group_message_id')
+                repair_reply_id = (
+                    self.active_invoices[user_id].get('group_message_id')
+                    or self.active_invoices[user_id].get('message_id')
+                    or self.active_invoices[user_id].get('msg_id')
+                )
                 del self.active_invoices[user_id]
             if rod_name in TEMP_ROD_RANGES:
                 try:
@@ -8451,7 +8598,11 @@ class FishBot:
 
             group_message_id = None
             if user_id in self.active_invoices:
-                group_message_id = self.active_invoices[user_id].get('group_message_id')
+                group_message_id = (
+                    self.active_invoices[user_id].get('group_message_id')
+                    or self.active_invoices[user_id].get('message_id')
+                    or self.active_invoices[user_id].get('msg_id')
+                )
                 del self.active_invoices[user_id]
 
             await self._execute_harpoon_catch(
@@ -8473,7 +8624,11 @@ class FishBot:
 
             booster_reply_id = None
             if user_id in self.active_invoices:
-                booster_reply_id = self.active_invoices[user_id].get('group_message_id')
+                booster_reply_id = (
+                    self.active_invoices[user_id].get('group_message_id')
+                    or self.active_invoices[user_id].get('message_id')
+                    or self.active_invoices[user_id].get('msg_id')
+                )
                 del self.active_invoices[user_id]
 
             if booster_code == ECHOSOUNDER_CODE:
@@ -8600,12 +8755,13 @@ class FishBot:
             return
         elif payload and payload.startswith("guaranteed_"):
             parsed = parsed_guaranteed_payload or self._parse_guaranteed_payload(payload)
+            invoice_group_chat_id = active_invoice.get("group_chat_id") or active_invoice.get("chat_id")
             if parsed:
-                group_chat_id = parsed.get("group_chat_id", update.effective_chat.id)
+                group_chat_id = parsed.get("group_chat_id") or invoice_group_chat_id or update.effective_chat.id
                 location = parsed.get("location")
             else:
                 location = None
-                group_chat_id = update.effective_chat.id
+                group_chat_id = invoice_group_chat_id or update.effective_chat.id
 
             if not location:
                 location = "Неизвестно"
@@ -8624,7 +8780,11 @@ class FishBot:
         # Получаем и сохраняем информацию о сообщении с кнопкой ДО удаления из active_invoices
         group_message_id = None
         if user_id in self.active_invoices:
-            group_message_id = self.active_invoices[user_id].get('group_message_id')
+            group_message_id = (
+                self.active_invoices[user_id].get('group_message_id')
+                or self.active_invoices[user_id].get('message_id')
+                or self.active_invoices[user_id].get('msg_id')
+            )
             # Теперь удаляем инвойс из активных
             del self.active_invoices[user_id]
         
@@ -8709,22 +8869,21 @@ class FishBot:
             # Try to send trash sticker in reply to the original group message (invoice button)
             sticker_message = None
             try:
-                trash_name = trash.get('name')
-                if trash_name in TRASH_STICKERS:
-                    trash_image = TRASH_STICKERS[trash_name]
-                    image_path = Path(__file__).parent / trash_image
-                    # Send document immediately (send in the same handler so it's delivered on payment)
-                    try:
-                        with open(image_path, 'rb') as f:
-                            await self._safe_send_document(chat_id=group_chat_id, document=f, reply_to_message_id=group_message_id)
-                    except Exception as e:
-                        logger.warning("Immediate send of trash image failed for notification: %s", e)
+                sticker_message = await self._send_catch_image(
+                    chat_id=group_chat_id,
+                    item_name=trash.get('name', ''),
+                    item_type="trash",
+                    reply_to_message_id=group_message_id,
+                )
             except Exception as e:
                 logger.warning(f"Could not send trash image for {trash.get('name')}: {e}")
 
             # If we had a sticker, reply with info to the sticker; otherwise reply to the original group message
-            # Send text reply to group immediately
-            await self._safe_send_message(chat_id=group_chat_id, text=message, reply_to_message_id=group_message_id)
+            await self._safe_send_message(
+                chat_id=group_chat_id,
+                text=message,
+                reply_to_message_id=sticker_message.message_id if sticker_message else group_message_id,
+            )
             return
 
         fish = result.get('fish')
@@ -8763,7 +8922,7 @@ class FishBot:
         weight = result['weight']
         length = result['length']
 
-        player = db.get_player(user_id, chat_id)
+        player = db.get_player(user_id, group_chat_id)
         logger.info(
             "Catch: user=%s (%s) fish=%s location=%s bait=%s weight=%.2fkg length=%.1fcm guaranteed=True",
             update.effective_user.id,
@@ -8946,6 +9105,12 @@ class FishBot:
             await query.edit_message_reply_markup(reply_markup=reply_markup)
         except BadRequest:
             pass
+        if query and query.message:
+            self._store_active_invoice_context(
+                user_id=user_id,
+                chat_id=chat_id,
+                message_id=query.message.message_id,
+            )
         await query.answer("Ссылка оплаты обновлена. Нажмите кнопку ещё раз.", show_alert=False)
     
     async def handle_invoice_sent_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -8978,7 +9143,8 @@ class FishBot:
                 reply_markup=reply_markup
             )
             for user_id, invoice_info in list(self.active_invoices.items()):
-                if invoice_info.get('group_message_id') == message_id:
+                invoice_message_id = invoice_info.get('group_message_id') or invoice_info.get('message_id') or invoice_info.get('msg_id')
+                if invoice_message_id == message_id:
                     del self.active_invoices[user_id]
         except Exception as e:
             # Инвойсы нельзя редактировать после оплаты или если они уже изменены
