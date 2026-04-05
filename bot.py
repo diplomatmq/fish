@@ -523,6 +523,10 @@ class FishBot:
     async def handle_withdraw_stars_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка нажатия на кнопку вывода звёзд"""
         query = update.callback_query
+        user_id = update.effective_user.id
+        if not query.data.endswith(f"_{user_id}"):
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
         await query.answer()
         context.user_data['waiting_withdraw_stars'] = True
         await query.message.reply_text("Введите количество звёзд для вывода:")
@@ -10018,6 +10022,7 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_invoice_cancelled_callback, pattern="^invoice_cancelled$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_pay_telegram_star_callback, pattern="^pay_telegram_star_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_invoice_sent_callback, pattern="^invoice_sent$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_withdraw_stars_callback, pattern="^withdraw_stars_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_approve_withdraw_callback, pattern="^approve_withdraw_"))
     
     # Обработчик ошибок
