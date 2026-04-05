@@ -57,10 +57,6 @@ function getAuthHeaders() {
 }
 
 function setAppInteractive(isInteractive) {
-  tabs.forEach((button) => {
-    button.disabled = !isInteractive;
-  });
-
   if (saveTrophyButton) {
     saveTrophyButton.disabled = !isInteractive;
   }

@@ -8,17 +8,50 @@ import os
 import time
 from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, quote_plus
 
 from flask import Flask, jsonify, render_template, request
 
-try:
-	from database import db as fish_db
-except Exception:
-	fish_db = None
-
 
 logger = logging.getLogger(__name__)
+fish_db = None
+fish_db_import_error: Exception | None = None
+
+
+def _bootstrap_database_url_from_components() -> None:
+	if (os.getenv("DATABASE_URL") or "").strip():
+		return
+
+	db_host = (os.getenv("DB_HOST") or "").strip()
+	db_name = (os.getenv("DB_NAME") or "").strip()
+	db_user = (os.getenv("DB_USER") or "").strip()
+	db_password = (os.getenv("DB_PASSWORD") or "").strip()
+	if not all([db_host, db_name, db_user, db_password]):
+		return
+
+	db_port = (os.getenv("DB_PORT") or "5432").strip()
+	encoded_user = quote_plus(db_user)
+	encoded_password = quote_plus(db_password)
+	os.environ["DATABASE_URL"] = f"postgresql://{encoded_user}:{encoded_password}@{db_host}:{db_port}/{db_name}"
+
+
+def _get_fish_db():
+	global fish_db, fish_db_import_error
+	if fish_db is not None:
+		return fish_db
+
+	_bootstrap_database_url_from_components()
+
+	try:
+		from database import db as imported_db
+		fish_db = imported_db
+		fish_db_import_error = None
+	except Exception as exc:
+		fish_db = None
+		fish_db_import_error = exc
+		logger.exception("WebApp DB import failed")
+
+	return fish_db
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -71,7 +104,7 @@ def _auth_error_status(error_code: str) -> int:
 
 
 def _verify_telegram_init_data(init_data: str) -> tuple[Optional[dict], Optional[str]]:
-	bot_token = (os.getenv("BOT_TOKEN") or "").strip()
+	bot_token = (os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 	if not bot_token:
 		return None, "server_misconfigured"
 
@@ -144,20 +177,38 @@ def profile():
 	fallback_username = auth_user.get("username")
 	logger.info("WebApp verified access user_id=%s username=%s", user_id, fallback_username or "")
 
-	if fish_db is None:
+	db = _get_fish_db()
+	if db is None:
+		if fish_db_import_error is not None:
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
 		return jsonify({"ok": False, "error": "db_unavailable"}), 500
 
-	try:
-		player = fish_db.get_player(user_id, -1)
-	except Exception:
-		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+	player = None
+	for chat_id in (-1, 0):
+		try:
+			player = db.get_player(user_id, chat_id)
+		except Exception:
+			logger.exception("WebApp profile read failed for user_id=%s chat_id=%s", user_id, chat_id)
+			continue
+		if player:
+			break
 
 	if not player:
 		default_username = str(fallback_username or f"user_{user_id}")
 		try:
-			player = fish_db.create_player(user_id, default_username, -1)
+			player = db.create_player(user_id, default_username, -1)
 		except Exception:
+			logger.exception("WebApp profile create failed for user_id=%s", user_id)
 			return jsonify({"ok": False, "error": "profile_create_failed"}), 500
+
+	if not player:
+		for chat_id in (-1, 0):
+			try:
+				player = db.get_player(user_id, chat_id)
+			except Exception:
+				continue
+			if player:
+				break
 
 	if not player:
 		return jsonify({"ok": False, "error": "profile_not_found"}), 404
