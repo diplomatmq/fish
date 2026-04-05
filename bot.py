@@ -2780,6 +2780,36 @@ class FishBot:
                 )
             except Exception as e:
                 logger.exception("stars_command: send file error: %s", e)
+
+    def _sync_player_username_if_changed(
+        self,
+        user_id: int,
+        chat_id: int,
+        player: Optional[Dict[str, Any]],
+        current_username: str,
+    ) -> None:
+        """Обновляет только username в профиле, если он изменился в Telegram."""
+        if not player:
+            return
+
+        new_username = (current_username or "").strip() or str(user_id)
+        old_username = str(player.get('username') or "").strip()
+
+        if old_username == new_username:
+            return
+
+        try:
+            db.update_player(user_id, chat_id, username=new_username)
+            player['username'] = new_username
+            logger.info(
+                "Username synced for user_id=%s chat_id=%s: '%s' -> '%s'",
+                user_id,
+                chat_id,
+                old_username,
+                new_username,
+            )
+        except Exception:
+            logger.exception("Failed to sync username for user_id=%s chat_id=%s", user_id, chat_id)
     
     async def fish_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /fish - просто забросить удочку"""
@@ -2793,13 +2823,13 @@ class FishBot:
         
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
+        current_username = update.effective_user.username or update.effective_user.first_name or str(user_id)
         player = db.get_player(user_id, chat_id)
         
         if not player:
             # Автоматически создаём профиль в этом чате при первом использовании /fish
             try:
-                username = update.effective_user.username or update.effective_user.first_name
-                player = db.create_player(user_id, username, chat_id)
+                player = db.create_player(user_id, current_username, chat_id)
                 await update.message.reply_text("✅ Профиль создан автоматически для этого чата. Продолжаем рыбалку...")
             except Exception as e:
                 logger.error(f"Error creating player from fish command: {e}")
@@ -2808,6 +2838,8 @@ class FishBot:
                 except Exception as e:
                     logger.error(f"Error replying to fish command: {e}")
                 return
+
+        self._sync_player_username_if_changed(user_id, chat_id, player, current_username)
         
         # Проверяем кулдаун
         can_fish, message = game.can_fish(user_id, chat_id)
@@ -7862,6 +7894,8 @@ class FishBot:
         reply_anchor_id = query.message.message_id if query and query.message else None
         
         player = db.get_player(user_id, chat_id)
+        current_username = update.effective_user.username or update.effective_user.first_name or str(user_id)
+        self._sync_player_username_if_changed(user_id, chat_id, player, current_username)
         
         # Проверяем кулдаун
         can_fish, message = game.can_fish(user_id, chat_id)
