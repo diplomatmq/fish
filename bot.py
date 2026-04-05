@@ -8,7 +8,7 @@ import re
 import shlex
 from pathlib import Path
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, WebAppInfo
 # -*- coding: utf-8 -*-
 import logging
 import html
@@ -19,7 +19,7 @@ import re
 import shlex
 from pathlib import Path
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, WebAppInfo
 # --- Button style helpers for Telegram update ---
 def get_button_style(text: str) -> str:
     """Return 'primary' for yes/confirm, 'destructive' for no/cancel, else None."""
@@ -1549,6 +1549,7 @@ class FishBot:
         self.active_invoices = {}  # Отслеживание активных инвойсов по пользователям
         self.application = None  # Будет установлено в main()
         self.OWNER_ID = 793216884
+        self.webapp_url = (os.getenv("WEBAPP_URL") or "https://fish.monkeysdynasty.website").strip()
         # Множество уже оплаченных payload'ов — защита от двойной оплаты одного инвойса
         # Ограничено 5000 записями — при переполнении удаляем половину (старые записи)
         self.paid_payloads: set = set()
@@ -2710,6 +2711,38 @@ class FishBot:
                         db.init_player_rod(user_id, player['current_rod'], chat_id)
 
         await update.message.reply_text(welcome_text)
+
+    async def app_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Временная команда /app: отправляет кнопку открытия Telegram Mini App."""
+        message = update.effective_message
+        if not message:
+            return
+
+        webapp_url = (self.webapp_url or "").strip()
+        if not webapp_url:
+            await message.reply_text("❌ Mini App URL не настроен. Укажите WEBAPP_URL в окружении.")
+            return
+
+        if not re.match(r"^https?://", webapp_url):
+            webapp_url = f"https://{webapp_url.lstrip('/')}"
+
+        is_private_chat = (update.effective_chat is not None and update.effective_chat.type == 'private')
+
+        if is_private_chat:
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("📱 Открыть рыболовную апку", web_app=WebAppInfo(url=webapp_url))]]
+            )
+            text = "Нажмите кнопку ниже, чтобы открыть мини-апку."
+        else:
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("📱 Открыть рыболовную апку", url=webapp_url)]]
+            )
+            text = (
+                "В группах Telegram WebApp-кнопка может быть недоступна, поэтому отправляю обычную ссылку.\n"
+                "Для лучшего UX используйте /app в личном чате с ботом."
+            )
+
+        await message.reply_text(text, reply_markup=keyboard)
 
     async def stars_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Admin-only command in private chat: list chats and total stars they've brought."""
@@ -6947,6 +6980,7 @@ class FishBot:
 
 Команды:
 /start - создать профиль
+/app - открыть мини-апку
 /menu - меню рыбалки
 /fish - начать рыбалку
 /net - использовать сеть
@@ -9906,6 +9940,7 @@ def main():
     application.add_handler(CommandHandler("prud", bot_instance.prud_command))
     application.add_handler(CommandHandler("mes", bot_instance.mes_command))
     # debug handlers removed
+    application.add_handler(CommandHandler("app", bot_instance.app_command))
     application.add_handler(CommandHandler("fish", bot_instance.fish_command))
     application.add_handler(CommandHandler("menu", bot_instance.menu_command))
     application.add_handler(CommandHandler("buy_boat", bot_instance.buy_paid_boat_command))
