@@ -8,17 +8,8 @@ const xpInfoEl = document.getElementById("xpInfo");
 const trophySelect = document.getElementById("trophySelect");
 const saveTrophyButton = document.getElementById("saveTrophy");
 const trophyStatus = document.getElementById("trophyStatus");
-const tabs = document.querySelectorAll(".tab");
-const views = {
-  profile: document.getElementById("view-profile"),
-  character: document.getElementById("view-character"),
-};
-const characterHost = document.getElementById("characterCanvas");
-const characterStatusEl = document.getElementById("characterStatus");
 
 let currentProfile = null;
-let characterScene = null;
-let characterModulePromise = null;
 let telegramAuthContext = null;
 
 function getTelegramAuthContext() {
@@ -60,14 +51,6 @@ function setAppInteractive(isInteractive) {
   if (saveTrophyButton) {
     saveTrophyButton.disabled = !isInteractive;
   }
-}
-
-function setCharacterStatus(text, isError = false) {
-  if (!characterStatusEl) {
-    return;
-  }
-  characterStatusEl.textContent = text;
-  characterStatusEl.classList.toggle("error", Boolean(isError));
 }
 
 function updateProfile(profile) {
@@ -152,74 +135,12 @@ async function saveTrophySelection() {
   }
 }
 
-async function ensureCharacterScene() {
-  if (!characterHost) {
-    return;
-  }
-
-  if (characterScene) {
-    characterScene.resize();
-    return;
-  }
-
-  characterHost.classList.add("loading");
-  setCharacterStatus("Загрузка 3D...", false);
-
-  try {
-    if (!characterModulePromise) {
-      characterModulePromise = import("/static/js/character3d.js");
-    }
-
-    const module = await characterModulePromise;
-    characterScene = module.initCharacterScene(characterHost);
-    if (characterScene && typeof characterScene.resize === "function") {
-      characterScene.resize();
-    }
-    setCharacterStatus("3D готово", false);
-  } catch (error) {
-    console.error(error);
-    setCharacterStatus("Не удалось загрузить 3D. Проверьте интернет и перезапустите апку.", true);
-  } finally {
-    characterHost.classList.remove("loading");
-  }
-}
-
-function switchView(viewName) {
-  Object.entries(views).forEach(([name, node]) => {
-    if (!node) {
-      return;
-    }
-    node.classList.toggle("active", name === viewName);
-  });
-
-  tabs.forEach((button) => {
-    button.classList.toggle("active", button.dataset.view === viewName);
-  });
-
-  if (viewName === "character") {
-    ensureCharacterScene().catch((error) => {
-      console.error(error);
-      setCharacterStatus("Ошибка загрузки 3D", true);
-    });
-  }
-}
-
 function bindUi() {
-  tabs.forEach((button) => {
-    button.addEventListener("click", () => switchView(button.dataset.view));
-  });
-
   saveTrophyButton.addEventListener("click", () => {
     saveTrophySelection().catch((error) => {
       console.error(error);
       trophyStatus.textContent = "Ошибка запроса";
     });
-  });
-
-  window.addEventListener("resize", () => {
-    if (characterScene) {
-      characterScene.resize();
-    }
   });
 }
 
@@ -254,7 +175,6 @@ async function bootstrap() {
     };
 
     trophyStatus.textContent = messageByCode[error.message] || "Ошибка загрузки профиля";
-    setCharacterStatus("Доступ ограничен до успешной проверки входа", true);
   }
 }
 

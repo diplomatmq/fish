@@ -8,7 +8,7 @@ import os
 import time
 from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qsl, quote_plus
+from urllib.parse import parse_qsl
 
 from flask import Flask, jsonify, render_template, request
 
@@ -18,29 +18,10 @@ fish_db = None
 fish_db_import_error: Exception | None = None
 
 
-def _bootstrap_database_url_from_components() -> None:
-	if (os.getenv("DATABASE_URL") or "").strip():
-		return
-
-	db_host = (os.getenv("DB_HOST") or "").strip()
-	db_name = (os.getenv("DB_NAME") or "").strip()
-	db_user = (os.getenv("DB_USER") or "").strip()
-	db_password = (os.getenv("DB_PASSWORD") or "").strip()
-	if not all([db_host, db_name, db_user, db_password]):
-		return
-
-	db_port = (os.getenv("DB_PORT") or "5432").strip()
-	encoded_user = quote_plus(db_user)
-	encoded_password = quote_plus(db_password)
-	os.environ["DATABASE_URL"] = f"postgresql://{encoded_user}:{encoded_password}@{db_host}:{db_port}/{db_name}"
-
-
 def _get_fish_db():
 	global fish_db, fish_db_import_error
 	if fish_db is not None:
 		return fish_db
-
-	_bootstrap_database_url_from_components()
 
 	try:
 		from database import db as imported_db
