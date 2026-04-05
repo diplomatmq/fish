@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import logging
 import os
+import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qsl
 
 from flask import Flask, jsonify, render_template, request
 
@@ -10,6 +16,9 @@ try:
 	from database import db as fish_db
 except Exception:
 	fish_db = None
+
+
+logger = logging.getLogger(__name__)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -55,6 +64,66 @@ def _build_title(level: int) -> str:
 	return "Молодой рыбак"
 
 
+def _auth_error_status(error_code: str) -> int:
+	if error_code == "server_misconfigured":
+		return 500
+	return 401
+
+
+def _verify_telegram_init_data(init_data: str) -> tuple[Optional[dict], Optional[str]]:
+	bot_token = (os.getenv("BOT_TOKEN") or "").strip()
+	if not bot_token:
+		return None, "server_misconfigured"
+
+	try:
+		payload = dict(parse_qsl(init_data, keep_blank_values=True))
+	except Exception:
+		return None, "auth_invalid"
+
+	received_hash = str(payload.pop("hash", "")).strip()
+	if not received_hash:
+		return None, "auth_invalid"
+
+	data_check_string = "\n".join(
+		f"{key}={value}" for key, value in sorted(payload.items(), key=lambda item: item[0])
+	)
+	secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
+	expected_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+
+	if not hmac.compare_digest(expected_hash, received_hash):
+		return None, "auth_invalid"
+
+	auth_date = _safe_int(payload.get("auth_date"))
+	max_age_seconds = _safe_int(os.getenv("WEBAPP_AUTH_MAX_AGE_SEC")) or 86400
+	if auth_date is None:
+		return None, "auth_invalid"
+	if max_age_seconds > 0 and int(time.time()) - auth_date > max_age_seconds:
+		return None, "auth_expired"
+
+	raw_user = payload.get("user")
+	if not raw_user:
+		return None, "auth_invalid"
+
+	try:
+		user_payload = json.loads(raw_user)
+	except (TypeError, ValueError, json.JSONDecodeError):
+		return None, "auth_invalid"
+
+	user_id = _safe_int(user_payload.get("id"))
+	if not user_id:
+		return None, "auth_invalid"
+
+	username = user_payload.get("username") or user_payload.get("first_name") or user_payload.get("last_name")
+	return {"id": user_id, "username": username}, None
+
+
+def _get_verified_user_from_request() -> tuple[Optional[dict], Optional[str]]:
+	init_data = (request.headers.get("X-Telegram-Init-Data") or request.args.get("init_data") or "").strip()
+	if not init_data:
+		return None, "auth_required"
+	return _verify_telegram_init_data(init_data)
+
+
 @app.get("/")
 def index():
 	return render_template("index.html")
@@ -67,11 +136,13 @@ def health():
 
 @app.get("/api/profile")
 def profile():
-	user_id = _safe_int(request.args.get("user_id"))
-	fallback_username = request.args.get("username")
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
 
-	if not user_id:
-		return jsonify({"ok": False, "error": "missing_user_id"}), 400
+	user_id = int(auth_user["id"])
+	fallback_username = auth_user.get("username")
+	logger.info("WebApp verified access user_id=%s username=%s", user_id, fallback_username or "")
 
 	if fish_db is None:
 		return jsonify({"ok": False, "error": "db_unavailable"}), 500
@@ -80,6 +151,13 @@ def profile():
 		player = fish_db.get_player(user_id, -1)
 	except Exception:
 		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+	if not player:
+		default_username = str(fallback_username or f"user_{user_id}")
+		try:
+			player = fish_db.create_player(user_id, default_username, -1)
+		except Exception:
+			return jsonify({"ok": False, "error": "profile_create_failed"}), 500
 
 	if not player:
 		return jsonify({"ok": False, "error": "profile_not_found"}), 404
@@ -98,11 +176,19 @@ def profile():
 
 @app.get("/api/trophies")
 def trophies():
+	_, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
 	return jsonify({"items": DEFAULT_TROPHIES})
 
 
 @app.post("/api/trophy/select")
 def select_trophy():
+	_, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
 	data = request.get_json(silent=True) or {}
 	trophy_id = str(data.get("trophy_id") or "").strip()
 	known_ids = {item["id"] for item in DEFAULT_TROPHIES}

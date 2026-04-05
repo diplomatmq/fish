@@ -338,6 +338,11 @@ body {
   box-shadow: 0 0 16px rgba(110, 230, 255, 0.45);
 }
 
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 @media (max-height: 670px) {
   .character-card {
     min-height: 300px;

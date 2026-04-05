@@ -19,12 +19,14 @@ const characterStatusEl = document.getElementById("characterStatus");
 let currentProfile = null;
 let characterScene = null;
 let characterModulePromise = null;
+let telegramAuthContext = null;
 
-function getTelegramUserInfo() {
+function getTelegramAuthContext() {
   const tg = window.Telegram?.WebApp;
   const fallback = {
     userId: null,
     username: "angler",
+    initData: "",
   };
 
   if (!tg) {
@@ -35,14 +37,33 @@ function getTelegramUserInfo() {
   tg.expand();
 
   const user = tg.initDataUnsafe?.user;
-  if (!user) {
-    return fallback;
+  const initData = typeof tg.initData === "string" ? tg.initData : "";
+
+  return {
+    userId: typeof user?.id === "number" ? user.id : null,
+    username: user?.username || user?.first_name || user?.last_name || "angler",
+    initData,
+  };
+}
+
+function getAuthHeaders() {
+  if (!telegramAuthContext?.initData) {
+    throw new Error("telegram_auth_missing");
   }
 
   return {
-    userId: typeof user.id === "number" ? user.id : null,
-    username: user.username || user.first_name || user.last_name || "angler",
+    "X-Telegram-Init-Data": telegramAuthContext.initData,
   };
+}
+
+function setAppInteractive(isInteractive) {
+  tabs.forEach((button) => {
+    button.disabled = !isInteractive;
+  });
+
+  if (saveTrophyButton) {
+    saveTrophyButton.disabled = !isInteractive;
+  }
 }
 
 function setCharacterStatus(text, isError = false) {
@@ -70,16 +91,9 @@ function updateProfile(profile) {
 }
 
 async function loadProfile() {
-  const tgUser = getTelegramUserInfo();
-  if (!tgUser.userId) {
-    throw new Error("telegram_user_missing");
-  }
-
-  const params = new URLSearchParams({
-    user_id: String(tgUser.userId),
-    username: tgUser.username,
+  const response = await fetch("/api/profile", {
+    headers: getAuthHeaders(),
   });
-  const response = await fetch(`/api/profile?${params.toString()}`);
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -90,9 +104,12 @@ async function loadProfile() {
 }
 
 async function loadTrophies() {
-  const response = await fetch("/api/trophies");
+  const response = await fetch("/api/trophies", {
+    headers: getAuthHeaders(),
+  });
   if (!response.ok) {
-    throw new Error(`Trophies load failed: ${response.status}`);
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || `trophies_http_${response.status}`);
   }
 
   const payload = await response.json();
@@ -119,13 +136,15 @@ async function saveTrophySelection() {
   const response = await fetch("/api/trophy/select", {
     method: "POST",
     headers: {
+      ...getAuthHeaders(),
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ trophy_id: trophyId }),
   });
 
   if (!response.ok) {
-    trophyStatus.textContent = "Не удалось сохранить выбор";
+    const payload = await response.json().catch(() => ({}));
+    trophyStatus.textContent = payload.error ? `Ошибка: ${payload.error}` : "Не удалось сохранить выбор";
     return;
   }
 
@@ -210,23 +229,36 @@ function bindUi() {
 
 async function bootstrap() {
   bindUi();
+  setAppInteractive(false);
+  trophyStatus.textContent = "Проверка входа...";
 
   try {
+    telegramAuthContext = getTelegramAuthContext();
+    if (!telegramAuthContext.initData) {
+      throw new Error("telegram_auth_missing");
+    }
+
     await loadProfile();
     await loadTrophies();
     trophyStatus.textContent = "Можно выбрать трофей";
+    setAppInteractive(true);
   } catch (error) {
     console.error(error);
 
     const messageByCode = {
-      telegram_user_missing: "Не удалось получить Telegram user_id",
-      missing_user_id: "Не передан user_id",
+      telegram_auth_missing: "Откройте мини-апку только через кнопку в Telegram",
+      auth_required: "Не удалось подтвердить вход через Telegram",
+      auth_invalid: "Проверка Telegram-подписи не пройдена",
+      auth_expired: "Сессия входа истекла. Откройте апку заново",
+      server_misconfigured: "Сервер не настроен: BOT_TOKEN не найден",
       profile_not_found: "Профиль не найден. Напишите /start боту и попробуйте снова.",
+      profile_create_failed: "Не удалось создать профиль пользователя",
       db_unavailable: "База временно недоступна",
       db_read_failed: "Ошибка чтения профиля",
     };
 
     trophyStatus.textContent = messageByCode[error.message] || "Ошибка загрузки профиля";
+    setCharacterStatus("Доступ ограничен до успешной проверки входа", true);
   }
 }
 
