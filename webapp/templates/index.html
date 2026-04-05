@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"
+  />
+  <meta name="theme-color" content="#0a4f76" />
+  <title>Fish Mini App</title>
+  <link rel="stylesheet" href="/static/css/styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <div class="waves" aria-hidden="true">
+      <span></span><span></span><span></span>
+    </div>
+
+    <header class="profile-header">
+      <div class="player-line">
+        <div class="avatar">🎣</div>
+        <div class="player-meta">
+          <p id="username" class="username">@angler</p>
+          <p id="title" class="title">Морской охотник</p>
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <article class="chip">
+          <span>Уровень</span>
+          <strong id="level">1</strong>
+        </article>
+        <article class="chip">
+          <span>XP</span>
+          <strong id="xp">0</strong>
+        </article>
+        <article class="chip">
+          <span>Монеты</span>
+          <strong id="coins">0</strong>
+        </article>
+      </div>
+    </header>
+
+    <main class="main-panel">
+      <section id="view-profile" class="view active">
+        <article class="card">
+          <h2>Ваш трофей</h2>
+          <p class="subtext">
+            Выбор трофея в интерфейсе уже есть. Логику полной привязки к текстовой части бота
+            подключим следующим этапом.
+          </p>
+
+          <label class="field-label" for="trophySelect">Выбрать трофей</label>
+          <select id="trophySelect" class="input"></select>
+          <button id="saveTrophy" class="btn">Сохранить выбор</button>
+          <p id="trophyStatus" class="status">Ожидание выбора...</p>
+        </article>
+
+        <article class="card">
+          <h3>Прогресс</h3>
+          <div class="track">
+            <div id="xpFill" class="fill" style="width: 0%"></div>
+          </div>
+          <p id="xpInfo" class="subtext">До следующего уровня: 0 XP</p>
+        </article>
+
+        <article class="card">
+          <h3>Домен</h3>
+          <p class="domain">{{ domain }}</p>
+        </article>
+      </section>
+
+      <section id="view-character" class="view">
+        <article class="card character-card">
+          <h2>Персонаж</h2>
+          <div id="characterCanvas" class="character-canvas"></div>
+          <p class="subtext">
+            Для максимально качественной модели лица и тела поместите файл
+            <strong>fisherman.glb</strong> в папку /static/models/. Если файла нет,
+            запускается procedural fallback рыбак в белой майке и семейниках с якорями.
+          </p>
+        </article>
+      </section>
+    </main>
+
+    <nav class="bottom-nav">
+      <button data-view="profile" class="tab active">Профиль</button>
+      <button data-view="character" class="tab">Персонаж</button>
+    </nav>
+  </div>
+
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

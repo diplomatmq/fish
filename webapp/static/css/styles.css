@@ -1,0 +1,326 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700&family=Russo+One&display=swap");
+
+:root {
+  --sea-950: #041a2b;
+  --sea-900: #06263c;
+  --sea-800: #0a4f76;
+  --sea-700: #0e6b97;
+  --sea-500: #28b4d8;
+  --foam: #dcf7ff;
+  --sand: #f5e7c8;
+  --text: #effbff;
+  --muted: #aed7e8;
+  --glass: rgba(4, 35, 56, 0.66);
+  --stroke: rgba(175, 232, 255, 0.3);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--sea-950);
+  color: var(--text);
+  font-family: "Manrope", "Segoe UI", sans-serif;
+}
+
+.app-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 14px calc(76px + env(safe-area-inset-bottom));
+  background-image:
+    linear-gradient(160deg, rgba(3, 21, 34, 0.25), rgba(3, 21, 34, 0.82)),
+    radial-gradient(circle at 18% 18%, rgba(58, 185, 220, 0.28), transparent 34%),
+    radial-gradient(circle at 80% 70%, rgba(16, 101, 146, 0.35), transparent 32%),
+    url("/static/images/back.jpg");
+  background-size: cover;
+  background-position: center;
+}
+
+.waves {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.waves span {
+  position: absolute;
+  left: -10%;
+  width: 120%;
+  height: 180px;
+  border-radius: 45%;
+  opacity: 0.17;
+  background: radial-gradient(circle at 50% 45%, rgba(159, 232, 255, 0.7), transparent 70%);
+  animation: drift 16s linear infinite;
+}
+
+.waves span:nth-child(1) {
+  top: 14%;
+  animation-duration: 18s;
+}
+
+.waves span:nth-child(2) {
+  top: 42%;
+  animation-duration: 22s;
+}
+
+.waves span:nth-child(3) {
+  top: 72%;
+  animation-duration: 26s;
+}
+
+@keyframes drift {
+  from {
+    transform: translateX(-8%) rotate(0deg);
+  }
+  to {
+    transform: translateX(8%) rotate(360deg);
+  }
+}
+
+.profile-header {
+  position: relative;
+  z-index: 1;
+  border: 1px solid var(--stroke);
+  border-radius: 20px;
+  padding: 14px;
+  background: linear-gradient(140deg, rgba(7, 58, 88, 0.58), rgba(4, 31, 49, 0.75));
+  backdrop-filter: blur(8px);
+}
+
+.player-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  font-size: 24px;
+  background: linear-gradient(145deg, #0f88bf, #1b5679);
+  box-shadow: inset 0 0 14px rgba(232, 251, 255, 0.25);
+}
+
+.username {
+  font-family: "Russo One", sans-serif;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.title {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.stats-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.chip {
+  border: 1px solid rgba(173, 235, 255, 0.24);
+  border-radius: 12px;
+  background: rgba(3, 31, 49, 0.54);
+  padding: 8px;
+  text-align: center;
+}
+
+.chip span {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.chip strong {
+  font-family: "Russo One", sans-serif;
+  font-size: 16px;
+}
+
+.main-panel {
+  position: relative;
+  z-index: 1;
+  margin-top: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+.view {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  overflow-y: auto;
+  padding-bottom: 6px;
+}
+
+.view.active {
+  display: flex;
+}
+
+.card {
+  border: 1px solid var(--stroke);
+  border-radius: 18px;
+  padding: 14px;
+  background: var(--glass);
+  backdrop-filter: blur(8px);
+  animation: enter 220ms ease;
+}
+
+@keyframes enter {
+  from {
+    opacity: 0;
+    transform: translateY(9px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.card h2 {
+  font-family: "Russo One", sans-serif;
+  font-size: 20px;
+  margin-bottom: 8px;
+}
+
+.card h3 {
+  font-family: "Russo One", sans-serif;
+  font-size: 16px;
+  margin-bottom: 8px;
+}
+
+.subtext {
+  color: #d6eef8;
+  font-size: 13px;
+  line-height: 1.38;
+}
+
+.field-label {
+  display: block;
+  margin-top: 12px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.input {
+  width: 100%;
+  border: 1px solid rgba(179, 236, 255, 0.35);
+  border-radius: 12px;
+  background: rgba(4, 36, 57, 0.82);
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+.btn {
+  width: 100%;
+  margin-top: 10px;
+  border: 0;
+  border-radius: 12px;
+  height: 42px;
+  font-weight: 700;
+  color: #043049;
+  background: linear-gradient(130deg, #7be9ff, #b4ffda);
+}
+
+.status {
+  margin-top: 8px;
+  color: var(--sand);
+  font-size: 12px;
+}
+
+.track {
+  width: 100%;
+  height: 12px;
+  border-radius: 100px;
+  border: 1px solid rgba(179, 236, 255, 0.35);
+  background: rgba(3, 31, 49, 0.8);
+  overflow: hidden;
+}
+
+.fill {
+  height: 100%;
+  border-radius: 100px;
+  background: linear-gradient(90deg, #29bedf, #8de9ff, #ffd7a7);
+  transition: width 360ms ease;
+}
+
+.domain {
+  color: var(--sand);
+  font-weight: 700;
+}
+
+.character-card {
+  min-height: 360px;
+}
+
+.character-canvas {
+  margin-top: 10px;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(174, 232, 255, 0.45);
+  background: radial-gradient(circle at 30% 20%, #1d83b1, #082f46 75%);
+}
+
+.bottom-nav {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  border: 1px solid rgba(182, 240, 255, 0.32);
+  border-radius: 16px;
+  padding: 8px;
+  background: rgba(3, 26, 41, 0.88);
+  backdrop-filter: blur(10px);
+}
+
+.tab {
+  border: 0;
+  border-radius: 12px;
+  height: 42px;
+  font-weight: 700;
+  color: #c8ecf8;
+  background: rgba(11, 82, 120, 0.42);
+}
+
+.tab.active {
+  color: #052940;
+  background: linear-gradient(130deg, #89ecff, #9fffd8);
+  box-shadow: 0 0 16px rgba(110, 230, 255, 0.45);
+}
+
+@media (max-height: 670px) {
+  .character-card {
+    min-height: 300px;
+  }
+
+  .character-canvas {
+    aspect-ratio: 1.12 / 1;
+  }
+}
