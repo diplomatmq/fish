@@ -79,8 +79,10 @@ def select_trophy():
 
 
 if __name__ == "__main__":
+	# Railway sets PORT dynamically for public HTTP services.
+	port = int(os.getenv("PORT") or os.getenv("APP_PORT", "8008"))
 	app.run(
 		host=os.getenv("APP_HOST", "0.0.0.0"),
-		port=int(os.getenv("APP_PORT", "8008")),
+		port=port,
 		debug=os.getenv("APP_DEBUG", "0") == "1",
 	)

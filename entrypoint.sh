@@ -13,4 +13,22 @@ else
   export FISHBOT_DB_PATH="${FISHBOT_DB_PATH:-/data/fishbot.db}"
 fi
 
+SERVICE_MODE_VALUE="${SERVICE_MODE:-bot}"
+
+if [ "$SERVICE_MODE_VALUE" = "webapp" ]; then
+  export APP_HOST="${APP_HOST:-0.0.0.0}"
+  export APP_PORT="${PORT:-${APP_PORT:-8008}}"
+  echo "Starting webapp mode on ${APP_HOST}:${APP_PORT}"
+  exec python -u webapp/app.py
+fi
+
+if [ "$SERVICE_MODE_VALUE" = "all" ]; then
+  export APP_HOST="${APP_HOST:-0.0.0.0}"
+  export APP_PORT="${PORT:-${APP_PORT:-8008}}"
+  echo "Starting combined mode: bot (background) + webapp (${APP_HOST}:${APP_PORT})"
+  python -u bot.py &
+  exec python -u webapp/app.py
+fi
+
+echo "Starting bot mode"
 exec python -u bot.py
