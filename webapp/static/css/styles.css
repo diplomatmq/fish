@@ -179,7 +179,7 @@ body {
 .card {
   border: 1px solid var(--stroke);
   border-radius: 18px;
-  padding: 14px;
+  padding: 13px;
   background: var(--glass);
   backdrop-filter: blur(8px);
   animation: enter 220ms ease;
@@ -210,8 +210,8 @@ body {
 
 .subtext {
   color: #d6eef8;
-  font-size: 13px;
-  line-height: 1.38;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .field-label {
@@ -232,21 +232,41 @@ body {
   font-size: 14px;
 }
 
+.trophy-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.trophy-row .input {
+  flex: 1;
+}
+
 .btn {
-  width: 100%;
+  width: auto;
   margin-top: 10px;
   border: 0;
   border-radius: 12px;
   height: 42px;
+  padding: 0 14px;
   font-weight: 700;
   color: #043049;
   background: linear-gradient(130deg, #7be9ff, #b4ffda);
+}
+
+.trophy-row .btn {
+  margin-top: 0;
+  min-width: 116px;
 }
 
 .status {
   margin-top: 8px;
   color: var(--sand);
   font-size: 12px;
+}
+
+.status.error {
+  color: #ffd1bf;
 }
 
 .track {
@@ -265,11 +285,6 @@ body {
   transition: width 360ms ease;
 }
 
-.domain {
-  color: var(--sand);
-  font-weight: 700;
-}
-
 .character-card {
   min-height: 360px;
 }
@@ -282,6 +297,14 @@ body {
   overflow: hidden;
   border: 1px solid rgba(174, 232, 255, 0.45);
   background: radial-gradient(circle at 30% 20%, #1d83b1, #082f46 75%);
+}
+
+.character-canvas.loading {
+  opacity: 0.7;
+}
+
+.character-status {
+  min-height: 16px;
 }
 
 .bottom-nav {

@@ -1,5 +1,3 @@
-import { initCharacterScene } from "/static/js/character3d.js";
-
 const usernameEl = document.getElementById("username");
 const titleEl = document.getElementById("title");
 const levelEl = document.getElementById("level");
@@ -16,14 +14,21 @@ const views = {
   character: document.getElementById("view-character"),
 };
 const characterHost = document.getElementById("characterCanvas");
+const characterStatusEl = document.getElementById("characterStatus");
 
 let currentProfile = null;
 let characterScene = null;
+let characterModulePromise = null;
 
-function getTelegramUserIdentity() {
+function getTelegramUserInfo() {
   const tg = window.Telegram?.WebApp;
+  const fallback = {
+    userId: null,
+    username: "angler",
+  };
+
   if (!tg) {
-    return "angler";
+    return fallback;
   }
 
   tg.ready();
@@ -31,10 +36,21 @@ function getTelegramUserIdentity() {
 
   const user = tg.initDataUnsafe?.user;
   if (!user) {
-    return "angler";
+    return fallback;
   }
 
-  return user.username || user.first_name || user.last_name || "angler";
+  return {
+    userId: typeof user.id === "number" ? user.id : null,
+    username: user.username || user.first_name || user.last_name || "angler",
+  };
+}
+
+function setCharacterStatus(text, isError = false) {
+  if (!characterStatusEl) {
+    return;
+  }
+  characterStatusEl.textContent = text;
+  characterStatusEl.classList.toggle("error", Boolean(isError));
 }
 
 function updateProfile(profile) {
@@ -54,14 +70,23 @@ function updateProfile(profile) {
 }
 
 async function loadProfile() {
-  const identity = getTelegramUserIdentity();
-  const response = await fetch(`/api/profile?username=${encodeURIComponent(identity)}`);
-  if (!response.ok) {
-    throw new Error(`Profile load failed: ${response.status}`);
+  const tgUser = getTelegramUserInfo();
+  if (!tgUser.userId) {
+    throw new Error("telegram_user_missing");
   }
 
-  const profile = await response.json();
-  updateProfile(profile);
+  const params = new URLSearchParams({
+    user_id: String(tgUser.userId),
+    username: tgUser.username,
+  });
+  const response = await fetch(`/api/profile?${params.toString()}`);
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `profile_http_${response.status}`);
+  }
+
+  updateProfile(payload);
 }
 
 async function loadTrophies() {
@@ -106,14 +131,49 @@ async function saveTrophySelection() {
 
   const payload = await response.json();
   if (payload.ok) {
-    trophyStatus.textContent = "Трофей выбран. Полную синхронизацию подключим в следующем этапе.";
+    trophyStatus.textContent = "Трофей сохранен";
   } else {
     trophyStatus.textContent = "Ошибка сохранения";
   }
 }
 
+async function ensureCharacterScene() {
+  if (!characterHost) {
+    return;
+  }
+
+  if (characterScene) {
+    characterScene.resize();
+    return;
+  }
+
+  characterHost.classList.add("loading");
+  setCharacterStatus("Загрузка 3D...", false);
+
+  try {
+    if (!characterModulePromise) {
+      characterModulePromise = import("/static/js/character3d.js");
+    }
+
+    const module = await characterModulePromise;
+    characterScene = module.initCharacterScene(characterHost);
+    if (characterScene && typeof characterScene.resize === "function") {
+      characterScene.resize();
+    }
+    setCharacterStatus("3D готово", false);
+  } catch (error) {
+    console.error(error);
+    setCharacterStatus("Не удалось загрузить 3D. Проверьте интернет и перезапустите апку.", true);
+  } finally {
+    characterHost.classList.remove("loading");
+  }
+}
+
 function switchView(viewName) {
   Object.entries(views).forEach(([name, node]) => {
+    if (!node) {
+      return;
+    }
     node.classList.toggle("active", name === viewName);
   });
 
@@ -122,10 +182,10 @@ function switchView(viewName) {
   });
 
   if (viewName === "character") {
-    if (!characterScene) {
-      characterScene = initCharacterScene(characterHost);
-    }
-    characterScene.resize();
+    ensureCharacterScene().catch((error) => {
+      console.error(error);
+      setCharacterStatus("Ошибка загрузки 3D", true);
+    });
   }
 }
 
@@ -157,7 +217,16 @@ async function bootstrap() {
     trophyStatus.textContent = "Можно выбрать трофей";
   } catch (error) {
     console.error(error);
-    trophyStatus.textContent = "Ошибка загрузки профиля";
+
+    const messageByCode = {
+      telegram_user_missing: "Не удалось получить Telegram user_id",
+      missing_user_id: "Не передан user_id",
+      profile_not_found: "Профиль не найден. Напишите /start боту и попробуйте снова.",
+      db_unavailable: "База временно недоступна",
+      db_read_failed: "Ошибка чтения профиля",
+    };
+
+    trophyStatus.textContent = messageByCode[error.message] || "Ошибка загрузки профиля";
   }
 }
 

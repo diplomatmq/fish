@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Optional
 
 from flask import Flask, jsonify, render_template, request
+
+try:
+	from database import db as fish_db
+except Exception:
+	fish_db = None
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -30,12 +36,28 @@ def _normalize_username(value: str | None) -> str:
 	return safe_username
 
 
+def _safe_int(value: str | None) -> Optional[int]:
+	if value is None:
+		return None
+	try:
+		return int(str(value).strip())
+	except (TypeError, ValueError):
+		return None
+
+
+def _build_title(level: int) -> str:
+	if level >= 30:
+		return "Легенда глубин"
+	if level >= 20:
+		return "Грозa штормов"
+	if level >= 10:
+		return "Морской охотник"
+	return "Молодой рыбак"
+
+
 @app.get("/")
 def index():
-	return render_template(
-		"index.html",
-		domain=os.getenv("APP_DOMAIN", "fish.monkeysdynasty.website"),
-	)
+	return render_template("index.html")
 
 
 @app.get("/health")
@@ -45,15 +67,30 @@ def health():
 
 @app.get("/api/profile")
 def profile():
-	username = _normalize_username(request.args.get("username"))
+	user_id = _safe_int(request.args.get("user_id"))
+	fallback_username = request.args.get("username")
 
-	# Placeholder payload. Can be replaced with real DB reads from fishbot profile.
+	if not user_id:
+		return jsonify({"ok": False, "error": "missing_user_id"}), 400
+
+	if fish_db is None:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		player = fish_db.get_player(user_id, -1)
+	except Exception:
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+	if not player:
+		return jsonify({"ok": False, "error": "profile_not_found"}), 404
+
+	level = int(player.get("level") or 0)
 	payload = {
-		"username": username,
-		"level": 12,
-		"xp": 1480,
-		"coins": 93200,
-		"title": "Морской охотник",
+		"username": _normalize_username(player.get("username") or fallback_username),
+		"level": level,
+		"xp": int(player.get("xp") or 0),
+		"coins": int(player.get("coins") or 0),
+		"title": _build_title(level),
 		"selected_trophy": "none",
 	}
 	return jsonify(payload)

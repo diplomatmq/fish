@@ -44,29 +44,23 @@
     <main class="main-panel">
       <section id="view-profile" class="view active">
         <article class="card">
-          <h2>Ваш трофей</h2>
-          <p class="subtext">
-            Выбор трофея в интерфейсе уже есть. Логику полной привязки к текстовой части бота
-            подключим следующим этапом.
-          </p>
+          <h2>Трофеи</h2>
+          <p class="subtext">Выберите активный трофей для профиля.</p>
 
-          <label class="field-label" for="trophySelect">Выбрать трофей</label>
-          <select id="trophySelect" class="input"></select>
-          <button id="saveTrophy" class="btn">Сохранить выбор</button>
+          <label class="field-label" for="trophySelect">Активный трофей</label>
+          <div class="trophy-row">
+            <select id="trophySelect" class="input"></select>
+            <button id="saveTrophy" class="btn">Сохранить</button>
+          </div>
           <p id="trophyStatus" class="status">Ожидание выбора...</p>
         </article>
 
         <article class="card">
-          <h3>Прогресс</h3>
+          <h3>Прогресс опыта</h3>
           <div class="track">
             <div id="xpFill" class="fill" style="width: 0%"></div>
           </div>
           <p id="xpInfo" class="subtext">До следующего уровня: 0 XP</p>
-        </article>
-
-        <article class="card">
-          <h3>Домен</h3>
-          <p class="domain">{{ domain }}</p>
         </article>
       </section>
 
@@ -74,10 +68,9 @@
         <article class="card character-card">
           <h2>Персонаж</h2>
           <div id="characterCanvas" class="character-canvas"></div>
+          <p id="characterStatus" class="status character-status">Ожидание загрузки 3D...</p>
           <p class="subtext">
-            Для максимально качественной модели лица и тела поместите файл
-            <strong>fisherman.glb</strong> в папку /static/models/. Если файла нет,
-            запускается procedural fallback рыбак в белой майке и семейниках с якорями.
+            Если добавить файл <strong>fisherman.glb</strong> в /static/models/, он заменит встроенного рыбака.
           </p>
         </article>
       </section>
