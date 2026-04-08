@@ -1759,7 +1759,7 @@ class Database:
         self,
         duel_id: int,
         now: Optional[datetime] = None,
-        timeout_seconds: int = 60,
+        timeout_seconds: int = 3600,
     ) -> Dict[str, Any]:
         """Завершить активную дуэль по таймауту после принятия с возвратом бесплатной попытки пригласившему."""
         self._ensure_duel_tables()
@@ -1849,7 +1849,7 @@ class Database:
     def get_active_duel_for_user(
         self,
         user_id: int,
-        active_timeout_seconds: int = 60,
+        active_timeout_seconds: int = 3600,
     ) -> Optional[Dict[str, Any]]:
         """Получить активную/ожидающую дуэль пользователя во всех чатах."""
         self.expire_pending_duels()
@@ -2203,6 +2203,104 @@ class Database:
             updated_duel = dict(zip(updated_columns, updated_row))
 
         return {'ok': True, 'duel': updated_duel}
+
+    def cancel_duel_for_user(self, user_id: int, chat_id: Optional[int] = None) -> Dict[str, Any]:
+        """Отменить активную/ожидающую дуэль по команде участника."""
+        self._ensure_duel_tables()
+        self.expire_pending_duels()
+        now_dt = datetime.now(timezone.utc)
+        now_iso = self._to_utc_iso(now_dt)
+
+        normalized_user_id = int(user_id)
+        normalized_chat_id = int(chat_id) if chat_id is not None else None
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM duels
+                WHERE status IN ('pending', 'active')
+                  AND (inviter_id = ? OR target_id = ?)
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                ''',
+                (normalized_user_id, normalized_user_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {'ok': False, 'error': 'duel_not_found'}
+
+            columns = [description[0] for description in cursor.description]
+            duel = dict(zip(columns, row))
+
+            duel_chat_id = int(duel.get('chat_id') or 0)
+            if normalized_chat_id is not None and duel_chat_id != normalized_chat_id:
+                return {'ok': False, 'error': 'duel_in_other_chat', 'duel': duel}
+
+            inviter_id = int(duel.get('inviter_id') or 0)
+            target_id = int(duel.get('target_id') or 0)
+            if normalized_user_id not in {inviter_id, target_id}:
+                return {'ok': False, 'error': 'not_participant', 'duel': duel}
+
+            inviter_done = duel.get('inviter_weight') is not None
+            target_done = duel.get('target_weight') is not None
+            refunded_flag = int(duel.get('free_attempt_refunded') or 0)
+            attempt_type = str(duel.get('attempt_type') or '')
+            attempt_day_key = str(duel.get('attempt_day_key') or '').strip()
+            refunded_now = False
+
+            if (
+                attempt_type == 'free'
+                and refunded_flag == 0
+                and attempt_day_key
+                and not inviter_done
+                and not target_done
+            ):
+                cursor.execute(
+                    '''
+                    UPDATE duel_daily_attempts
+                    SET used_invites = CASE WHEN used_invites > 0 THEN used_invites - 1 ELSE 0 END,
+                        updated_at = ?
+                    WHERE user_id = ? AND day_key = ?
+                    ''',
+                    (now_iso, inviter_id, attempt_day_key),
+                )
+                refunded_flag = 1
+                refunded_now = True
+
+            cursor.execute(
+                '''
+                UPDATE duels
+                SET status = 'cancelled',
+                    finished_at = ?,
+                    free_attempt_refunded = ?,
+                    updated_at = ?
+                WHERE id = ? AND status IN ('pending', 'active')
+                ''',
+                (now_iso, refunded_flag, now_iso, int(duel.get('id') or 0)),
+            )
+
+            if int(getattr(cursor, 'rowcount', 0) or 0) == 0:
+                conn.rollback()
+                return {'ok': False, 'error': 'not_pending_or_active', 'duel': duel}
+
+            conn.commit()
+
+            cursor.execute('SELECT * FROM duels WHERE id = ? LIMIT 1', (int(duel.get('id') or 0),))
+            updated_row = cursor.fetchone()
+            if not updated_row:
+                return {'ok': False, 'error': 'duel_not_found'}
+            updated_columns = [description[0] for description in cursor.description]
+            updated_duel = dict(zip(updated_columns, updated_row))
+
+        return {
+            'ok': True,
+            'duel': updated_duel,
+            'refunded': bool(refunded_now),
+            'inviter_done': bool(inviter_done),
+            'target_done': bool(target_done),
+        }
 
     def record_duel_catch(
         self,

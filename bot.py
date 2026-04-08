@@ -211,7 +211,7 @@ ANTI_BOT_PENALTY_HOURS = 6
 
 DUEL_FREE_INVITES_PER_DAY = 3
 DUEL_INVITE_TIMEOUT_SECONDS = 60
-DUEL_ACTIVE_TIMEOUT_SECONDS = 60
+DUEL_ACTIVE_TIMEOUT_SECONDS = 3600
 DUEL_PAID_INVITE_STARS = 5
 
 DYNAMITE_COOLDOWN_HOURS = 8
@@ -749,6 +749,16 @@ class FishBot:
 
         target_username = db.get_username_by_user_id(int(target_id)) or target_username_arg
 
+        if self._is_user_beer_drunk(int(user_id)):
+            await update.message.reply_text("Нельзя начать дуэль: вы находитесь в опьянении.")
+            return
+
+        if self._is_user_beer_drunk(int(target_id)):
+            await update.message.reply_text(
+                f"Нельзя начать дуэль: {self._duel_user_label(int(target_id), target_username)} находится в опьянении."
+            )
+            return
+
         try:
             db.expire_pending_duels()
         except Exception:
@@ -850,6 +860,52 @@ class FishBot:
             reply_to_message_id=update.message.message_id if update.message else None,
         )
 
+    async def notduel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /notduel — отменить текущую дуэль пользователя в этом чате."""
+        if update.effective_chat.type == 'private':
+            await update.message.reply_text("Команда /notduel работает только в групповых чатах.")
+            return
+
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+
+        try:
+            cancel_result = db.cancel_duel_for_user(user_id=int(user_id), chat_id=int(chat_id))
+        except Exception:
+            logger.exception("notduel_command: failed to cancel duel user=%s chat=%s", user_id, chat_id)
+            await update.message.reply_text("Не удалось отменить дуэль. Попробуйте ещё раз.")
+            return
+
+        if not cancel_result.get('ok'):
+            error_code = str(cancel_result.get('error') or 'cancel_failed')
+            if error_code == 'duel_not_found':
+                await update.message.reply_text("У вас нет активной или ожидающей дуэли в этом чате.")
+            elif error_code == 'duel_in_other_chat':
+                await update.message.reply_text("Ваша активная или ожидающая дуэль находится в другом чате.")
+            else:
+                await update.message.reply_text("Не удалось отменить дуэль. Попробуйте ещё раз.")
+            return
+
+        duel = cancel_result.get('duel') or {}
+        duel_id = int(duel.get('id') or 0)
+        if duel_id > 0:
+            self._cancel_duel_invite_timeout_job(duel_id)
+            self._cancel_duel_active_timeout_job(duel_id)
+
+        inviter_id = int(duel.get('inviter_id') or 0)
+        target_id = int(duel.get('target_id') or 0)
+        inviter_label = self._duel_user_label(inviter_id, duel.get('inviter_username'))
+        target_label = self._duel_user_label(target_id, duel.get('target_username'))
+        actor_username = duel.get('inviter_username') if int(user_id) == inviter_id else duel.get('target_username')
+        actor_label = self._duel_user_label(int(user_id), actor_username)
+        refund_note = "\n🎟 Бесплатная попытка возвращена пригласившему." if cancel_result.get('refunded') else ""
+
+        await update.message.reply_text(
+            "🛑 Дуэль отменена командой /notduel.\n\n"
+            f"{inviter_label} vs {target_label}\n"
+            f"Отменил: {actor_label}.{refund_note}"
+        )
+
     async def handle_duel_accept(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Принятие приглашения в дуэль (только приглашённый игрок)."""
         query = update.callback_query
@@ -868,6 +924,26 @@ class FishBot:
             return
 
         await query.answer()
+
+        duel_snapshot = None
+        try:
+            duel_snapshot = db.get_duel_by_id(duel_id)
+        except Exception:
+            logger.exception("handle_duel_accept: failed to load duel snapshot duel_id=%s", duel_id)
+
+        if duel_snapshot and str(duel_snapshot.get('status') or '') == 'pending':
+            inviter_id_snapshot = int(duel_snapshot.get('inviter_id') or 0)
+            target_id_snapshot = int(duel_snapshot.get('target_id') or target_id)
+
+            if inviter_id_snapshot > 0 and self._is_user_beer_drunk(inviter_id_snapshot):
+                inviter_label = self._duel_user_label(inviter_id_snapshot, duel_snapshot.get('inviter_username'))
+                await query.answer(f"{inviter_label} в состоянии опьянения. Дуэль пока нельзя начать.", show_alert=True)
+                return
+
+            if target_id_snapshot > 0 and self._is_user_beer_drunk(target_id_snapshot):
+                await query.answer("Вы в состоянии опьянения. Дуэль пока нельзя начать.", show_alert=True)
+                return
+
         accept_result = db.accept_duel_invitation(duel_id, user_id)
         if not accept_result.get('ok'):
             error_code = str(accept_result.get('error') or 'accept_failed')
@@ -893,7 +969,7 @@ class FishBot:
         await query.edit_message_text(
             "⚔️ Дуэль принята!\n\n"
             f"{inviter_label} vs {target_label}\n"
-            "Теперь у обоих есть 1 минута, чтобы написать /fish в этом чате.\n"
+            "Теперь у обоих есть 1 час, чтобы написать /fish в этом чате.\n"
             "Когда оба сделают улов, бот автоматически определит победителя."
         )
 
@@ -1919,7 +1995,7 @@ class FishBot:
             "⚔️ Вызов на дуэль!\n\n"
             f"{inviter_label} вызывает {target_label}.\n"
             f"{target_label}, у вас 1 минута, чтобы принять решение.{attempts_line}\n\n"
-            "После принятия у обоих есть 1 минута, чтобы написать /fish в этом чате.\n"
+            "После принятия у обоих есть 1 час, чтобы написать /fish в этом чате.\n"
             "Чей улов лучше, тот победит и заберет улов соперника."
         )
 
@@ -2027,11 +2103,11 @@ class FishBot:
         target_done = bool(result.get('target_done'))
 
         if not inviter_done and not target_done:
-            reason_line = "Никто не сделал заброс за 1 минуту после принятия."
+            reason_line = "Никто не сделал заброс за 1 час после принятия."
         elif not inviter_done:
-            reason_line = f"{inviter_label} не сделал заброс за 1 минуту."
+            reason_line = f"{inviter_label} не сделал заброс за 1 час."
         else:
-            reason_line = f"{target_label} не сделал заброс за 1 минуту."
+            reason_line = f"{target_label} не сделал заброс за 1 час."
 
         refund_note = "\n🎟 Бесплатная попытка возвращена пригласившему." if str(duel.get('attempt_type') or '') == 'free' else ""
 
@@ -4206,23 +4282,22 @@ class FishBot:
                         logger.warning(f"Could not send trash image: {e}")
                 else:
                     message = f"😔 {result['message']}"
-                    if result.get('snap'):
-                        duel_attempt_name = "Срыв рыбы"
-                    elif result.get('no_bite'):
+                    if result.get('no_bite'):
                         duel_attempt_name = "Ничего не клюет"
 
-                try:
-                    await self._maybe_process_duel_catch(
-                        user_id=user_id,
-                        chat_id=chat_id,
-                        fish_name=duel_attempt_name,
-                        weight=duel_attempt_weight,
-                        length=0.0,
-                        catch_id=None,
-                        resolve_latest_catch=False,
-                    )
-                except Exception:
-                    logger.exception("Failed to process duel non-fish attempt from /fish user=%s chat=%s", user_id, chat_id)
+                if not result.get('snap'):
+                    try:
+                        await self._maybe_process_duel_catch(
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            fish_name=duel_attempt_name,
+                            weight=duel_attempt_weight,
+                            length=0.0,
+                            catch_id=None,
+                            resolve_latest_catch=False,
+                        )
+                    except Exception:
+                        logger.exception("Failed to process duel non-fish attempt from /fish user=%s chat=%s", user_id, chat_id)
 
                 from config import BOT_TOKEN, STAR_NAME
                 try:
@@ -10135,19 +10210,6 @@ class FishBot:
                 """
                 
                 await query.edit_message_text(snap_message)
-
-                try:
-                    await self._maybe_process_duel_catch(
-                        user_id=user_id,
-                        chat_id=chat_id,
-                        fish_name="Срыв рыбы",
-                        weight=0.0,
-                        length=0.0,
-                        catch_id=None,
-                        resolve_latest_catch=False,
-                    )
-                except Exception:
-                    logger.exception("Failed to process duel snap from callback user=%s chat=%s", user_id, chat_id)
                 return
             elif result.get('rod_broken'):
                 message = f"""
@@ -10456,6 +10518,14 @@ class FishBot:
 
             if db.get_active_duel_for_user(target_user_id):
                 await query.answer(ok=False, error_message="У соперника уже есть активная или ожидающая дуэль.")
+                return
+
+            if self._is_user_beer_drunk(payload_user_id):
+                await query.answer(ok=False, error_message="Вы в состоянии опьянения. Дуэль недоступна.")
+                return
+
+            if self._is_user_beer_drunk(target_user_id):
+                await query.answer(ok=False, error_message="Соперник в состоянии опьянения. Дуэль недоступна.")
                 return
         # Проверяем, не был ли этот инвойс уже оплачен
         if payload and payload in self.paid_payloads:
@@ -10906,6 +10976,30 @@ class FishBot:
                     await self.refund_star_payment(user_id, telegram_payment_charge_id)
                 return
 
+            if self._is_user_beer_drunk(payload_user_id):
+                await self._safe_send_message(
+                    chat_id=group_chat_id,
+                    text="❌ Нельзя начать дуэль: вы в состоянии опьянения. Средства возвращены.",
+                    reply_to_message_id=duel_reply_id,
+                )
+                if telegram_payment_charge_id:
+                    await self.refund_star_payment(user_id, telegram_payment_charge_id)
+                return
+
+            if self._is_user_beer_drunk(target_user_id):
+                target_label = self._duel_user_label(
+                    target_user_id,
+                    str(parsed_duel_payload.get("target_username") or "").strip() or None,
+                )
+                await self._safe_send_message(
+                    chat_id=group_chat_id,
+                    text=f"❌ Нельзя начать дуэль: {target_label} в состоянии опьянения. Средства возвращены.",
+                    reply_to_message_id=duel_reply_id,
+                )
+                if telegram_payment_charge_id:
+                    await self.refund_star_payment(user_id, telegram_payment_charge_id)
+                return
+
             inviter_username = update.effective_user.username or update.effective_user.first_name or str(payload_user_id)
             target_username = str(parsed_duel_payload.get("target_username") or "").strip()
             if not target_username:
@@ -11098,6 +11192,19 @@ class FishBot:
                 text=message,
                 reply_to_message_id=sticker_message.message_id if sticker_message else group_message_id,
             )
+
+            try:
+                await self._maybe_process_duel_catch(
+                    user_id=user_id,
+                    chat_id=group_chat_id,
+                    fish_name=str(trash.get('name') or 'Мусор'),
+                    weight=float(trash.get('weight') or 0),
+                    length=0.0,
+                    catch_id=None,
+                    resolve_latest_catch=False,
+                )
+            except Exception:
+                logger.exception("Failed to process duel trash from guaranteed flow user=%s chat=%s", user_id, group_chat_id)
             return
 
         fish = result.get('fish')
@@ -12166,6 +12273,7 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_cure_seasick, pattern=r"^cure_seasick_\\d+$"))
     application.add_handler(CommandHandler("invite", bot_instance.invite_command))
     application.add_handler(CommandHandler("duel", bot_instance.duel_command))
+    application.add_handler(CommandHandler("notduel", bot_instance.notduel_command))
     application.add_handler(CommandHandler("shop", bot_instance.handle_shop))
     application.add_handler(CommandHandler("net", bot_instance.net_command))
     application.add_handler(CommandHandler("dynamite", bot_instance.dynamite_command))
