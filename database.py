@@ -1050,80 +1050,58 @@ class Database:
             dt_val = dt_val.astimezone(timezone.utc)
         return dt_val.isoformat()
 
+    @staticmethod
+    def _normalize_captcha_answer(value: str) -> str:
+        """Нормализовать ответ на капчу для простого сравнения."""
+        normalized = str(value or "").strip().casefold()
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized
+
     def _generate_wave_cipher_captcha(self, difficulty: int) -> Dict[str, Any]:
-        """Сгенерировать "морской шифр" капчу с возрастающей сложностью."""
+        """Сгенерировать простую капчу-вопрос (математика/базовые факты)."""
         normalized_difficulty = max(1, min(10, int(difficulty or 1)))
 
-        symbols_pool = ["🐟", "🐠", "🐙", "🦀", "🦐", "🐡", "🦑"]
-        symbol_count = min(len(symbols_pool), 3 + (normalized_difficulty // 2))
-        chosen_symbols = random.sample(symbols_pool, symbol_count)
-        assigned_values = random.sample(range(1, 10), symbol_count)
-        symbol_map = dict(zip(chosen_symbols, assigned_values))
+        a = random.randint(2, 9)
+        b = random.randint(2, 9)
+        if random.random() < 0.5:
+            math_prompt = f"Сколько будет {a} + {b}?"
+            math_answer = str(a + b)
+        else:
+            greater, lower = max(a, b), min(a, b)
+            math_prompt = f"Сколько будет {greater} - {lower}?"
+            math_answer = str(greater - lower)
 
-        start_symbol = random.choice(chosen_symbols)
-        current_value = int(symbol_map[start_symbol])
+        quiz_pool: List[Dict[str, Any]] = [
+            {
+                "prompt": "Столица Италии?",
+                "answer": "рим|rome",
+            },
+            {
+                "prompt": "Какой сегодня день после понедельника?",
+                "answer": "вторник",
+            },
+            {
+                "prompt": "Сколько дней в неделе?",
+                "answer": "7|семь",
+            },
+            {
+                "prompt": math_prompt,
+                "answer": math_answer,
+            },
+        ]
 
-        steps = [f"Старт: {start_symbol}"]
-        steps_count = 2 + min(6, normalized_difficulty)
-        used_multiply = False
-
-        for step_index in range(steps_count):
-            can_multiply = (
-                normalized_difficulty >= 3
-                and not used_multiply
-                and step_index >= 1
-                and current_value <= 220
-                and random.random() < 0.35
-            )
-            if can_multiply:
-                current_value *= 2
-                used_multiply = True
-                steps.append("Умножь результат на 2")
-                continue
-
-            can_divide = (
-                normalized_difficulty >= 7
-                and used_multiply
-                and current_value % 2 == 0
-                and current_value >= 8
-                and random.random() < 0.18
-            )
-            if can_divide:
-                current_value //= 2
-                steps.append("Раздели результат на 2")
-                continue
-
-            can_add_const = normalized_difficulty >= 5 and random.random() < 0.28
-            if can_add_const:
-                bonus_value = random.randint(2, 9)
-                current_value += bonus_value
-                steps.append(f"Прибавь {bonus_value}")
-                continue
-
-            symbol = random.choice(chosen_symbols)
-            symbol_value = int(symbol_map[symbol])
-            use_subtract = current_value >= symbol_value and random.random() < 0.45
-
-            if use_subtract:
-                current_value = max(0, current_value - symbol_value)
-                steps.append(f"Вычти {symbol}")
-            else:
-                current_value += symbol_value
-                steps.append(f"Прибавь {symbol}")
-
+        selected = random.choice(quiz_pool)
         payload = {
-            "type": "wave_cipher",
-            "title": "Морской шифр",
+            "type": "simple_quiz",
+            "title": "Простая капча",
             "difficulty": normalized_difficulty,
-            "prompt": "Подставь значения символов и выполни шаги строго по порядку.",
-            "symbol_map": [{"symbol": symbol, "value": int(symbol_map[symbol])} for symbol in chosen_symbols],
-            "steps": steps,
-            "answer_hint": "Ответом должно быть одно число.",
+            "prompt": str(selected.get("prompt") or "Ответьте на простой вопрос."),
+            "answer_hint": "Введите короткий ответ.",
         }
 
         return {
             "payload": payload,
-            "answer": str(int(current_value)),
+            "answer": str(selected.get("answer") or ""),
         }
 
     def _fetch_antibot_row(self, user_id: int) -> Dict[str, Any]:
@@ -1394,7 +1372,7 @@ class Database:
         self,
         user_id: int,
         reason: str = "rhythm_detected",
-        challenge_ttl_seconds: int = 60,
+        challenge_ttl_seconds: int = 180,
         penalty_hours: int = 6,
     ) -> Dict[str, Any]:
         """Создать/обновить активную капчу для пользователя и вернуть метаданные ссылки."""
@@ -1420,7 +1398,7 @@ class Database:
         difficulty = 1
         challenge_data = self._generate_wave_cipher_captcha(difficulty)
         token = secrets.token_urlsafe(18)
-        expires_at = now + timedelta(seconds=max(15, int(challenge_ttl_seconds or 60)))
+        expires_at = now + timedelta(seconds=max(15, int(challenge_ttl_seconds or 180)))
 
         payload_json = json.dumps(challenge_data["payload"], ensure_ascii=False)
         expected_answer = str(challenge_data["answer"])
@@ -1531,7 +1509,7 @@ class Database:
     def solve_antibot_challenge(self, user_id: int, token: str, answer: str) -> Dict[str, Any]:
         """Проверить ответ на капчу и обновить состояние анти-абуза."""
         normalized_token = str(token or "").strip()
-        normalized_answer = str(answer or "").strip()
+        normalized_answer = self._normalize_captcha_answer(str(answer or ""))
 
         if not normalized_token:
             return {"ok": False, "error": "token_required"}
@@ -1565,7 +1543,15 @@ class Database:
                 "penalty_until": gate_after_expire.get("penalty_until"),
             }
 
-        if normalized_answer != expected_answer:
+        expected_variants = [
+            self._normalize_captcha_answer(item)
+            for item in expected_answer.split("|")
+            if str(item).strip()
+        ]
+        if not expected_variants:
+            expected_variants = [self._normalize_captcha_answer(expected_answer)]
+
+        if normalized_answer not in expected_variants:
             return {"ok": False, "error": "wrong_answer"}
 
         with self._connect() as conn:

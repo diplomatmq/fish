@@ -304,9 +304,11 @@ function renderCaptchaChallenge(result) {
   const payload = challenge.payload || {};
   const symbolMap = Array.isArray(payload.symbol_map) ? payload.symbol_map : [];
   const steps = Array.isArray(payload.steps) ? payload.steps : [];
+  const hasMap = symbolMap.length > 0;
+  const hasSteps = steps.length > 0;
 
   if (captchaLead) {
-    const prompt = payload.prompt || "Substitute symbol values and solve the sequence.";
+    const prompt = payload.prompt || "Ответьте на простой вопрос.";
     captchaLead.textContent = prompt;
   }
 
@@ -318,6 +320,10 @@ function renderCaptchaChallenge(result) {
   }
 
   if (captchaMap) {
+    const mapBlock = captchaMap.closest(".captcha-block");
+    if (mapBlock) {
+      mapBlock.style.display = hasMap ? "block" : "none";
+    }
     captchaMap.innerHTML = "";
     symbolMap.forEach((item) => {
       const li = document.createElement("li");
@@ -329,6 +335,10 @@ function renderCaptchaChallenge(result) {
   }
 
   if (captchaSteps) {
+    const stepsBlock = captchaSteps.closest(".captcha-block");
+    if (stepsBlock) {
+      stepsBlock.style.display = hasSteps ? "block" : "none";
+    }
     captchaSteps.innerHTML = "";
     steps.forEach((stepText) => {
       const li = document.createElement("li");
@@ -343,7 +353,7 @@ function renderCaptchaChallenge(result) {
   }
 
   const remaining = Number(challenge.remaining_seconds || 0);
-  startCaptchaCountdown(remaining > 0 ? remaining : 60);
+  startCaptchaCountdown(remaining > 0 ? remaining : 180);
   setCaptchaStatus("Enter your answer and press Verify.", "");
 }
 
@@ -370,7 +380,7 @@ async function submitCaptchaAnswer() {
 
   const answer = String(captchaAnswer?.value || "").trim();
   if (!answer) {
-    setCaptchaStatus("Please enter a numeric answer.", "error");
+    setCaptchaStatus("Введите ответ.", "error");
     return;
   }
 

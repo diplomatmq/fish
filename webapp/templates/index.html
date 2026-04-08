@@ -79,28 +79,28 @@
       <section id="view-captcha" class="view">
         <article class="card captcha-card">
           <h2>🧩 Проверка рыбака</h2>
-          <p id="captchaLead" class="subtext">Подтвердите, что вы человек, и решите шифр буя.</p>
+          <p id="captchaLead" class="subtext">Подтвердите, что вы человек, и ответьте на простой вопрос.</p>
           <p id="captchaPenaltyInfo" class="status"></p>
 
           <div class="captcha-block">
-            <h3>Ключ символов</h3>
+            <h3>Подсказка</h3>
             <ul id="captchaMap" class="captcha-map"></ul>
           </div>
 
           <div class="captcha-block">
-            <h3>Шаги</h3>
+            <h3>Условия</h3>
             <ol id="captchaSteps" class="captcha-steps"></ol>
           </div>
 
-          <label class="field-label" for="captchaAnswer">Итоговый код</label>
+          <label class="field-label" for="captchaAnswer">Ответ</label>
           <div class="trophy-row">
             <input
               id="captchaAnswer"
               class="input"
               type="text"
-              inputmode="numeric"
+              inputmode="text"
               autocomplete="off"
-              placeholder="Введите число"
+              placeholder="Введите ответ"
             />
             <button id="captchaSubmit" class="btn">Проверить</button>
           </div>

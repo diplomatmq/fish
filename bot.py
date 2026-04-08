@@ -8,7 +8,7 @@ import re
 import shlex
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import urlencode, urlparse, urlunparse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, WebAppInfo
 # -*- coding: utf-8 -*-
 import logging
@@ -206,7 +206,7 @@ STORM_EVENT_COOLDOWN_HOURS = 18
 ANTI_BOT_RHYTHM_MIN_SECONDS = 8 * 60
 ANTI_BOT_RHYTHM_MAX_SECONDS = 12 * 60
 ANTI_BOT_RHYTHM_TRIGGER_STREAK = 5
-ANTI_BOT_CAPTCHA_TTL_SECONDS = 60
+ANTI_BOT_CAPTCHA_TTL_SECONDS = 180
 ANTI_BOT_PENALTY_HOURS = 6
 
 DUEL_FREE_INVITES_PER_DAY = 3
@@ -4352,7 +4352,10 @@ class FishBot:
                         except Exception as e:
                             logger.warning(f"Could not send fish inspector sticker: {e}")
 
-                    await update.message.reply_text(result['message'], parse_mode=None)
+                    await update.message.reply_text(
+                        self._sanitize_public_service_text(result.get('message', '')), 
+                        parse_mode=None,
+                    )
                     return
                 # Отправляем сообщение с причиной и кнопкой оплаты
                 reply_markup = await self._build_guaranteed_invoice_markup(user_id, chat_id)
@@ -8802,9 +8805,12 @@ class FishBot:
             return ""
 
         parsed = urlparse(base_url)
-        query_dict = dict(parse_qsl(parsed.query, keep_blank_values=True))
-        query_dict["captcha_token"] = str(token or "").strip()
-        query_dict["captcha_mode"] = "antibot"
+        # Keep captcha links predictable: do not inherit arbitrary query params
+        # from WEBAPP_URL (for example legacy tg_id values).
+        query_dict = {
+            "captcha_token": str(token or "").strip(),
+            "captcha_mode": "antibot",
+        }
         new_query = urlencode(query_dict)
 
         return urlunparse((
@@ -8821,12 +8827,17 @@ class FishBot:
         if not captcha_url:
             return None
 
-        if chat_type == "private":
-            button = InlineKeyboardButton("🧩 Пройти капчу", web_app=WebAppInfo(url=captcha_url))
-        else:
-            button = InlineKeyboardButton("🧩 Открыть апку и пройти капчу", url=captcha_url)
+        button = InlineKeyboardButton("🧩 Пройти капчу", web_app=WebAppInfo(url=captcha_url))
 
         return InlineKeyboardMarkup([[button]])
+
+    @staticmethod
+    def _sanitize_public_service_text(text: str) -> str:
+        """Удалить служебные хвосты вроде tg_id=... из пользовательских сообщений."""
+        normalized = str(text or "")
+        normalized = re.sub(r"\s*tg_id\s*=\s*\d+", "", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r"\s{2,}", " ", normalized)
+        return normalized.strip()
 
     def _build_antibot_block_message(
         self,
@@ -8994,12 +9005,14 @@ class FishBot:
     def _format_storm_event_message(self, storm_result: Dict[str, Any]) -> str:
         lost_count = int(storm_result.get('lost_count', 0) or 0)
         lost_weight = float(storm_result.get('lost_weight', 0) or 0.0)
-        return (
+        return self._sanitize_public_service_text(
+            (
             "🌪️ Поднялся сильный шторм!\n"
             "🧺 Лодку развернуло, плавание экстренно завершено.\n"
             f"🐟 Утеряно из садка: {lost_count} шт. ({lost_weight:.1f} кг).\n"
             f"⏳ Лодка ушла в КД на {STORM_EVENT_COOLDOWN_HOURS} часов.\n"
             "🤢 Вы получили морскую болезнь (работает только в плавании)."
+            )
         )
 
     def _get_clothing_bonus_percent(self, user_id: int) -> float:
@@ -10291,7 +10304,9 @@ class FishBot:
                     except Exception as e:
                         logger.warning(f"Could not send fish inspector sticker from callback: {e}")
 
-                await query.edit_message_text(result.get('message', '🚨 Вас поймал рыбнадзор!'))
+                await query.edit_message_text(
+                    self._sanitize_public_service_text(result.get('message', '🚨 Вас поймал рыбнадзор!'))
+                )
                 return
             elif result.get('no_bite'):
                 # Отправляем сообщение с причиной и кнопкой оплаты
