@@ -2378,6 +2378,11 @@ class Database:
             except Exception:
                 return 0
 
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            else:
+                expires_at = expires_at.astimezone(timezone.utc)
+
             if expires_at <= now:
                 return 0
 

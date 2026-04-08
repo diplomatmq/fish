@@ -5,6 +5,7 @@ import hmac
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -24,6 +25,11 @@ def _get_fish_db():
 		return fish_db
 
 	try:
+		project_root = Path(__file__).resolve().parent.parent
+		project_root_str = str(project_root)
+		if project_root_str not in sys.path:
+			sys.path.insert(0, project_root_str)
+
 		from database import db as imported_db
 		fish_db = imported_db
 		fish_db_import_error = None

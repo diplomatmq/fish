@@ -30,7 +30,7 @@ def get_button_style(text: str) -> str:
     if any(x in text_lower for x in ["нет", "отмена", "отклон", "cancel", "no", "decline"]):
         return "destructive"
     return None
-from telegram.error import BadRequest, Forbidden, RetryAfter, TimedOut, NetworkError, Conflict
+from telegram.error import BadRequest, Forbidden, RetryAfter, TimedOut, NetworkError, Conflict, ChatMigrated
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, PreCheckoutQueryHandler, TypeHandler, filters, ContextTypes, Defaults, ExtBot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -219,9 +219,32 @@ DYNAMITE_SKIP_COST_STARS = 15
 DYNAMITE_GUARD_CHANCE = 0.001
 DYNAMITE_GUARD_BAN_HOURS = 24
 DYNAMITE_GUARD_FINE_STARS = 20
+
+
+def _env_sticker_file_id(*env_names: str, default: str) -> str:
+    for env_name in env_names:
+        raw_value = os.getenv(env_name)
+        if raw_value is None:
+            continue
+        normalized = str(raw_value).strip().strip('"').strip("'")
+        if normalized:
+            return normalized
+    return default
+
+
 DYNAMITE_STICKER_FILE_ID = "CAACAgEAAxkBAAEcHQlptoOhA4B-LV0g-vv7Orrwg4UZfgACXgIAAg60IEQze4zUaM3_bzoE"
-DYNAMITE_GRENADE_STICKER_FILE_ID = os.getenv("DYNAMITE_GRENADE_STICKER_FILE_ID", DYNAMITE_STICKER_FILE_ID)
-DYNAMITE_BOMB_STICKER_FILE_ID = os.getenv("DYNAMITE_BOMB_STICKER_FILE_ID", DYNAMITE_STICKER_FILE_ID)
+DYNAMITE_GRENADE_STICKER_FILE_ID = _env_sticker_file_id(
+    "DYNAMITE_GRENADE_STICKER_FILE_ID",
+    "GRENADE_STICKER_FILE_ID",
+    "DYNAMITE_LEVEL2_STICKER_FILE_ID",
+    default=DYNAMITE_STICKER_FILE_ID,
+)
+DYNAMITE_BOMB_STICKER_FILE_ID = _env_sticker_file_id(
+    "DYNAMITE_BOMB_STICKER_FILE_ID",
+    "BOMB_STICKER_FILE_ID",
+    "DYNAMITE_LEVEL3_STICKER_FILE_ID",
+    default=DYNAMITE_STICKER_FILE_ID,
+)
 DYNAMITE_NAME_BY_LEVEL = {
     1: "Динамит",
     2: "Граната",
@@ -391,6 +414,9 @@ class EmojiBot(ExtBot):
                     continue
                 logger.error("EmojiBot.%s failed after retries due to timeout/network error: %s", method_name, exc)
                 raise
+            except ChatMigrated:
+                # Retried at send_message level with the new chat_id.
+                raise
             except Exception as exc:
                 # Не скрываем неизвестные ошибки логики Telegram API
                 logger.error("EmojiBot.%s unexpected error: %s", method_name, exc)
@@ -435,13 +461,57 @@ class EmojiBot(ExtBot):
             )
             return await self._call_with_timeout(method_name, lambda: sender(*args, **fallback_kwargs))
 
+    @staticmethod
+    def _extract_migrated_chat_id(exc: Exception) -> Optional[int]:
+        new_chat_id = getattr(exc, 'new_chat_id', None)
+        if isinstance(new_chat_id, int):
+            return int(new_chat_id)
+
+        match = re.search(r'new\s+chat\s+id:\s*(-?\d+)', str(exc), flags=re.IGNORECASE)
+        if not match:
+            return None
+
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
     async def send_message(self, *args, **kwargs):
-        return await self._send_with_custom_emoji_fallback(
-            "send_message",
-            super(EmojiBot, self).send_message,
-            *args,
-            **kwargs,
-        )
+        try:
+            return await self._send_with_custom_emoji_fallback(
+                "send_message",
+                super(EmojiBot, self).send_message,
+                *args,
+                **kwargs,
+            )
+        except ChatMigrated as exc:
+            migrated_chat_id = self._extract_migrated_chat_id(exc)
+            if migrated_chat_id is None:
+                raise
+
+            retry_kwargs = dict(kwargs)
+            retry_kwargs['chat_id'] = migrated_chat_id
+            logger.warning("EmojiBot.send_message retrying after chat migration to %s", migrated_chat_id)
+            return await self._send_with_custom_emoji_fallback(
+                "send_message",
+                super(EmojiBot, self).send_message,
+                *args,
+                **retry_kwargs,
+            )
+        except BadRequest as exc:
+            migrated_chat_id = self._extract_migrated_chat_id(exc)
+            if migrated_chat_id is None:
+                raise
+
+            retry_kwargs = dict(kwargs)
+            retry_kwargs['chat_id'] = migrated_chat_id
+            logger.warning("EmojiBot.send_message retrying after BadRequest migration to %s", migrated_chat_id)
+            return await self._send_with_custom_emoji_fallback(
+                "send_message",
+                super(EmojiBot, self).send_message,
+                *args,
+                **retry_kwargs,
+            )
 
     async def edit_message_text(self, *args, **kwargs):
         return await self._send_with_custom_emoji_fallback(
@@ -6419,24 +6489,22 @@ class FishBot:
 
         owned_items = db.get_player_clothing(user_id)
         owned_codes = {str(item.get('item_key', '')).lower() for item in owned_items}
-        total_bonus = self._get_clothing_bonus_percent(user_id)
         diamonds = int(player.get('diamonds') or 0)
 
         keyboard = []
         for item in CLOTHING_ITEMS:
             item_code = item['code']
-            bonus_text = format_percent_value(item['bonus_percent'])
             if item_code in owned_codes:
                 keyboard.append([
                     InlineKeyboardButton(
-                        f"✅ {item['name']} (+{bonus_text}%)",
+                        f"Куплено — {item['name']}",
                         callback_data="noop",
                     )
                 ])
             else:
                 keyboard.append([
                     InlineKeyboardButton(
-                        f"👕 {item['name']} (+{bonus_text}%) — {item['price_diamonds']} 💎",
+                        f"{item['price_diamonds']} 💎 — {item['name']}",
                         callback_data=f"buy_clothing_{item_code}_{user_id}",
                     )
                 ])
@@ -6447,7 +6515,7 @@ class FishBot:
             "👕 Магазин одежды\n\n"
             "Каждый предмет покупается один раз и даёт постоянный бонус к шансу клёва.\n\n"
             f"💎 Ваши алмазы: {diamonds}\n"
-            f"✨ Суммарный бонус одежды: +{format_percent_value(total_bonus)}%\n"
+            "✨ Бонусы применяются автоматически после покупки.\n"
             f"📦 Куплено: {len(owned_codes)}/{len(CLOTHING_ITEMS)}"
         )
 
@@ -11163,6 +11231,65 @@ class FishBot:
             except Exception as e:
                 logger.error(f"Не удалось отправить сообщение об ошибке: {e}")
 
+
+BOT_INSTANCE_LOCK_KEY = int(os.getenv('BOT_INSTANCE_LOCK_KEY', '32004517'))
+_bot_instance_lock_conn = None
+_bot_instance_lock_file = None
+
+
+def _acquire_single_instance_lock() -> bool:
+    """Не даёт запустить второй polling-инстанс с тем же токеном."""
+    global _bot_instance_lock_conn, _bot_instance_lock_file
+
+    if os.getenv('BOT_DISABLE_SINGLE_INSTANCE_LOCK', '0') == '1':
+        logger.warning("Single-instance lock disabled by BOT_DISABLE_SINGLE_INSTANCE_LOCK=1")
+        return True
+
+    database_url = str(os.getenv('DATABASE_URL') or '').lower()
+    if database_url.startswith('postgres'):
+        try:
+            conn = db._connect()
+            cursor = conn.cursor()
+            cursor.execute('SELECT pg_try_advisory_lock(%s)', (BOT_INSTANCE_LOCK_KEY,))
+            row = cursor.fetchone()
+            got_lock = bool(row and row[0])
+            if got_lock:
+                _bot_instance_lock_conn = conn
+                logger.info('Single-instance polling lock acquired via Postgres advisory lock')
+                return True
+
+            try:
+                conn.close()
+            except Exception:
+                pass
+            logger.error('Another bot instance already holds polling lock. Exiting this process.')
+            return False
+        except Exception:
+            logger.exception('Failed to acquire Postgres advisory lock. Falling back to local lock.')
+
+    try:
+        import fcntl
+    except Exception:
+        # On platforms without fcntl (e.g. Windows), skip local file lock fallback.
+        return True
+
+    lock_path = os.getenv('BOT_SINGLE_INSTANCE_LOCK_FILE', '/tmp/fishbot_polling.lock')
+    lock_file = None
+    try:
+        lock_file = open(lock_path, 'w')
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _bot_instance_lock_file = lock_file
+        logger.info('Single-instance polling lock acquired via file lock: %s', lock_path)
+        return True
+    except Exception:
+        if lock_file is not None:
+            try:
+                lock_file.close()
+            except Exception:
+                pass
+        logger.error('Another local bot process already running (lock: %s). Exiting this process.', lock_path)
+        return False
+
 def main():
     """Основная функция"""
     # Парсинг аргументов командной строки
@@ -11232,6 +11359,10 @@ def main():
         except Exception as e:
             print(f"❌ Неизвестная ошибка: {e}")
             return
+
+    if not _acquire_single_instance_lock():
+        print("⚠️ Уже запущен другой инстанс бота с этим токеном. Завершаю текущий процесс.")
+        return
     
     # Создаем экземпляр бота
     bot_instance = FishBot()
