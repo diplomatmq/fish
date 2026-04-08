@@ -211,6 +211,7 @@ ANTI_BOT_PENALTY_HOURS = 6
 
 DUEL_FREE_INVITES_PER_DAY = 3
 DUEL_INVITE_TIMEOUT_SECONDS = 60
+DUEL_ACTIVE_TIMEOUT_SECONDS = 60
 DUEL_PAID_INVITE_STARS = 5
 
 DYNAMITE_COOLDOWN_HOURS = 8
@@ -883,13 +884,16 @@ class FishBot:
         self._cancel_duel_invite_timeout_job(duel_id)
 
         duel = accept_result.get('duel') or {}
+        duel_chat_id = int(duel.get('chat_id') or update.effective_chat.id)
+        self._schedule_duel_active_timeout_job(duel_id=duel_id, chat_id=duel_chat_id)
+
         inviter_label = self._duel_user_label(int(duel.get('inviter_id') or 0), duel.get('inviter_username'))
         target_label = self._duel_user_label(int(duel.get('target_id') or 0), duel.get('target_username'))
 
         await query.edit_message_text(
             "⚔️ Дуэль принята!\n\n"
             f"{inviter_label} vs {target_label}\n"
-            "Теперь оба игрока пишут фиш в этом чате.\n"
+            "Теперь у обоих есть 1 минута, чтобы написать /fish в этом чате.\n"
             "Когда оба сделают улов, бот автоматически определит победителя."
         )
 
@@ -1915,7 +1919,7 @@ class FishBot:
             "⚔️ Вызов на дуэль!\n\n"
             f"{inviter_label} вызывает {target_label}.\n"
             f"{target_label}, у вас 1 минута, чтобы принять решение.{attempts_line}\n\n"
-            "После принятия оба игрока пишут фиш в этом чате.\n"
+            "После принятия у обоих есть 1 минута, чтобы написать /fish в этом чате.\n"
             "Чей улов лучше, тот победит и заберет улов соперника."
         )
 
@@ -1957,6 +1961,29 @@ class FishBot:
         except Exception:
             pass
 
+    def _schedule_duel_active_timeout_job(self, duel_id: int, chat_id: int) -> None:
+        if not self.scheduler:
+            return
+        try:
+            run_at = datetime.now(timezone.utc) + timedelta(seconds=DUEL_ACTIVE_TIMEOUT_SECONDS)
+            self.scheduler.add_job(
+                self._handle_duel_active_timeout,
+                trigger=DateTrigger(run_date=run_at),
+                kwargs={'duel_id': int(duel_id), 'chat_id': int(chat_id)},
+                id=f"duel_active_{int(duel_id)}",
+                replace_existing=True,
+            )
+        except Exception:
+            logger.exception("Failed to schedule active duel timeout for duel_id=%s", duel_id)
+
+    def _cancel_duel_active_timeout_job(self, duel_id: int) -> None:
+        if not self.scheduler:
+            return
+        try:
+            self.scheduler.remove_job(f"duel_active_{int(duel_id)}")
+        except Exception:
+            pass
+
     async def _handle_duel_invite_timeout(self, duel_id: int, chat_id: int):
         try:
             result = db.expire_duel_invitation_by_id(int(duel_id))
@@ -1980,6 +2007,42 @@ class FishBot:
             ),
         )
 
+    async def _handle_duel_active_timeout(self, duel_id: int, chat_id: int):
+        try:
+            result = db.expire_active_duel_by_id(
+                int(duel_id),
+                timeout_seconds=DUEL_ACTIVE_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            logger.exception("Failed to expire active duel by timeout duel_id=%s", duel_id)
+            return
+
+        if not result.get('ok') or not result.get('expired'):
+            return
+
+        duel = result.get('duel') or {}
+        inviter_label = self._duel_user_label(int(duel.get('inviter_id') or 0), duel.get('inviter_username'))
+        target_label = self._duel_user_label(int(duel.get('target_id') or 0), duel.get('target_username'))
+        inviter_done = bool(result.get('inviter_done'))
+        target_done = bool(result.get('target_done'))
+
+        if not inviter_done and not target_done:
+            reason_line = "Никто не сделал заброс за 1 минуту после принятия."
+        elif not inviter_done:
+            reason_line = f"{inviter_label} не сделал заброс за 1 минуту."
+        else:
+            reason_line = f"{target_label} не сделал заброс за 1 минуту."
+
+        refund_note = "\n🎟 Бесплатная попытка возвращена пригласившему." if str(duel.get('attempt_type') or '') == 'free' else ""
+
+        await self._safe_send_message(
+            chat_id=int(chat_id),
+            text=(
+                "⏱ Дуэль завершена по таймауту.\n"
+                f"{reason_line}{refund_note}"
+            ),
+        )
+
     @staticmethod
     def _format_duel_catch_text(fish_name: str, weight: Any, length: Any) -> str:
         safe_name = str(fish_name or 'Неизвестная рыба')
@@ -2000,6 +2063,8 @@ class FishBot:
         fish_name: str,
         weight: float,
         length: float,
+        catch_id: Optional[int] = None,
+        resolve_latest_catch: bool = True,
     ) -> None:
         """Если у пользователя активная дуэль в этом чате, засчитать улов и объявить результат."""
         duel = db.get_active_duel_for_user(int(user_id))
@@ -2014,13 +2079,14 @@ class FishBot:
         if duel_id <= 0:
             return
 
-        catch_id = None
-        try:
-            latest_catch = db.get_latest_unsold_catch(int(user_id), int(chat_id))
-            if latest_catch and latest_catch.get('id') is not None:
-                catch_id = int(latest_catch.get('id'))
-        except Exception:
-            logger.exception("Failed to load latest catch for duel user=%s chat=%s", user_id, chat_id)
+        normalized_catch_id = int(catch_id) if catch_id is not None else None
+        if normalized_catch_id is None and resolve_latest_catch:
+            try:
+                latest_catch = db.get_latest_unsold_catch(int(user_id), int(chat_id))
+                if latest_catch and latest_catch.get('id') is not None:
+                    normalized_catch_id = int(latest_catch.get('id'))
+            except Exception:
+                logger.exception("Failed to load latest catch for duel user=%s chat=%s", user_id, chat_id)
 
         record_result = db.record_duel_catch(
             duel_id=duel_id,
@@ -2028,7 +2094,7 @@ class FishBot:
             fish_name=fish_name,
             weight=weight,
             length=length,
-            catch_id=catch_id,
+            catch_id=normalized_catch_id,
         )
 
         if not record_result.get('ok'):
@@ -2064,6 +2130,8 @@ class FishBot:
             )
             return
 
+        self._cancel_duel_active_timeout_job(duel_id)
+
         inviter_catch_line = self._format_duel_catch_text(
             str(duel_data.get('inviter_fish_name') or 'Неизвестная рыба'),
             duel_data.get('inviter_weight'),
@@ -2097,6 +2165,7 @@ class FishBot:
 
         loser_catch_id = duel_data.get('inviter_catch_id') if loser_id == inviter_id else duel_data.get('target_catch_id')
         transfer_done = False
+        transfer_possible = loser_catch_id is not None
         if loser_catch_id is not None:
             try:
                 transfer_done = db.move_caught_fish_to_user(
@@ -2114,11 +2183,12 @@ class FishBot:
                     winner_id,
                 )
 
-        transfer_line = (
-            f"✅ Улов {loser_label} передан победителю {winner_label}."
-            if transfer_done
-            else "⚠️ Не удалось автоматически передать улов проигравшего."
-        )
+        if transfer_done:
+            transfer_line = f"✅ Улов {loser_label} передан победителю {winner_label}."
+        elif transfer_possible:
+            transfer_line = "⚠️ Не удалось автоматически передать улов проигравшего."
+        else:
+            transfer_line = "ℹ️ Передача улова не требуется (у проигравшего не было пойманной рыбы)."
 
         await self._safe_send_message(
             chat_id=duel_chat,
@@ -3805,6 +3875,13 @@ class FishBot:
         
         if result['success']:
             if result.get('is_trash'):
+                trash = result.get('trash') or {}
+                trash_name_for_duel = str(trash.get('name') or 'Мусор')
+                try:
+                    trash_weight_for_duel = float(trash.get('weight') or 0)
+                except (TypeError, ValueError):
+                    trash_weight_for_duel = 0.0
+
                 # If second roll produced a treasure, show only treasure output.
                 if result.get('treasure_caught') and result.get('treasure_name'):
                     from treasures import get_treasure_name, get_treasure_price
@@ -3845,6 +3922,19 @@ class FishBot:
                             "💥 Временная удочка сломалась после удачного улова.\n"
                             "Теперь активна бамбуковая. Купить новую можно в магазине."
                         )
+
+                    try:
+                        await self._maybe_process_duel_catch(
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            fish_name=trash_name_for_duel,
+                            weight=trash_weight_for_duel,
+                            length=0.0,
+                            catch_id=None,
+                            resolve_latest_catch=False,
+                        )
+                    except Exception:
+                        logger.exception("Failed to process duel trash from /fish user=%s chat=%s", user_id, chat_id)
                     return
 
                 trash = result['trash']
@@ -3892,6 +3982,19 @@ class FishBot:
                         "💥 Временная удочка сломалась после удачного улова.\n"
                         "Теперь активна бамбуковая. Купить новую можно в магазине."
                     )
+
+                try:
+                    await self._maybe_process_duel_catch(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        fish_name=trash_name_for_duel,
+                        weight=trash_weight_for_duel,
+                        length=0.0,
+                        catch_id=None,
+                        resolve_latest_catch=False,
+                    )
+                except Exception:
+                    logger.exception("Failed to process duel trash from /fish user=%s chat=%s", user_id, chat_id)
                 return
 
             fish = result['fish']
@@ -4062,9 +4165,11 @@ class FishBot:
                 """
                 await update.message.reply_text(message)
                 return
-            elif result.get('is_trash') or result.get('no_bite'):
+            elif result.get('is_trash') or result.get('no_bite') or result.get('snap'):
                 # Мусор или неудачный заброс — предлагаем гарантированный улов
                 sticker_message = None
+                duel_attempt_name = "Неудачный заброс"
+                duel_attempt_weight = 0.0
                 if result.get('is_trash'):
                     xp_line = ""
                     progress_line = ""
@@ -4077,6 +4182,11 @@ class FishBot:
 ⚖️ Вес: {result['trash']['weight']} кг
 💰 Стоимость: {result['earned']} 🪙{xp_line}{progress_line}
                     """
+                    duel_attempt_name = str(result.get('trash', {}).get('name') or 'Мусор')
+                    try:
+                        duel_attempt_weight = float(result.get('trash', {}).get('weight') or 0)
+                    except (TypeError, ValueError):
+                        duel_attempt_weight = 0.0
                     # Отправляем фото мусора если оно есть
                     try:
                         trash_name = result['trash']['name']
@@ -4096,6 +4206,23 @@ class FishBot:
                         logger.warning(f"Could not send trash image: {e}")
                 else:
                     message = f"😔 {result['message']}"
+                    if result.get('snap'):
+                        duel_attempt_name = "Срыв рыбы"
+                    elif result.get('no_bite'):
+                        duel_attempt_name = "Ничего не клюет"
+
+                try:
+                    await self._maybe_process_duel_catch(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        fish_name=duel_attempt_name,
+                        weight=duel_attempt_weight,
+                        length=0.0,
+                        catch_id=None,
+                        resolve_latest_catch=False,
+                    )
+                except Exception:
+                    logger.exception("Failed to process duel non-fish attempt from /fish user=%s chat=%s", user_id, chat_id)
 
                 from config import BOT_TOKEN, STAR_NAME
                 try:
@@ -9833,6 +9960,19 @@ class FishBot:
                     text=message,
                     reply_to_message_id=sticker_message.message_id if sticker_message else reply_anchor_id,
                 )
+
+                try:
+                    await self._maybe_process_duel_catch(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        fish_name=trash_name or 'Мусор',
+                        weight=float(trash.get('weight') or 0),
+                        length=0.0,
+                        catch_id=None,
+                        resolve_latest_catch=False,
+                    )
+                except Exception:
+                    logger.exception("Failed to process duel trash from callback user=%s chat=%s", user_id, chat_id)
                 return
 
             fish = result.get('fish')
@@ -9935,6 +10075,17 @@ class FishBot:
                 reply_to_message_id=sticker_message.message_id if sticker_message else reply_anchor_id,
             )
 
+            try:
+                await self._maybe_process_duel_catch(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    fish_name=fish.get('name', 'Неизвестная рыба'),
+                    weight=weight,
+                    length=length,
+                )
+            except Exception:
+                logger.exception("Failed to process duel catch from callback user=%s chat=%s", user_id, chat_id)
+
             if result.get('temp_rod_broken'):
                 await self.application.bot.send_message(
                     chat_id=update.effective_chat.id,
@@ -9984,6 +10135,19 @@ class FishBot:
                 """
                 
                 await query.edit_message_text(snap_message)
+
+                try:
+                    await self._maybe_process_duel_catch(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        fish_name="Срыв рыбы",
+                        weight=0.0,
+                        length=0.0,
+                        catch_id=None,
+                        resolve_latest_catch=False,
+                    )
+                except Exception:
+                    logger.exception("Failed to process duel snap from callback user=%s chat=%s", user_id, chat_id)
                 return
             elif result.get('rod_broken'):
                 message = f"""
@@ -10026,6 +10190,20 @@ class FishBot:
                     text=message,
                     reply_to_message_id=sticker_message.message_id if sticker_message else reply_anchor_id,
                 )
+
+                try:
+                    await self._maybe_process_duel_catch(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        fish_name=str(result.get('trash', {}).get('name') or 'Мусор'),
+                        weight=float(result.get('trash', {}).get('weight') or 0),
+                        length=0.0,
+                        catch_id=None,
+                        resolve_latest_catch=False,
+                    )
+                except Exception:
+                    logger.exception("Failed to process duel trash from callback user=%s chat=%s", user_id, chat_id)
+
                 if result.get('temp_rod_broken'):
                     await self.application.bot.send_message(
                         chat_id=update.effective_chat.id,
@@ -10070,6 +10248,19 @@ class FishBot:
                         chat_id=chat_id,
                         message_id=query.message.message_id,
                     )
+
+                try:
+                    await self._maybe_process_duel_catch(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        fish_name="Ничего не клюет",
+                        weight=0.0,
+                        length=0.0,
+                        catch_id=None,
+                        resolve_latest_catch=False,
+                    )
+                except Exception:
+                    logger.exception("Failed to process duel no-bite from callback user=%s chat=%s", user_id, chat_id)
                 return
             else:
                 # Отправляем сообщение с причиной и кнопкой оплаты

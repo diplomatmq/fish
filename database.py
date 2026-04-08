@@ -1755,9 +1755,112 @@ class Database:
 
         return expired_rows
 
-    def get_active_duel_for_user(self, user_id: int) -> Optional[Dict[str, Any]]:
+    def expire_active_duel_by_id(
+        self,
+        duel_id: int,
+        now: Optional[datetime] = None,
+        timeout_seconds: int = 60,
+    ) -> Dict[str, Any]:
+        """Завершить активную дуэль по таймауту после принятия с возвратом бесплатной попытки пригласившему."""
+        self._ensure_duel_tables()
+        now_dt = now if isinstance(now, datetime) else datetime.now(timezone.utc)
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=timezone.utc)
+        else:
+            now_dt = now_dt.astimezone(timezone.utc)
+        now_iso = self._to_utc_iso(now_dt)
+        timeout_td = timedelta(seconds=max(1, int(timeout_seconds or 60)))
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM duels WHERE id = ? LIMIT 1', (int(duel_id),))
+            row = cursor.fetchone()
+            if not row:
+                return {'ok': False, 'error': 'duel_not_found'}
+
+            columns = [description[0] for description in cursor.description]
+            duel = dict(zip(columns, row))
+
+            if str(duel.get('status') or '') != 'active':
+                return {'ok': False, 'error': 'not_active', 'duel': duel}
+
+            accepted_at = self._parse_utc_datetime(duel.get('accepted_at'))
+            if not accepted_at:
+                accepted_at = self._parse_utc_datetime(duel.get('created_at')) or now_dt
+
+            if now_dt < (accepted_at + timeout_td):
+                return {'ok': False, 'error': 'not_timed_out', 'duel': duel}
+
+            inviter_done = duel.get('inviter_weight') is not None
+            target_done = duel.get('target_weight') is not None
+            if inviter_done and target_done:
+                return {
+                    'ok': False,
+                    'error': 'already_resolved',
+                    'duel': duel,
+                    'inviter_done': True,
+                    'target_done': True,
+                }
+
+            refunded_flag = int(duel.get('free_attempt_refunded') or 0)
+            attempt_type = str(duel.get('attempt_type') or '')
+            attempt_day_key = str(duel.get('attempt_day_key') or '').strip()
+
+            if attempt_type == 'free' and refunded_flag == 0 and attempt_day_key:
+                cursor.execute(
+                    '''
+                    UPDATE duel_daily_attempts
+                    SET used_invites = CASE WHEN used_invites > 0 THEN used_invites - 1 ELSE 0 END,
+                        updated_at = ?
+                    WHERE user_id = ? AND day_key = ?
+                    ''',
+                    (now_iso, int(duel.get('inviter_id') or 0), attempt_day_key),
+                )
+                refunded_flag = 1
+
+            cursor.execute(
+                '''
+                UPDATE duels
+                SET status = 'expired',
+                    finished_at = ?,
+                    free_attempt_refunded = ?,
+                    updated_at = ?
+                WHERE id = ?
+                ''',
+                (now_iso, refunded_flag, now_iso, int(duel_id)),
+            )
+            conn.commit()
+
+            cursor.execute('SELECT * FROM duels WHERE id = ? LIMIT 1', (int(duel_id),))
+            refreshed = cursor.fetchone()
+            if not refreshed:
+                return {'ok': False, 'error': 'duel_not_found'}
+            refreshed_columns = [description[0] for description in cursor.description]
+            refreshed_duel = dict(zip(refreshed_columns, refreshed))
+
+        return {
+            'ok': True,
+            'expired': True,
+            'duel': refreshed_duel,
+            'inviter_done': bool(inviter_done),
+            'target_done': bool(target_done),
+        }
+
+    def get_active_duel_for_user(
+        self,
+        user_id: int,
+        active_timeout_seconds: int = 60,
+    ) -> Optional[Dict[str, Any]]:
         """Получить активную/ожидающую дуэль пользователя во всех чатах."""
         self.expire_pending_duels()
+        now_dt = datetime.now(timezone.utc)
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=timezone.utc)
+        else:
+            now_dt = now_dt.astimezone(timezone.utc)
+
+        stale_active_duel_id: Optional[int] = None
+
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -1774,8 +1877,50 @@ class Database:
             row = cursor.fetchone()
             if not row:
                 return None
+
             columns = [description[0] for description in cursor.description]
-            return dict(zip(columns, row))
+            duel = dict(zip(columns, row))
+
+            if str(duel.get('status') or '') == 'active':
+                accepted_at = self._parse_utc_datetime(duel.get('accepted_at'))
+                if not accepted_at:
+                    accepted_at = self._parse_utc_datetime(duel.get('created_at'))
+                if accepted_at and now_dt >= (accepted_at + timedelta(seconds=max(1, int(active_timeout_seconds or 60)))):
+                    stale_active_duel_id = int(duel.get('id') or 0)
+                else:
+                    return duel
+            else:
+                return duel
+
+        if stale_active_duel_id > 0:
+            try:
+                self.expire_active_duel_by_id(
+                    duel_id=stale_active_duel_id,
+                    now=now_dt,
+                    timeout_seconds=active_timeout_seconds,
+                )
+            except Exception:
+                # Best-effort cleanup for stale active duels if scheduler job was missed.
+                pass
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM duels
+                WHERE status IN ('pending', 'active')
+                  AND (inviter_id = ? OR target_id = ?)
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                ''',
+                (int(user_id), int(user_id)),
+            )
+            refreshed_row = cursor.fetchone()
+            if not refreshed_row:
+                return None
+            refreshed_columns = [description[0] for description in cursor.description]
+            return dict(zip(refreshed_columns, refreshed_row))
 
     def create_duel_invitation(
         self,
