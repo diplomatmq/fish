@@ -3768,11 +3768,7 @@ class FishBot:
 
         antibot_active_block = self._get_antibot_active_block(user_id, update)
         if antibot_active_block:
-            await update.message.reply_text(
-                antibot_active_block["text"],
-                reply_markup=antibot_active_block.get("reply_markup"),
-                parse_mode=None,
-            )
+            await self._send_antibot_block_to_user(update, antibot_active_block)
             return
         
         # Проверяем кулдаун
@@ -3855,11 +3851,7 @@ class FishBot:
 
         antibot_rhythm_block = self._register_free_fish_attempt_and_check_antibot(user_id, update)
         if antibot_rhythm_block:
-            await update.message.reply_text(
-                antibot_rhythm_block["text"],
-                reply_markup=antibot_rhythm_block.get("reply_markup"),
-                parse_mode=None,
-            )
+            await self._send_antibot_block_to_user(update, antibot_rhythm_block)
             return
         
 
@@ -8827,6 +8819,9 @@ class FishBot:
         if not captcha_url:
             return None
 
+        if chat_type != "private":
+            return None
+
         button = InlineKeyboardButton("🧩 Пройти капчу", web_app=WebAppInfo(url=captcha_url))
 
         return InlineKeyboardMarkup([[button]])
@@ -8882,7 +8877,77 @@ class FishBot:
         return {
             "text": text,
             "reply_markup": reply_markup,
+            "challenge_url": challenge_url,
         }
+
+    async def _send_antibot_block_to_user(
+        self,
+        update: Update,
+        block_payload: Dict[str, Any],
+        query: Optional[Any] = None,
+    ) -> None:
+        """В группах отправить капчу в личку, а в чат дать уведомление."""
+        block_text = str(block_payload.get("text") or "")
+        current_chat_type = update.effective_chat.type if update.effective_chat else None
+
+        if current_chat_type == "private":
+            if query:
+                await query.edit_message_text(
+                    block_text,
+                    reply_markup=block_payload.get("reply_markup"),
+                    parse_mode=None,
+                )
+            else:
+                target_message = update.message or update.effective_message
+                if target_message:
+                    await target_message.reply_text(
+                        block_text,
+                        reply_markup=block_payload.get("reply_markup"),
+                        parse_mode=None,
+                    )
+            return
+
+        challenge_url = str(block_payload.get("challenge_url") or "").strip()
+        private_markup = self._build_captcha_link_markup(challenge_url, "private")
+        dm_sent = False
+
+        if update.effective_user and private_markup:
+            try:
+                await self.application.bot.send_message(
+                    chat_id=update.effective_user.id,
+                    text=block_text,
+                    reply_markup=private_markup,
+                    parse_mode=None,
+                )
+                dm_sent = True
+            except Forbidden:
+                logger.info(
+                    "Failed to send captcha DM to user=%s: private chat is unavailable",
+                    update.effective_user.id,
+                )
+            except Exception:
+                logger.exception(
+                    "Unexpected error while sending captcha DM to user=%s",
+                    update.effective_user.id,
+                )
+
+        if dm_sent:
+            public_text = (
+                "🧩 Капча отправлена вам в личные сообщения с ботом. "
+                "Пройдите её там и возвращайтесь в чат."
+            )
+        else:
+            public_text = (
+                "🧩 Для продолжения нужна капча, но я не смог отправить её в личные сообщения.\n"
+                "Откройте бота в личке, нажмите /start и повторите попытку."
+            )
+
+        if query:
+            await query.edit_message_text(public_text, parse_mode=None)
+        else:
+            target_message = update.message or update.effective_message
+            if target_message:
+                await target_message.reply_text(public_text, parse_mode=None)
 
     def _get_antibot_active_block(self, user_id: int, update: Update) -> Optional[Dict[str, Any]]:
         """Проверить активный штраф/незавершённую капчу. Если есть — вернуть блок."""
@@ -9946,11 +10011,7 @@ class FishBot:
 
         antibot_active_block = self._get_antibot_active_block(user_id, update)
         if antibot_active_block:
-            await query.edit_message_text(
-                antibot_active_block["text"],
-                reply_markup=antibot_active_block.get("reply_markup"),
-                parse_mode=None,
-            )
+            await self._send_antibot_block_to_user(update, antibot_active_block, query=query)
             return
         
         # Проверяем кулдаун
@@ -9973,11 +10034,7 @@ class FishBot:
 
         antibot_rhythm_block = self._register_free_fish_attempt_and_check_antibot(user_id, update)
         if antibot_rhythm_block:
-            await query.edit_message_text(
-                antibot_rhythm_block["text"],
-                reply_markup=antibot_rhythm_block.get("reply_markup"),
-                parse_mode=None,
-            )
+            await self._send_antibot_block_to_user(update, antibot_rhythm_block, query=query)
             return
         
         # Начинаем рыбалку на текущей локации
