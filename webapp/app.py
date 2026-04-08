@@ -210,7 +210,8 @@ def _get_verified_user_from_request() -> tuple[Optional[dict], Optional[str]]:
 
 @app.get("/")
 def index():
-	return render_template("index.html")
+	captcha_mode = bool(str(request.args.get("captcha_token") or "").strip())
+	return render_template("index.html", captcha_mode=captcha_mode)
 
 
 @app.get("/health")

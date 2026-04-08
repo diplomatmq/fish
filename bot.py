@@ -630,7 +630,13 @@ class FishBot:
 
     async def handle_buy_paid_boat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка покупки платной лодки по кнопке в меню."""
+        query = update.callback_query
         user_id = update.effective_user.id
+        if not query or not str(query.data or "").endswith(f"_{user_id}"):
+            if query:
+                await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
         price = 50  # Цена платной лодки (пример)
         ok = db.buy_paid_boat(user_id, price)
         if ok:
@@ -664,8 +670,8 @@ class FishBot:
         # Отправить приглашённому сообщение с кнопками
         username = update.effective_user.username or update.effective_user.first_name
         keyboard = [
-            [InlineKeyboardButton("✅ Принять", callback_data=f"boat_invite_accept_{user_id}"),
-             InlineKeyboardButton("❌ Отклонить", callback_data=f"boat_invite_decline_{user_id}")]
+              [InlineKeyboardButton("✅ Принять", callback_data=f"boat_invite_accept_{user_id}_{to_user_id}"),
+               InlineKeyboardButton("❌ Отклонить", callback_data=f"boat_invite_decline_{user_id}_{to_user_id}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
@@ -680,7 +686,21 @@ class FishBot:
 
     async def handle_boat_invite_accept(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка принятия приглашения в лодку."""
+        query = update.callback_query
         user_id = update.effective_user.id
+
+        data = str(query.data or "") if query else ""
+        match = re.match(r"^boat_invite_accept_(\d+)(?:_(\d+))?$", data)
+        if not match:
+            if query:
+                await query.answer("Некорректная кнопка", show_alert=True)
+            return
+
+        target_id_raw = match.group(2)
+        if target_id_raw and int(target_id_raw) != user_id:
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
         # Найти последнее приглашение к этому пользователю
         invite_id = db.get_last_pending_invite_id(user_id)
         if not invite_id:
@@ -695,7 +715,21 @@ class FishBot:
 
     async def handle_boat_invite_decline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка отклонения приглашения в лодку."""
+        query = update.callback_query
         user_id = update.effective_user.id
+
+        data = str(query.data or "") if query else ""
+        match = re.match(r"^boat_invite_decline_(\d+)(?:_(\d+))?$", data)
+        if not match:
+            if query:
+                await query.answer("Некорректная кнопка", show_alert=True)
+            return
+
+        target_id_raw = match.group(2)
+        if target_id_raw and int(target_id_raw) != user_id:
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
         invite_id = db.get_last_pending_invite_id(user_id)
         if not invite_id:
             await update.callback_query.answer("Нет активного приглашения.", show_alert=True)
@@ -4465,7 +4499,13 @@ class FishBot:
 
     async def handle_skip_boat_cooldown(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка сброса КД лодки по кнопке в меню."""
+        query = update.callback_query
         user_id = update.effective_user.id
+        if not query or not str(query.data or "").endswith(f"_{user_id}"):
+            if query:
+                await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
         price = 20  # Цена сброса КД (пример)
         ok = db.skip_boat_cooldown(user_id, price)
         if ok:
@@ -4476,7 +4516,13 @@ class FishBot:
 
     async def handle_cure_seasick(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка лечения морской болезни по кнопке в меню."""
+        query = update.callback_query
         user_id = update.effective_user.id
+        if not query or not str(query.data or "").endswith(f"_{user_id}"):
+            if query:
+                await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
         price = 10  # Цена лечения (пример)
         ok = db.cure_seasick(user_id, price)
         if ok:
@@ -4493,8 +4539,14 @@ class FishBot:
 
     async def handle_boat_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка кнопки Выплыть"""
+        query = update.callback_query
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
+        if not query or not str(query.data or "").endswith(f"_{user_id}"):
+            if query:
+                await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
         can_start, cd = db.can_start_boat_trip(user_id)
         if can_start:
             db.start_boat_trip(user_id)
@@ -4516,8 +4568,13 @@ class FishBot:
 
     async def handle_boat_return(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка кнопки Вернуться (делёж улова)"""
+        query = update.callback_query
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id if update.effective_chat else 0
+        if not query or not str(query.data or "").endswith(f"_{user_id}"):
+            if query:
+                await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
 
         logger.info("[boat] Return requested: user_id=%s chat_id=%s", user_id, chat_id)
         try:
@@ -4736,10 +4793,15 @@ class FishBot:
         try:
             parts = query.data.split('_')
             loc_idx = int(parts[3])
+            button_user_id = int(parts[4])
             page = int(parts[5]) if len(parts) > 5 else 1
         except (IndexError, ValueError) as e:
             logger.error("handle_change_bait_location: bad callback_data=%s: %s", query.data, e)
             await query.answer("Ошибка навигации", show_alert=True)
+            return
+
+        if button_user_id != user_id:
+            await query.answer("Эта кнопка не для вас", show_alert=True)
             return
 
         try:

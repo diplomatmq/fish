@@ -16,7 +16,8 @@
       <span></span><span></span><span></span>
     </div>
 
-    <header class="profile-header">
+    {% if not captcha_mode %}
+    <header id="profileHeader" class="profile-header">
       <div class="player-line">
         <div class="avatar">🎣</div>
         <div class="player-meta">
@@ -40,6 +41,7 @@
         </article>
       </div>
     </header>
+    {% endif %}
 
     <main class="main-panel">
       <section id="view-profile" class="view active">

@@ -3,6 +3,7 @@ import json
 import logging
 import random
 import secrets
+import re
 from typing import Any, Dict, List, Optional, Union
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1077,7 +1078,7 @@ class Database:
                 "answer": "рим|rome",
             },
             {
-                "prompt": "Какой сегодня день после понедельника?",
+                "prompt": "Какой день идет после понедельника?",
                 "answer": "вторник",
             },
             {
@@ -1517,12 +1518,6 @@ class Database:
             return {"ok": False, "error": "answer_required"}
 
         gate = self.get_antibot_gate_status(user_id)
-        if gate.get("penalty_active"):
-            return {
-                "ok": False,
-                "error": "penalty_active",
-                "penalty_until": gate.get("penalty_until"),
-            }
 
         row = self._fetch_antibot_row(user_id)
         now = datetime.now(timezone.utc)
@@ -1532,6 +1527,12 @@ class Database:
         expires_at = self._parse_utc_datetime(row.get("active_expires_at"))
 
         if not active_token or active_token != normalized_token:
+            if gate.get("penalty_active"):
+                return {
+                    "ok": False,
+                    "error": "penalty_active",
+                    "penalty_until": gate.get("penalty_until"),
+                }
             return {"ok": False, "error": "challenge_not_found"}
 
         if not expires_at or expires_at <= now:

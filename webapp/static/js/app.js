@@ -12,6 +12,7 @@ const activeTrophyImage = document.getElementById("activeTrophyImage");
 const activeTrophyEmpty = document.getElementById("activeTrophyEmpty");
 const activeTrophyName = document.getElementById("activeTrophyName");
 const activeTrophyMeta = document.getElementById("activeTrophyMeta");
+const profileHeader = document.getElementById("profileHeader");
 const profileView = document.getElementById("view-profile");
 const captchaView = document.getElementById("view-captcha");
 const captchaLead = document.getElementById("captchaLead");
@@ -67,6 +68,10 @@ function getAuthHeaders() {
 }
 
 function setActiveView(viewName) {
+  if (profileHeader) {
+    profileHeader.style.display = viewName === "captcha" ? "none" : "";
+  }
+
   if (profileView) {
     profileView.classList.toggle("active", viewName === "profile");
   }
@@ -314,7 +319,7 @@ function renderCaptchaChallenge(result) {
 
   if (captchaPenaltyInfo) {
     const penaltyText = result.penalty_active
-      ? `Penalty active until ${formatPenaltyUntil(result.penalty_until)}. Fishing is blocked until penalty expires.`
+      ? `Штраф активен до ${formatPenaltyUntil(result.penalty_until)}. После верного ответа ограничения будут сняты.`
       : "";
     captchaPenaltyInfo.textContent = penaltyText;
   }
