@@ -56,11 +56,57 @@
         </article>
 
         <article class="card">
+          <h3>Активный трофей</h3>
+          <div class="trophy-preview">
+            <div class="trophy-image-wrap">
+              <img id="activeTrophyImage" class="trophy-image" alt="Трофей" style="display:none" />
+              <div id="activeTrophyEmpty" class="trophy-empty">Нет выбранного трофея</div>
+            </div>
+            <p id="activeTrophyName" class="trophy-name">Трофей не выбран</p>
+            <p id="activeTrophyMeta" class="subtext">Выберите трофей в списке выше.</p>
+          </div>
+        </article>
+
+        <article class="card">
           <h3>Прогресс опыта</h3>
           <div class="track">
             <div id="xpFill" class="fill" style="width: 0%"></div>
           </div>
           <p id="xpInfo" class="subtext">До следующего уровня: 0 XP</p>
+        </article>
+      </section>
+
+      <section id="view-captcha" class="view">
+        <article class="card captcha-card">
+          <h2>🧩 Проверка рыбака</h2>
+          <p id="captchaLead" class="subtext">Подтвердите, что вы человек, и решите шифр буя.</p>
+          <p id="captchaPenaltyInfo" class="status"></p>
+
+          <div class="captcha-block">
+            <h3>Ключ символов</h3>
+            <ul id="captchaMap" class="captcha-map"></ul>
+          </div>
+
+          <div class="captcha-block">
+            <h3>Шаги</h3>
+            <ol id="captchaSteps" class="captcha-steps"></ol>
+          </div>
+
+          <label class="field-label" for="captchaAnswer">Итоговый код</label>
+          <div class="trophy-row">
+            <input
+              id="captchaAnswer"
+              class="input"
+              type="text"
+              inputmode="numeric"
+              autocomplete="off"
+              placeholder="Введите число"
+            />
+            <button id="captchaSubmit" class="btn">Проверить</button>
+          </div>
+
+          <p id="captchaTimer" class="status">Ожидание капчи...</p>
+          <p id="captchaStatus" class="status">Откройте апку по ссылке из бота.</p>
         </article>
       </section>
     </main>

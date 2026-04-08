@@ -7,7 +7,8 @@ import asyncio
 import re
 import shlex
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, WebAppInfo
 # -*- coding: utf-8 -*-
 import logging
@@ -162,6 +163,56 @@ ECHOSOUNDER_CODE = "echosounder"
 ECHOSOUNDER_COST_STARS = 20
 ECHOSOUNDER_DURATION_HOURS = 24
 
+BEER_PRICE_COINS = 1000
+BEER_DRUNK_EFFECT = "beer_drunk"
+BEER_TRACE_EFFECT = "beer_trace"
+BEER_DRUNK_DURATION_MINUTES = 20
+BEER_TRACE_DURATION_MINUTES = 90
+BEER_DRUNK_BASE_CHANCE = 0.12
+BEER_DRUNK_PER_TRACE_CHANCE = 0.08
+BEER_DRUNK_MAX_CHANCE = 0.62
+BEER_POSITIVE_EFFECTS = [
+    {
+        "effect_type": "beer_courage",
+        "name": "Кураж",
+        "bonus_percent": 5,
+        "duration_minutes": 15,
+    },
+    {
+        "effect_type": "beer_lucky_wave",
+        "name": "Пенная волна",
+        "bonus_percent": 3,
+        "duration_minutes": 25,
+    },
+    {
+        "effect_type": "beer_foamy_focus",
+        "name": "Пенный фокус",
+        "bonus_percent": 7,
+        "duration_minutes": 10,
+    },
+]
+BEER_FAKE_GOOD_RESULTS = [
+    "✨ Ого! Пойман редкий вайб: +12% к удаче на 20 минут!",
+    "🔥 Пивной крит! Шанс на крупную рыбу заметно вырос!",
+    "🎉 Бонус активирован: легендарный клев вот-вот начнётся!",
+    "⭐ Рыба в восторге от вашего настроя. Клев должен быть супер!",
+]
+DRUNK_GIBBERISH_SYLLABLES = [
+    "брр", "фшш", "кхм", "ллл", "жжж", "трр", "пхп", "мрр", "глп", "хрм", "шлк", "дрд"
+]
+STORM_EVENT_CHANCE_ON_BOAT = 0.01
+STORM_EVENT_COOLDOWN_HOURS = 18
+
+ANTI_BOT_RHYTHM_MIN_SECONDS = 8 * 60
+ANTI_BOT_RHYTHM_MAX_SECONDS = 12 * 60
+ANTI_BOT_RHYTHM_TRIGGER_STREAK = 5
+ANTI_BOT_CAPTCHA_TTL_SECONDS = 60
+ANTI_BOT_PENALTY_HOURS = 6
+
+DUEL_FREE_INVITES_PER_DAY = 3
+DUEL_INVITE_TIMEOUT_SECONDS = 60
+DUEL_PAID_INVITE_STARS = 5
+
 DYNAMITE_COOLDOWN_HOURS = 8
 DYNAMITE_BATCH_ROLLS = 12
 DYNAMITE_SKIP_COST_STARS = 15
@@ -169,6 +220,83 @@ DYNAMITE_GUARD_CHANCE = 0.001
 DYNAMITE_GUARD_BAN_HOURS = 24
 DYNAMITE_GUARD_FINE_STARS = 20
 DYNAMITE_STICKER_FILE_ID = "CAACAgEAAxkBAAEcHQlptoOhA4B-LV0g-vv7Orrwg4UZfgACXgIAAg60IEQze4zUaM3_bzoE"
+DYNAMITE_GRENADE_STICKER_FILE_ID = os.getenv("DYNAMITE_GRENADE_STICKER_FILE_ID", DYNAMITE_STICKER_FILE_ID)
+DYNAMITE_BOMB_STICKER_FILE_ID = os.getenv("DYNAMITE_BOMB_STICKER_FILE_ID", DYNAMITE_STICKER_FILE_ID)
+DYNAMITE_NAME_BY_LEVEL = {
+    1: "Динамит",
+    2: "Граната",
+    3: "Бомба",
+}
+DYNAMITE_MAX_WEIGHT_BY_LEVEL = {
+    1: 550.0,
+    2: 750.0,
+    3: 1100.0,
+}
+DYNAMITE_UPGRADE_COST_BY_LEVEL = {
+    1: 2,
+    2: 8,
+}
+DYNAMITE_STICKER_BY_LEVEL = {
+    1: DYNAMITE_STICKER_FILE_ID,
+    2: DYNAMITE_GRENADE_STICKER_FILE_ID,
+    3: DYNAMITE_BOMB_STICKER_FILE_ID,
+}
+
+CLOTHING_ITEMS = [
+    {
+        "code": "boots",
+        "name": "Сапоги рыбака",
+        "price_diamonds": 5,
+        "bonus_percent": 0.05,
+    },
+    {
+        "code": "raincoat",
+        "name": "Штормовой плащ",
+        "price_diamonds": 8,
+        "bonus_percent": 0.07,
+    },
+    {
+        "code": "gloves",
+        "name": "Рыбацкие перчатки",
+        "price_diamonds": 10,
+        "bonus_percent": 0.09,
+    },
+    {
+        "code": "hat",
+        "name": "Кепка капитана",
+        "price_diamonds": 12,
+        "bonus_percent": 0.11,
+    },
+    {
+        "code": "overalls",
+        "name": "Морской комбинезон",
+        "price_diamonds": 15,
+        "bonus_percent": 0.14,
+    },
+    {
+        "code": "thermal_suit",
+        "name": "Термокостюм",
+        "price_diamonds": 20,
+        "bonus_percent": 0.18,
+    },
+    {
+        "code": "captain_coat",
+        "name": "Китель адмирала",
+        "price_diamonds": 30,
+        "bonus_percent": 0.25,
+    },
+    {
+        "code": "abyss_set",
+        "name": "Костюм бездны",
+        "price_diamonds": 45,
+        "bonus_percent": 0.35,
+    },
+]
+CLOTHING_ITEM_BY_CODE = {item["code"]: item for item in CLOTHING_ITEMS}
+
+TROPHY_CREATE_COST_COINS = 10000
+TROPHY_LIST_PAGE_SIZE = 8
+TROPHY_ADD_PAGE_SIZE = 8
 
 def _replace_plain_emoji_segment(text: str) -> str:
     if not text:
@@ -211,6 +339,15 @@ def strip_tg_emoji_tags(text: str) -> str:
     if not text or '<tg-emoji' not in text:
         return text
     return TG_EMOJI_TAG_RE.sub(r'\1', text)
+
+
+def format_percent_value(value: float) -> str:
+    try:
+        normalized = float(value)
+    except Exception:
+        normalized = 0.0
+    formatted = f"{normalized:.2f}".rstrip('0').rstrip('.')
+    return formatted if formatted else "0"
 
 
 class EmojiBot(ExtBot):
@@ -494,6 +631,236 @@ class FishBot:
             return
         db.respond_boat_invite(invite_id, accept=False)
         await update.callback_query.answer("Приглашение отклонено.")
+
+    async def duel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /duel @username — вызов на дуэль в текущем чате."""
+        if update.effective_chat.type == 'private':
+            await update.message.reply_text("Команда /duel работает только в групповых чатах.")
+            return
+
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        inviter_username = update.effective_user.username or update.effective_user.first_name or str(user_id)
+
+        inviter_player = db.get_player(user_id, chat_id)
+        if not inviter_player:
+            try:
+                inviter_player = db.create_player(user_id, inviter_username, chat_id)
+            except Exception:
+                logger.exception("duel_command: failed to create player user=%s chat=%s", user_id, chat_id)
+                inviter_player = None
+        if not inviter_player:
+            await update.message.reply_text("Сначала создайте профиль командой /start.")
+            return
+
+        if not context.args:
+            await update.message.reply_text("Использование: /duel @username")
+            return
+
+        raw_target = str(context.args[0] or '').strip()
+        if not raw_target.startswith('@'):
+            await update.message.reply_text("Укажите соперника через @username, например: /duel @fisher")
+            return
+
+        target_username_arg = re.sub(r'[^A-Za-z0-9_]', '', raw_target.lstrip('@'))
+        if not target_username_arg:
+            await update.message.reply_text("Некорректный username для дуэли.")
+            return
+
+        target_id = db.get_user_id_by_username(target_username_arg)
+        if not target_id:
+            await update.message.reply_text("Пользователь не найден в базе. Он должен хотя бы раз начать игру.")
+            return
+
+        if int(target_id) == int(user_id):
+            await update.message.reply_text("Нельзя вызвать самого себя на дуэль.")
+            return
+
+        target_username = db.get_username_by_user_id(int(target_id)) or target_username_arg
+
+        try:
+            db.expire_pending_duels()
+        except Exception:
+            logger.exception("duel_command: failed to expire pending duels")
+
+        active_for_inviter = db.get_active_duel_for_user(user_id)
+        if active_for_inviter:
+            await update.message.reply_text("У вас уже есть активная/ожидающая дуэль. Завершите её перед новым вызовом.")
+            return
+
+        active_for_target = db.get_active_duel_for_user(int(target_id))
+        if active_for_target:
+            await update.message.reply_text(
+                f"{self._duel_user_label(int(target_id), target_username)} уже участвует в другой активной дуэли."
+            )
+            return
+
+        attempts = db.get_duel_attempts_status(user_id, free_limit=DUEL_FREE_INVITES_PER_DAY)
+        free_left = int(attempts.get('left') or 0)
+
+        if free_left > 0:
+            create_result = db.create_duel_invitation(
+                chat_id=chat_id,
+                inviter_id=user_id,
+                target_id=int(target_id),
+                inviter_username=inviter_username,
+                target_username=target_username,
+                attempt_type='free',
+                invite_timeout_seconds=DUEL_INVITE_TIMEOUT_SECONDS,
+                free_limit=DUEL_FREE_INVITES_PER_DAY,
+            )
+
+            if not create_result.get('ok'):
+                error_code = str(create_result.get('error') or 'duel_create_failed')
+                if error_code in {'inviter_has_active_duel', 'target_has_active_duel'}:
+                    await update.message.reply_text("Сейчас нельзя создать дуэль: у одного из игроков уже есть активная/ожидающая дуэль.")
+                elif error_code == 'no_free_attempts':
+                    await update.message.reply_text(
+                        f"Бесплатные попытки закончились. Оплатите {DUEL_PAID_INVITE_STARS} ⭐ для дополнительного вызова."
+                    )
+                else:
+                    await update.message.reply_text("Не удалось создать дуэль. Попробуйте ещё раз.")
+                return
+
+            duel = create_result.get('duel') or {}
+            sent_message = await self._send_duel_invitation_message(
+                chat_id=chat_id,
+                duel=duel,
+                attempts_left_after=create_result.get('attempts_left_after'),
+                reply_to_message_id=update.message.message_id if update.message else None,
+            )
+
+            if not sent_message:
+                try:
+                    force_now = datetime.now(timezone.utc) + timedelta(seconds=DUEL_INVITE_TIMEOUT_SECONDS + 1)
+                    db.expire_duel_invitation_by_id(int(duel.get('id') or 0), now=force_now)
+                except Exception:
+                    logger.exception("duel_command: failed to rollback duel after send error duel_id=%s", duel.get('id'))
+                await update.message.reply_text("Не удалось отправить приглашение на дуэль. Попробуйте ещё раз.")
+            return
+
+        from config import BOT_TOKEN
+        tg_api = TelegramBotAPI(BOT_TOKEN)
+        payload = self._build_duel_invite_payload(
+            user_id,
+            int(target_id),
+            chat_id,
+            target_username=target_username,
+        )
+
+        try:
+            invoice_url = await tg_api.create_invoice_link(
+                title="Вызов на дуэль",
+                description=(
+                    f"Платное приглашение в дуэль для {self._duel_user_label(int(target_id), target_username)} "
+                    f"({DUEL_PAID_INVITE_STARS} ⭐)"
+                ),
+                payload=payload,
+                currency="XTR",
+                prices=[{"label": "Платная дуэль", "amount": DUEL_PAID_INVITE_STARS}],
+            )
+        except Exception:
+            logger.exception("duel_command: failed to create duel invoice user=%s target=%s", user_id, target_id)
+            invoice_url = None
+
+        if not invoice_url:
+            await update.message.reply_text("Не удалось создать ссылку оплаты дуэли. Попробуйте позже.")
+            return
+
+        await self.send_invoice_url_button(
+            chat_id=chat_id,
+            invoice_url=invoice_url,
+            text=(
+                f"🎟 Бесплатные приглашения закончились ({DUEL_FREE_INVITES_PER_DAY}/{DUEL_FREE_INVITES_PER_DAY}).\n"
+                f"Чтобы вызвать {self._duel_user_label(int(target_id), target_username)}, оплатите {DUEL_PAID_INVITE_STARS} ⭐.\n"
+                "После оплаты бот автоматически отправит приглашение в этот чат."
+            ),
+            user_id=user_id,
+            reply_to_message_id=update.message.message_id if update.message else None,
+        )
+
+    async def handle_duel_accept(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Принятие приглашения в дуэль (только приглашённый игрок)."""
+        query = update.callback_query
+        data = query.data or ""
+        match = re.match(r"^duel_accept_(\d+)_(\d+)$", data)
+        if not match:
+            await query.answer("Некорректная кнопка", show_alert=True)
+            return
+
+        duel_id = int(match.group(1))
+        target_id = int(match.group(2))
+        user_id = update.effective_user.id
+
+        if int(user_id) != target_id:
+            await query.answer("Эта кнопка только для приглашённого игрока.", show_alert=True)
+            return
+
+        await query.answer()
+        accept_result = db.accept_duel_invitation(duel_id, user_id)
+        if not accept_result.get('ok'):
+            error_code = str(accept_result.get('error') or 'accept_failed')
+            if error_code == 'expired':
+                await query.edit_message_text("⏱ Время на принятие дуэли истекло.")
+            elif error_code == 'not_pending':
+                await query.edit_message_text("Эта дуэль уже неактивна.")
+            elif error_code == 'not_target':
+                await query.answer("Эта кнопка не для вас.", show_alert=True)
+            else:
+                await query.edit_message_text("Не удалось принять дуэль. Попробуйте ещё раз.")
+            return
+
+        self._cancel_duel_invite_timeout_job(duel_id)
+
+        duel = accept_result.get('duel') or {}
+        inviter_label = self._duel_user_label(int(duel.get('inviter_id') or 0), duel.get('inviter_username'))
+        target_label = self._duel_user_label(int(duel.get('target_id') or 0), duel.get('target_username'))
+
+        await query.edit_message_text(
+            "⚔️ Дуэль принята!\n\n"
+            f"{inviter_label} vs {target_label}\n"
+            "Теперь оба игрока пишут фиш в этом чате.\n"
+            "Когда оба сделают улов, бот автоматически определит победителя."
+        )
+
+    async def handle_duel_decline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Отклонение приглашения в дуэль (только приглашённый игрок)."""
+        query = update.callback_query
+        data = query.data or ""
+        match = re.match(r"^duel_decline_(\d+)_(\d+)$", data)
+        if not match:
+            await query.answer("Некорректная кнопка", show_alert=True)
+            return
+
+        duel_id = int(match.group(1))
+        target_id = int(match.group(2))
+        user_id = update.effective_user.id
+
+        if int(user_id) != target_id:
+            await query.answer("Эта кнопка только для приглашённого игрока.", show_alert=True)
+            return
+
+        await query.answer()
+        decline_result = db.decline_duel_invitation(duel_id, user_id)
+        if not decline_result.get('ok'):
+            error_code = str(decline_result.get('error') or 'decline_failed')
+            if error_code == 'not_pending':
+                await query.edit_message_text("Эта дуэль уже неактивна.")
+            elif error_code == 'not_target':
+                await query.answer("Эта кнопка не для вас.", show_alert=True)
+            else:
+                await query.edit_message_text("Не удалось отклонить дуэль. Попробуйте ещё раз.")
+            return
+
+        self._cancel_duel_invite_timeout_job(duel_id)
+        duel = decline_result.get('duel') or {}
+        inviter_label = self._duel_user_label(int(duel.get('inviter_id') or 0), duel.get('inviter_username'))
+        target_label = self._duel_user_label(int(duel.get('target_id') or 0), duel.get('target_username'))
+
+        await query.edit_message_text(
+            "❌ Дуэль отклонена.\n\n"
+            f"{target_label} отказался от вызова {inviter_label}."
+        )
 
     async def ref_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /ref: показать статистику и обработать вывод звёзд"""
@@ -1400,6 +1767,300 @@ class FishBot:
             }
         except (TypeError, ValueError):
             return None
+
+    def _build_duel_invite_payload(
+        self,
+        inviter_id: int,
+        target_id: int,
+        chat_id: int,
+        target_username: Optional[str] = None,
+    ) -> str:
+        """Payload для оплаты приглашения в дуэль."""
+        ts = int(datetime.now().timestamp())
+        safe_username = re.sub(r'[^A-Za-z0-9_]', '', str(target_username or '').lstrip('@'))
+        if safe_username:
+            return f"duel_invite_{inviter_id}_{target_id}_{chat_id}_{safe_username}_{ts}"
+        return f"duel_invite_{inviter_id}_{target_id}_{chat_id}_{ts}"
+
+    def _parse_duel_invite_payload(self, payload: str) -> Optional[Dict[str, Any]]:
+        """Парсит payload дуэли с поддержкой legacy и расширенного формата."""
+        if not payload or not payload.startswith("duel_invite_"):
+            return None
+        body = payload[len("duel_invite_"):]
+
+        extended = re.match(r"^(-?\d+)_(-?\d+)_(-?\d+)_([A-Za-z0-9_]{1,64})_(-?\d+)$", body)
+        if extended:
+            try:
+                return {
+                    "payload_user_id": int(extended.group(1)),
+                    "target_user_id": int(extended.group(2)),
+                    "group_chat_id": int(extended.group(3)),
+                    "target_username": extended.group(4),
+                    "created_ts": int(extended.group(5)),
+                }
+            except (TypeError, ValueError):
+                return None
+
+        legacy = re.match(r"^(-?\d+)_(-?\d+)_(-?\d+)_(-?\d+)$", body)
+        if not legacy:
+            return None
+
+        try:
+            return {
+                "payload_user_id": int(legacy.group(1)),
+                "target_user_id": int(legacy.group(2)),
+                "group_chat_id": int(legacy.group(3)),
+                "created_ts": int(legacy.group(4)),
+            }
+        except (TypeError, ValueError):
+            return None
+
+    def _duel_user_label(self, user_id: int, username: Optional[str]) -> str:
+        normalized = str(username or '').strip()
+        if normalized.startswith('@'):
+            normalized = normalized[1:]
+        if normalized:
+            return f"@{normalized}"
+        return f"id{int(user_id)}"
+
+    async def _send_duel_invitation_message(
+        self,
+        chat_id: int,
+        duel: Dict[str, Any],
+        attempts_left_after: Optional[int] = None,
+        reply_to_message_id: Optional[int] = None,
+    ) -> Optional[Message]:
+        duel_id = int(duel.get('id') or 0)
+        target_id = int(duel.get('target_id') or 0)
+        inviter_id = int(duel.get('inviter_id') or 0)
+
+        inviter_label = self._duel_user_label(inviter_id, duel.get('inviter_username'))
+        target_label = self._duel_user_label(target_id, duel.get('target_username'))
+
+        attempts_line = ""
+        if attempts_left_after is not None:
+            attempts_line = f"\n🎟 Бесплатных приглашений сегодня осталось: {attempts_left_after}/{DUEL_FREE_INVITES_PER_DAY}"
+
+        text = (
+            "⚔️ Вызов на дуэль!\n\n"
+            f"{inviter_label} вызывает {target_label}.\n"
+            f"{target_label}, у вас 1 минута, чтобы принять решение.{attempts_line}\n\n"
+            "После принятия оба игрока пишут фиш в этом чате.\n"
+            "Чей улов лучше, тот победит и заберет улов соперника."
+        )
+
+        keyboard = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton("✅ Согласиться", callback_data=f"duel_accept_{duel_id}_{target_id}"),
+                InlineKeyboardButton("❌ Отказаться", callback_data=f"duel_decline_{duel_id}_{target_id}"),
+            ]]
+        )
+
+        send_kwargs = {
+            'chat_id': int(chat_id),
+            'text': text,
+            'reply_markup': keyboard,
+        }
+        if reply_to_message_id is not None:
+            send_kwargs['reply_to_message_id'] = int(reply_to_message_id)
+
+        msg = await self._safe_send_message(**send_kwargs)
+        if msg and self.scheduler:
+            try:
+                run_at = datetime.now() + timedelta(seconds=DUEL_INVITE_TIMEOUT_SECONDS)
+                self.scheduler.add_job(
+                    self._handle_duel_invite_timeout,
+                    trigger=DateTrigger(run_date=run_at),
+                    kwargs={'duel_id': duel_id, 'chat_id': int(chat_id)},
+                    id=f"duel_invite_{duel_id}",
+                    replace_existing=True,
+                )
+            except Exception:
+                logger.exception("Failed to schedule duel timeout for duel_id=%s", duel_id)
+        return msg
+
+    def _cancel_duel_invite_timeout_job(self, duel_id: int) -> None:
+        if not self.scheduler:
+            return
+        try:
+            self.scheduler.remove_job(f"duel_invite_{int(duel_id)}")
+        except Exception:
+            pass
+
+    async def _handle_duel_invite_timeout(self, duel_id: int, chat_id: int):
+        try:
+            result = db.expire_duel_invitation_by_id(int(duel_id))
+        except Exception:
+            logger.exception("Failed to expire duel invite by timeout duel_id=%s", duel_id)
+            return
+
+        if not result.get('ok') or not result.get('expired'):
+            return
+
+        duel = result.get('duel') or {}
+        inviter_label = self._duel_user_label(int(duel.get('inviter_id') or 0), duel.get('inviter_username'))
+        target_label = self._duel_user_label(int(duel.get('target_id') or 0), duel.get('target_username'))
+        refund_note = "\n🎟 Бесплатная попытка возвращена." if str(duel.get('attempt_type') or '') == 'free' else ""
+
+        await self._safe_send_message(
+            chat_id=int(chat_id),
+            text=(
+                f"⏱ Дуэль не состоялась: {target_label} не ответил вовремя.\n"
+                f"{inviter_label} может отправить новый вызов.{refund_note}"
+            ),
+        )
+
+    @staticmethod
+    def _format_duel_catch_text(fish_name: str, weight: Any, length: Any) -> str:
+        safe_name = str(fish_name or 'Неизвестная рыба')
+        try:
+            weight_val = float(weight)
+        except (TypeError, ValueError):
+            weight_val = 0.0
+        try:
+            length_val = float(length)
+        except (TypeError, ValueError):
+            length_val = 0.0
+        return f"{safe_name} — {weight_val:.2f} кг, {length_val:.1f} см"
+
+    async def _maybe_process_duel_catch(
+        self,
+        user_id: int,
+        chat_id: int,
+        fish_name: str,
+        weight: float,
+        length: float,
+    ) -> None:
+        """Если у пользователя активная дуэль в этом чате, засчитать улов и объявить результат."""
+        duel = db.get_active_duel_for_user(int(user_id))
+        if not duel or str(duel.get('status') or '') != 'active':
+            return
+
+        duel_chat_id = int(duel.get('chat_id') or 0)
+        if duel_chat_id and duel_chat_id != int(chat_id):
+            return
+
+        duel_id = int(duel.get('id') or 0)
+        if duel_id <= 0:
+            return
+
+        catch_id = None
+        try:
+            latest_catch = db.get_latest_unsold_catch(int(user_id), int(chat_id))
+            if latest_catch and latest_catch.get('id') is not None:
+                catch_id = int(latest_catch.get('id'))
+        except Exception:
+            logger.exception("Failed to load latest catch for duel user=%s chat=%s", user_id, chat_id)
+
+        record_result = db.record_duel_catch(
+            duel_id=duel_id,
+            user_id=int(user_id),
+            fish_name=fish_name,
+            weight=weight,
+            length=length,
+            catch_id=catch_id,
+        )
+
+        if not record_result.get('ok'):
+            error_code = str(record_result.get('error') or 'record_failed')
+            if error_code not in {'already_submitted', 'duel_not_active', 'not_participant'}:
+                logger.warning(
+                    "Failed to record duel catch duel_id=%s user=%s error=%s",
+                    duel_id,
+                    user_id,
+                    error_code,
+                )
+            return
+
+        duel_data = record_result.get('duel') or duel
+        inviter_id = int(duel_data.get('inviter_id') or 0)
+        target_id = int(duel_data.get('target_id') or 0)
+        inviter_label = self._duel_user_label(inviter_id, duel_data.get('inviter_username'))
+        target_label = self._duel_user_label(target_id, duel_data.get('target_username'))
+        actor_label = inviter_label if int(user_id) == inviter_id else target_label
+
+        catch_line = self._format_duel_catch_text(fish_name, weight, length)
+        duel_chat = int(duel_data.get('chat_id') or chat_id)
+
+        if not record_result.get('completed'):
+            opponent_label = target_label if int(user_id) == inviter_id else inviter_label
+            await self._safe_send_message(
+                chat_id=duel_chat,
+                text=(
+                    f"⚔️ Дуэль: улов засчитан для {actor_label}.\n"
+                    f"🐟 {catch_line}\n"
+                    f"Ожидаем улов от {opponent_label}."
+                ),
+            )
+            return
+
+        inviter_catch_line = self._format_duel_catch_text(
+            str(duel_data.get('inviter_fish_name') or 'Неизвестная рыба'),
+            duel_data.get('inviter_weight'),
+            duel_data.get('inviter_length'),
+        )
+        target_catch_line = self._format_duel_catch_text(
+            str(duel_data.get('target_fish_name') or 'Неизвестная рыба'),
+            duel_data.get('target_weight'),
+            duel_data.get('target_length'),
+        )
+
+        if bool(record_result.get('draw')):
+            await self._safe_send_message(
+                chat_id=duel_chat,
+                text=(
+                    "⚖️ Дуэль завершилась ничьей!\n\n"
+                    f"{inviter_label}: {inviter_catch_line}\n"
+                    f"{target_label}: {target_catch_line}\n\n"
+                    "Передача улова не требуется."
+                ),
+            )
+            return
+
+        winner_id = int(duel_data.get('winner_id') or 0)
+        loser_id = int(duel_data.get('loser_id') or 0)
+
+        winner_username = duel_data.get('inviter_username') if winner_id == inviter_id else duel_data.get('target_username')
+        loser_username = duel_data.get('inviter_username') if loser_id == inviter_id else duel_data.get('target_username')
+        winner_label = self._duel_user_label(winner_id, winner_username)
+        loser_label = self._duel_user_label(loser_id, loser_username)
+
+        loser_catch_id = duel_data.get('inviter_catch_id') if loser_id == inviter_id else duel_data.get('target_catch_id')
+        transfer_done = False
+        if loser_catch_id is not None:
+            try:
+                transfer_done = db.move_caught_fish_to_user(
+                    fish_id=int(loser_catch_id),
+                    from_user_id=int(loser_id),
+                    to_user_id=int(winner_id),
+                    to_chat_id=duel_chat,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to transfer duel catch duel_id=%s fish_id=%s loser=%s winner=%s",
+                    duel_id,
+                    loser_catch_id,
+                    loser_id,
+                    winner_id,
+                )
+
+        transfer_line = (
+            f"✅ Улов {loser_label} передан победителю {winner_label}."
+            if transfer_done
+            else "⚠️ Не удалось автоматически передать улов проигравшего."
+        )
+
+        await self._safe_send_message(
+            chat_id=duel_chat,
+            text=(
+                "🏁 Дуэль завершена!\n\n"
+                f"{inviter_label}: {inviter_catch_line}\n"
+                f"{target_label}: {target_catch_line}\n\n"
+                f"🏆 Победитель: {winner_label}\n"
+                f"💥 Проигравший: {loser_label}\n"
+                f"{transfer_line}"
+            ),
+        )
 
     def _get_feeder_by_code(self, feeder_code: str) -> Optional[Dict[str, Any]]:
         legacy_aliases = {
@@ -2877,6 +3538,26 @@ class FishBot:
                 return
 
         self._sync_player_username_if_changed(user_id, chat_id, player, current_username)
+
+        if self._is_user_beer_drunk(user_id):
+            await update.message.reply_text(self._generate_drunk_gibberish())
+            return
+
+        if db.is_user_seasick(user_id):
+            await update.message.reply_text(
+                "🤢 Вас укачало в плавании. Ловить сейчас нельзя.\n"
+                "Используйте /cure_seasick или кнопку лечения в меню лодки."
+            )
+            return
+
+        antibot_active_block = self._get_antibot_active_block(user_id, update)
+        if antibot_active_block:
+            await update.message.reply_text(
+                antibot_active_block["text"],
+                reply_markup=antibot_active_block.get("reply_markup"),
+                parse_mode=None,
+            )
+            return
         
         # Проверяем кулдаун
         can_fish, message = game.can_fish(user_id, chat_id)
@@ -2955,6 +3636,15 @@ class FishBot:
                     error_text += f"\nОшибка: {invoice_error}"
                 await update.message.reply_text(error_text, parse_mode=None)
             return
+
+        antibot_rhythm_block = self._register_free_fish_attempt_and_check_antibot(user_id, update)
+        if antibot_rhythm_block:
+            await update.message.reply_text(
+                antibot_rhythm_block["text"],
+                reply_markup=antibot_rhythm_block.get("reply_markup"),
+                parse_mode=None,
+            )
+            return
         
 
         # --- Boat trip state handled implicitly by game.fish and main block below ---
@@ -2990,6 +3680,11 @@ class FishBot:
                     logger.error(f"Error sending population warning: {e}")
             
             result = game.fish(user_id, chat_id, player['current_location'])
+
+            storm_result = self._maybe_trigger_boat_storm(user_id, result=result)
+            if storm_result and storm_result.get('applied'):
+                await update.message.reply_text(self._format_storm_event_message(storm_result), parse_mode=None)
+                return
 
             try:
                 raf_won = await self._process_raf_event_roll(
@@ -3251,6 +3946,17 @@ class FishBot:
                 reply_to_message_id=sticker_message.message_id if sticker_message else update.message.message_id
             )
 
+            try:
+                await self._maybe_process_duel_catch(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    fish_name=fish.get('name', 'Неизвестная рыба'),
+                    weight=weight,
+                    length=length,
+                )
+            except Exception:
+                logger.exception("Failed to process duel catch from /fish user=%s chat=%s", user_id, chat_id)
+
             if result.get('temp_rod_broken'):
                 await update.message.reply_text(
                     "💥 Временная удочка сломалась после удачного улова.\n"
@@ -3358,19 +4064,8 @@ class FishBot:
             else:
                 # Если арест рыбнадзора — не показываем кнопку платного заброса
                 if result.get('fish_inspector') or "рыбнадзор" in result.get('message', '').lower():
-                    storm_result = None
                     # Стикер рыбнадзора — только при свежем аресте (не при повторных попытках)
                     if result.get('fish_inspector'):
-                        is_on_boat_trip = bool(result.get('is_on_boat')) or db.is_user_on_boat_trip(user_id)
-                        if is_on_boat_trip:
-                            storm_result = db.sink_active_boat_by_storm(user_id, cooldown_hours=18)
-                            logger.info(
-                                "[boat] fish_inspector storm: user_id=%s applied=%s boat_id=%s lost_count=%s",
-                                user_id,
-                                bool(storm_result.get('applied')),
-                                storm_result.get('boat_id'),
-                                storm_result.get('lost_count'),
-                            )
                         try:
                             inspector_image = FISH_STICKERS.get("Рыбнадзор")
                             if inspector_image:
@@ -3385,16 +4080,7 @@ class FishBot:
                         except Exception as e:
                             logger.warning(f"Could not send fish inspector sticker: {e}")
 
-                    inspector_message = result['message']
-                    if storm_result and storm_result.get('applied'):
-                        inspector_message += (
-                            "\n\n🌪️ Во время рейда рыбнадзора поднялся шторм."
-                            "\n🧺 Весь улов текущего плавания утерян и не записан в caught_fish."
-                            "\n⏳ Лодка ушла в КД на 18 часов."
-                            "\n🎣 Вы больше не в плавании и ловите с берега."
-                        )
-
-                    await update.message.reply_text(inspector_message, parse_mode=None)
+                    await update.message.reply_text(result['message'], parse_mode=None)
                     return
                 # Отправляем сообщение с причиной и кнопкой оплаты
                 reply_markup = await self._build_guaranteed_invoice_markup(user_id, chat_id)
@@ -3483,7 +4169,8 @@ class FishBot:
             [InlineKeyboardButton("📍 Сменить локацию", callback_data=f"change_location_{user_id}")],
             [InlineKeyboardButton("🪱 Сменить наживку", callback_data=f"change_bait_{user_id}")],
             [InlineKeyboardButton("🧺 Лавка", callback_data=f"sell_fish_{user_id}"), InlineKeyboardButton("🛒 Магазин", callback_data=f"shop_{user_id}")],
-            [InlineKeyboardButton("📊 Статистика", callback_data=f"stats_{user_id}"), InlineKeyboardButton("🎒 Инвентарь", callback_data=f"inventory_{user_id}")]
+            [InlineKeyboardButton("📊 Статистика", callback_data=f"stats_{user_id}"), InlineKeyboardButton("🎒 Инвентарь", callback_data=f"inventory_{user_id}")],
+            [InlineKeyboardButton("🏆 Трофеи", callback_data=f"inv_trophies_{user_id}")]
         ]
         # Кнопки лодки
         if is_active:
@@ -4199,11 +4886,13 @@ class FishBot:
         total_value = 0
         net_treasure_totals: Dict[str, int] = {}
         feeder_bonus = db.get_active_feeder_bonus(user_id, chat_id)
-        fish_chance = min(95, 80 + feeder_bonus)
+        clothing_bonus_percent = self._get_clothing_bonus_percent(user_id)
+        beer_bonus_percent = self._get_active_beer_bonus_percent(user_id)
+        fish_chance = min(95.0, 80 + feeder_bonus + clothing_bonus_percent + beer_bonus_percent)
         
         for i in range(fish_count):
             # Базово 80% шанс рыбы, кормушка увеличивает шанс
-            is_trash = random.randint(1, 100) > fish_chance
+            is_trash = random.uniform(0, 100) > fish_chance
             
             if is_trash and available_trash:
                 # Ловим мусор
@@ -4626,6 +5315,15 @@ class FishBot:
         await query.answer()
         
         await self.show_fishing_menu(update, context)
+
+    async def handle_noop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Пустой callback для служебных кнопок пагинации (индикатор страницы)."""
+        query = update.callback_query
+        if query:
+            try:
+                await query.answer()
+            except Exception:
+                pass
     
     async def handle_shop_rods(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка магазина удочек"""
@@ -5056,6 +5754,173 @@ class FishBot:
 
         await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
 
+    async def handle_shop_beer(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Экран пива с рандомными временными эффектами."""
+        query = update.callback_query
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+
+        if not query.data.endswith(f"_{user_id}"):
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
+        await query.answer()
+
+        player = db.get_player(user_id, chat_id)
+        if not player:
+            await query.edit_message_text("❌ Профиль не найден. Используйте /start")
+            return
+
+        coins = int(player.get("coins", 0) or 0)
+        drunk_remaining = db.get_effect_remaining_seconds(user_id, BEER_DRUNK_EFFECT)
+        trace_count = db.count_active_effects(user_id, BEER_TRACE_EFFECT)
+        current_drunk_chance = min(BEER_DRUNK_MAX_CHANCE, BEER_DRUNK_BASE_CHANCE + (trace_count * BEER_DRUNK_PER_TRACE_CHANCE))
+        total_beer_bonus = self._get_active_beer_bonus_percent(user_id)
+
+        active_bonus_lines = []
+        for effect in BEER_POSITIVE_EFFECTS:
+            remaining = db.get_effect_remaining_seconds(user_id, effect["effect_type"])
+            if remaining > 0:
+                active_bonus_lines.append(
+                    f"• {effect['name']}: +{effect['bonus_percent']}% ({self._format_seconds_compact(remaining)})"
+                )
+
+        if not active_bonus_lines:
+            active_bonus_lines = ["• Нет активных пивных баффов"]
+
+        if drunk_remaining > 0:
+            drunk_status = f"🤪 Опьянение активно: {self._format_seconds_compact(drunk_remaining)}"
+            risk_line = "⚠️ Вы уже в опьянении."
+        else:
+            drunk_status = "🤪 Опьянения нет"
+            risk_line = f"🎲 Текущий риск опьянения: {current_drunk_chance * 100:.0f}%"
+
+        keyboard = [
+            [InlineKeyboardButton(f"🍺 Выпить кружку — {BEER_PRICE_COINS} 🪙", callback_data=f"buy_beer_{user_id}")],
+            [InlineKeyboardButton("🔙 Магазин", callback_data=f"shop_{user_id}")],
+        ]
+
+        message = (
+            "🍺 Пивная\n\n"
+            "Каждая кружка может дать временный бафф к шансу клёва.\n"
+            "Но чем больше кружек подряд, тем выше шанс опьянения.\n\n"
+            f"💰 Баланс: {coins} 🪙\n"
+            f"✨ Суммарный пивной бонус: +{format_percent_value(total_beer_bonus)}%\n"
+            f"{drunk_status}\n"
+            f"{risk_line}\n\n"
+            "Активные баффы:\n"
+            + "\n".join(active_bonus_lines)
+        )
+
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def handle_buy_beer(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Покупка кружки пива за монеты и выдача случайного эффекта."""
+        query = update.callback_query
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+
+        if not query.data.endswith(f"_{user_id}"):
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
+        await query.answer()
+
+        player = db.get_player(user_id, chat_id)
+        if not player:
+            await query.edit_message_text("❌ Профиль не найден. Используйте /start")
+            return
+
+        coins_before = int(player.get("coins", 0) or 0)
+        if coins_before < BEER_PRICE_COINS:
+            await query.edit_message_text(
+                f"❌ Недостаточно монет. Нужно: {BEER_PRICE_COINS} 🪙, у вас: {coins_before} 🪙",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🍺 В пивную", callback_data=f"shop_beer_{user_id}")],
+                    [InlineKeyboardButton("🔙 Магазин", callback_data=f"shop_{user_id}")],
+                ]),
+            )
+            return
+
+        new_balance = coins_before - BEER_PRICE_COINS
+        db.update_player(user_id, chat_id, coins=new_balance)
+
+        back_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🍺 В пивную", callback_data=f"shop_beer_{user_id}")],
+            [InlineKeyboardButton("🔙 Магазин", callback_data=f"shop_{user_id}")],
+        ])
+
+        try:
+            is_already_drunk = self._is_user_beer_drunk(user_id)
+            traces = db.count_active_effects(user_id, BEER_TRACE_EFFECT)
+            drunk_chance = min(BEER_DRUNK_MAX_CHANCE, BEER_DRUNK_BASE_CHANCE + (traces * BEER_DRUNK_PER_TRACE_CHANCE))
+
+            if is_already_drunk or random.random() < drunk_chance:
+                for beer_effect in BEER_POSITIVE_EFFECTS:
+                    try:
+                        db.clear_timed_effect(user_id, beer_effect["effect_type"])
+                    except Exception:
+                        logger.exception(
+                            "Failed to clear beer buff=%s for user=%s",
+                            beer_effect.get("effect_type"),
+                            user_id,
+                        )
+                db.clear_timed_effect(user_id, BEER_TRACE_EFFECT)
+                db.apply_timed_effect(
+                    user_id,
+                    BEER_DRUNK_EFFECT,
+                    duration_minutes=BEER_DRUNK_DURATION_MINUTES,
+                    replace_existing=True,
+                )
+
+                fake_good_text = random.choice(BEER_FAKE_GOOD_RESULTS)
+                await query.edit_message_text(
+                    "🍺 Вы выпили кружку пива.\n\n"
+                    f"{fake_good_text}\n"
+                    "🎣 Самое время закинуть удочку!\n\n"
+                    f"💰 Потрачено: {BEER_PRICE_COINS} 🪙\n"
+                    f"💰 Баланс: {new_balance} 🪙",
+                    reply_markup=back_keyboard,
+                )
+                return
+
+            db.apply_timed_effect(
+                user_id,
+                BEER_TRACE_EFFECT,
+                duration_minutes=BEER_TRACE_DURATION_MINUTES,
+                replace_existing=False,
+            )
+
+            effect = random.choice(BEER_POSITIVE_EFFECTS)
+            db.apply_timed_effect(
+                user_id,
+                effect["effect_type"],
+                duration_minutes=int(effect["duration_minutes"]),
+                replace_existing=False,
+            )
+
+            total_bonus = self._get_active_beer_bonus_percent(user_id)
+            await query.edit_message_text(
+                "🍺 Вы выпили кружку пива.\n\n"
+                f"✨ Выпал эффект: {effect['name']}\n"
+                f"🎯 Шанс клёва: +{effect['bonus_percent']}% на {effect['duration_minutes']} мин\n"
+                f"✨ Суммарный пивной бонус: +{format_percent_value(total_bonus)}%\n\n"
+                f"💰 Потрачено: {BEER_PRICE_COINS} 🪙\n"
+                f"💰 Баланс: {new_balance} 🪙",
+                reply_markup=back_keyboard,
+            )
+        except Exception:
+            logger.exception("Failed to process beer purchase for user=%s chat=%s", user_id, chat_id)
+            try:
+                db.update_player(user_id, chat_id, coins=coins_before)
+            except Exception:
+                logger.exception("Failed to refund coins after beer purchase error for user=%s", user_id)
+
+            await query.edit_message_text(
+                "❌ Не удалось применить эффект. Средства возвращены.",
+                reply_markup=back_keyboard,
+            )
+
     async def handle_buy_feeder_coins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Покупка кормушки за монеты."""
         query = update.callback_query
@@ -5458,6 +6323,9 @@ class FishBot:
             [InlineKeyboardButton("🪱 Наживки", callback_data=f"shop_baits_{user_id}")],
             [InlineKeyboardButton("🕸️ Сети", callback_data=f"shop_nets_{user_id}")],
             [InlineKeyboardButton("🧺 Кормушки и эхолот", callback_data=f"shop_feeders_{user_id}")],
+            [InlineKeyboardButton("🍺 Пиво", callback_data=f"shop_beer_{user_id}")],
+            [InlineKeyboardButton("🧨 Апгрейд взрывчатки", callback_data=f"shop_dynamite_upgrade_{user_id}")],
+            [InlineKeyboardButton("👕 Одежда", callback_data=f"shop_clothing_{user_id}")],
             [InlineKeyboardButton("⛵ Лодки", callback_data=f"shop_boats_{user_id}")],
             [InlineKeyboardButton("💎 Обменник", callback_data=f"shop_exchange_{user_id}")],
             [InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")]
@@ -5480,6 +6348,258 @@ class FishBot:
                 text=message,
                 reply_markup=reply_markup
             )
+
+    async def handle_shop_dynamite_upgrade(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Экран апгрейда взрывчатки: динамит -> граната -> бомба."""
+        query = update.callback_query
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+
+        if not query.data.endswith(f"_{user_id}"):
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
+        await query.answer()
+
+        player = db.get_player(user_id, chat_id)
+        if not player:
+            await query.edit_message_text("❌ Профиль не найден. Используйте /start")
+            return
+
+        state = self._get_dynamite_upgrade_state(user_id, chat_id)
+        level = int(state['level'])
+        name = str(state['name'])
+        max_weight = int(float(state['max_weight']))
+        diamonds = int(player.get('diamonds') or 0)
+
+        keyboard = []
+        if state['next_level']:
+            next_name = str(state['next_name'])
+            next_weight = int(float(state['next_max_weight']))
+            next_cost = int(state['next_upgrade_cost'] or 0)
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"⬆️ Улучшить до {next_name} ({next_weight} кг) — {next_cost} 💎",
+                    callback_data=f"buy_dynamite_upgrade_{user_id}",
+                )
+            ])
+            next_text = f"Следующий уровень: {next_name} ({next_weight} кг)\nСтоимость: {next_cost} 💎"
+        else:
+            next_text = "✅ Достигнут максимальный уровень: Бомба"
+
+        keyboard.append([InlineKeyboardButton("🔙 Магазин", callback_data=f"shop_{user_id}")])
+
+        message = (
+            "🧨 Апгрейд взрывчатки\n\n"
+            f"Текущий уровень: {level}/3 — {name}\n"
+            f"⚖️ Лимит веса рыбы: {max_weight} кг\n"
+            f"💎 Ваши алмазы: {diamonds}\n\n"
+            "Команда /dynamite, шансы, стоимость и КД остаются без изменений.\n\n"
+            f"{next_text}"
+        )
+
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def handle_shop_clothing(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Экран перманентной одежды с постоянным бонусом шанса клёва."""
+        query = update.callback_query
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+
+        if not query.data.endswith(f"_{user_id}"):
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
+        await query.answer()
+
+        player = db.get_player(user_id, chat_id)
+        if not player:
+            await query.edit_message_text("❌ Профиль не найден. Используйте /start")
+            return
+
+        owned_items = db.get_player_clothing(user_id)
+        owned_codes = {str(item.get('item_key', '')).lower() for item in owned_items}
+        total_bonus = self._get_clothing_bonus_percent(user_id)
+        diamonds = int(player.get('diamonds') or 0)
+
+        keyboard = []
+        for item in CLOTHING_ITEMS:
+            item_code = item['code']
+            bonus_text = format_percent_value(item['bonus_percent'])
+            if item_code in owned_codes:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"✅ {item['name']} (+{bonus_text}%)",
+                        callback_data="noop",
+                    )
+                ])
+            else:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"👕 {item['name']} (+{bonus_text}%) — {item['price_diamonds']} 💎",
+                        callback_data=f"buy_clothing_{item_code}_{user_id}",
+                    )
+                ])
+
+        keyboard.append([InlineKeyboardButton("🔙 Магазин", callback_data=f"shop_{user_id}")])
+
+        message = (
+            "👕 Магазин одежды\n\n"
+            "Каждый предмет покупается один раз и даёт постоянный бонус к шансу клёва.\n\n"
+            f"💎 Ваши алмазы: {diamonds}\n"
+            f"✨ Суммарный бонус одежды: +{format_percent_value(total_bonus)}%\n"
+            f"📦 Куплено: {len(owned_codes)}/{len(CLOTHING_ITEMS)}"
+        )
+
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def handle_buy_clothing(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Покупка перманентного предмета одежды за алмазы."""
+        query = update.callback_query
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+
+        payload = query.data[len("buy_clothing_"):]
+        try:
+            item_code, callback_user_id = payload.rsplit("_", 1)
+        except ValueError:
+            await query.answer("Некорректная кнопка покупки", show_alert=True)
+            return
+
+        if str(user_id) != callback_user_id:
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
+        await query.answer()
+
+        item = CLOTHING_ITEM_BY_CODE.get(item_code)
+        if not item:
+            await query.edit_message_text("❌ Предмет одежды не найден.")
+            return
+
+        back_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("👕 К одежде", callback_data=f"shop_clothing_{user_id}")],
+            [InlineKeyboardButton("🔙 Магазин", callback_data=f"shop_{user_id}")],
+        ])
+
+        purchase_result = db.purchase_clothing_item(
+            user_id=user_id,
+            chat_id=chat_id,
+            item_key=item['code'],
+            display_name=item['name'],
+            bonus_percent=float(item['bonus_percent']),
+            cost_diamonds=int(item['price_diamonds']),
+        )
+
+        reason = str(purchase_result.get('reason') or '')
+        if not purchase_result.get('ok'):
+            if reason == 'already_owned':
+                await query.edit_message_text(
+                    f"✅ {item['name']} уже куплен и даёт постоянный бонус +{format_percent_value(item['bonus_percent'])}%.",
+                    reply_markup=back_keyboard,
+                )
+                return
+
+            if reason == 'not_enough_diamonds':
+                need = int(purchase_result.get('cost') or item['price_diamonds'])
+                have = int(purchase_result.get('diamonds') or 0)
+                missing = max(0, need - have)
+                await query.edit_message_text(
+                    "❌ Недостаточно алмазов для покупки\n\n"
+                    f"Нужно: {need} 💎\n"
+                    f"У вас: {have} 💎\n"
+                    f"Не хватает: {missing} 💎",
+                    reply_markup=back_keyboard,
+                )
+                return
+
+            if reason == 'no_player':
+                await query.edit_message_text(
+                    "❌ Профиль не найден. Используйте /start",
+                    reply_markup=back_keyboard,
+                )
+                return
+
+            await query.edit_message_text(
+                "❌ Не удалось выполнить покупку. Попробуйте ещё раз.",
+                reply_markup=back_keyboard,
+            )
+            return
+
+        total_bonus = float(purchase_result.get('total_bonus_percent') or 0.0)
+        new_diamonds = int(purchase_result.get('new_diamonds') or 0)
+
+        await query.edit_message_text(
+            "✅ Покупка успешна!\n\n"
+            f"👕 Предмет: {item['name']}\n"
+            f"✨ Вечный бонус: +{format_percent_value(item['bonus_percent'])}%\n"
+            f"💎 Списано: {int(item['price_diamonds'])} 💎\n"
+            f"💎 Остаток: {new_diamonds} 💎\n"
+            f"✨ Общий бонус одежды: +{format_percent_value(total_bonus)}%",
+            reply_markup=back_keyboard,
+        )
+
+    async def handle_buy_dynamite_upgrade(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Покупка апгрейда взрывчатки за алмазы."""
+        query = update.callback_query
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+
+        if not query.data.endswith(f"_{user_id}"):
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
+        await query.answer()
+
+        player = db.get_player(user_id, chat_id)
+        if not player:
+            await query.edit_message_text("❌ Профиль не найден. Используйте /start")
+            return
+
+        state = self._get_dynamite_upgrade_state(user_id, chat_id)
+        current_level = int(state['level'])
+        upgrade_cost = state.get('next_upgrade_cost')
+
+        back_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🧨 К апгрейду", callback_data=f"shop_dynamite_upgrade_{user_id}")],
+            [InlineKeyboardButton("🔙 Магазин", callback_data=f"shop_{user_id}")],
+        ])
+
+        if current_level >= 3 or not upgrade_cost:
+            await query.edit_message_text(
+                "✅ У вас уже максимальный апгрейд взрывчатки: Бомба.",
+                reply_markup=back_keyboard,
+            )
+            return
+
+        diamonds = int(player.get('diamonds') or 0)
+        cost = int(upgrade_cost)
+
+        if diamonds < cost:
+            missing = cost - diamonds
+            await query.edit_message_text(
+                "❌ Недостаточно алмазов для апгрейда\n\n"
+                f"Нужно: {cost} 💎\n"
+                f"У вас: {diamonds} 💎\n"
+                f"Не хватает: {missing} 💎",
+                reply_markup=back_keyboard,
+            )
+            return
+
+        db.subtract_diamonds(user_id, chat_id, cost)
+        new_level = db.set_dynamite_upgrade_level(user_id, chat_id, current_level + 1)
+        new_state = self._get_dynamite_upgrade_state(user_id, chat_id)
+        refreshed_player = db.get_player(user_id, chat_id) or {}
+        new_diamonds = int(refreshed_player.get('diamonds') or max(0, diamonds - cost))
+
+        await query.edit_message_text(
+            "✅ Апгрейд куплен!\n\n"
+            f"Было: {state['name']} (ур. {current_level}/3, {int(float(state['max_weight']))} кг)\n"
+            f"Стало: {new_state['name']} (ур. {new_level}/3, {int(float(new_state['max_weight']))} кг)\n"
+            f"Списано: {cost} 💎\n"
+            f"Остаток: {new_diamonds} 💎",
+            reply_markup=back_keyboard,
+        )
     
     async def handle_buy_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка покупки"""
@@ -6135,28 +7255,13 @@ class FishBot:
         unsold_fish = [f for f in caught_fish if f.get('sold', 0) == 0]
         treasures = self._get_all_player_treasures(user_id, chat_id)
         total_treasures = sum(int(t.get('quantity', 0) or 0) for t in treasures)
+        trophy_items = db.get_player_trophies(user_id)
+        trophy_count = len(trophy_items)
 
-        if not unsold_fish and total_treasures <= 0:
+        if not unsold_fish and total_treasures <= 0 and trophy_count <= 0:
             message = "🎒 Инвентарь\n\nУ вас нет пойманной рыбы и сокровищ."
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            if query:
-                await query.edit_message_text(message, reply_markup=reply_markup)
-            else:
-                await update.message.reply_text(message, reply_markup=reply_markup)
-            return
-
-        if not unsold_fish and total_treasures > 0:
-            keyboard = [
-                [InlineKeyboardButton(f"💎 Сокровища ({total_treasures})", callback_data=f"inv_treasures_{user_id}")],
-                [InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")],
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            message = (
-                "🎒 Инвентарь\n\n"
-                "Рыбы для просмотра нет.\n"
-                "Откройте сокровища для продажи."
-            )
             if query:
                 await query.edit_message_text(message, reply_markup=reply_markup)
             else:
@@ -6176,17 +7281,7 @@ class FishBot:
                 locations[loc] = []
             locations[loc].append(fish)
 
-        if not locations:
-            message = "🎒 Инвентарь\n\nУ вас нет рыбы с корректной локацией."
-            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            if query:
-                await query.edit_message_text(message, reply_markup=reply_markup)
-            else:
-                await update.message.reply_text(message, reply_markup=reply_markup)
-            return
-
-        # Создаем кнопки для каждой локации
+        # Создаем кнопки разделов инвентаря
         keyboard = []
         for location in sorted(locations.keys(), key=lambda v: str(v)):
             fish_count = len(locations[location])
@@ -6195,15 +7290,30 @@ class FishBot:
 
         if total_treasures > 0:
             keyboard.append([InlineKeyboardButton(f"💎 Сокровища ({total_treasures})", callback_data=f"inv_treasures_{user_id}")])
+
+        keyboard.append([InlineKeyboardButton(f"🏆 Трофеи ({trophy_count})", callback_data=f"inv_trophies_{user_id}")])
         
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
-        message = f"""🎒 Инвентарь
 
-Всего пойманной рыбы: {len(unsold_fish)}
-
-Выберите локацию для просмотра:"""
+        has_location_fish = bool(locations)
+        if has_location_fish:
+            message = (
+                "🎒 Инвентарь\n\n"
+                f"🐟 Рыба для просмотра: {len(unsold_fish)}\n"
+                f"💎 Сокровища: {total_treasures}\n"
+                f"🏆 Трофеи: {trophy_count}\n\n"
+                "Выберите раздел:"
+            )
+        else:
+            message = (
+                "🎒 Инвентарь\n\n"
+                "У вас нет рыбы с корректной локацией.\n"
+                f"💎 Сокровища: {total_treasures}\n"
+                f"🏆 Трофеи: {trophy_count}\n\n"
+                "Выберите раздел:"
+            )
 
         if query:
             await query.edit_message_text(message, reply_markup=reply_markup)
@@ -6389,6 +7499,320 @@ class FishBot:
                 await query.edit_message_text("💎 Клад\n\nВаши сокровища:")
             except Exception:
                 pass
+
+    async def _render_inventory_trophies_menu(self, query, user_id: int, page: int = 0):
+        trophies = db.get_player_trophies(user_id)
+        total = len(trophies)
+        page_size = TROPHY_LIST_PAGE_SIZE
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        safe_page = max(0, min(page, total_pages - 1))
+
+        keyboard = []
+        if total > 0:
+            start = safe_page * page_size
+            end = start + page_size
+            page_items = trophies[start:end]
+
+            for trophy in page_items:
+                fish_name = str(trophy.get('fish_name') or 'Неизвестная рыба')
+                try:
+                    weight_value = float(trophy.get('weight') or 0)
+                except (TypeError, ValueError):
+                    weight_value = 0.0
+                try:
+                    length_value = float(trophy.get('length') or 0)
+                except (TypeError, ValueError):
+                    length_value = 0.0
+
+                active_mark = "✅" if int(trophy.get('is_active') or 0) == 1 else "▫️"
+                length_part = f", {length_value:.1f} см" if length_value > 0 else ""
+                button_text = f"{active_mark} {fish_name} ({weight_value:.2f} кг{length_part})"
+                keyboard.append([
+                    InlineKeyboardButton(button_text, callback_data=f"inv_trophy_set_{int(trophy['id'])}_{user_id}")
+                ])
+
+            if total_pages > 1:
+                nav_buttons = []
+                if safe_page > 0:
+                    nav_buttons.append(
+                        InlineKeyboardButton("⬅️", callback_data=f"inv_trophies_page_{safe_page - 1}_{user_id}")
+                    )
+                nav_buttons.append(InlineKeyboardButton(f"{safe_page + 1}/{total_pages}", callback_data="noop"))
+                if safe_page < total_pages - 1:
+                    nav_buttons.append(
+                        InlineKeyboardButton("➡️", callback_data=f"inv_trophies_page_{safe_page + 1}_{user_id}")
+                    )
+                keyboard.append(nav_buttons)
+
+        keyboard.append([
+            InlineKeyboardButton(
+                f"➕ Добавить трофей ({TROPHY_CREATE_COST_COINS} 🪙)",
+                callback_data=f"inv_trophy_add_{user_id}",
+            )
+        ])
+        keyboard.append([InlineKeyboardButton("◀️ Назад в инвентарь", callback_data=f"inventory_{user_id}")])
+
+        active = next((item for item in trophies if int(item.get('is_active') or 0) == 1), None)
+        if active:
+            try:
+                active_weight = float(active.get('weight') or 0)
+            except (TypeError, ValueError):
+                active_weight = 0.0
+            try:
+                active_length = float(active.get('length') or 0)
+            except (TypeError, ValueError):
+                active_length = 0.0
+            active_line = f"Активный: {active.get('fish_name')} ({active_weight:.2f} кг, {active_length:.1f} см)"
+        else:
+            active_line = "Активный: не выбран"
+
+        if total == 0:
+            message = (
+                "🏆 Трофеи\n\n"
+                "У вас пока нет трофеев.\n"
+                "Нажмите «Добавить трофей», выберите рыбу и заплатите 10000 🪙."
+            )
+        else:
+            message = (
+                "🏆 Трофеи\n\n"
+                f"Всего трофеев: {total}\n"
+                f"{active_line}\n\n"
+                "Нажмите на трофей в списке, чтобы сделать его активным."
+            )
+
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def handle_inventory_trophies(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать список трофеев пользователя и управление активным трофеем."""
+        query = update.callback_query
+        data = query.data or ""
+
+        try:
+            user_id = update.effective_user.id
+        except (AttributeError, TypeError):
+            logger.error("Failed to get user_id in handle_inventory_trophies")
+            return
+
+        page = 0
+        owner_id = None
+        page_match = re.match(r"^inv_trophies_page_(\d+)_(\d+)$", data)
+        base_match = re.match(r"^inv_trophies_(\d+)$", data)
+        if page_match:
+            page = int(page_match.group(1))
+            owner_id = int(page_match.group(2))
+        elif base_match:
+            owner_id = int(base_match.group(1))
+
+        if owner_id != user_id:
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
+        await query.answer()
+        await self._render_inventory_trophies_menu(query, user_id, page=page)
+
+    async def handle_inventory_trophy_add(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать рыбу для конвертации в трофей (с пагинацией)."""
+        query = update.callback_query
+        data = query.data or ""
+
+        try:
+            user_id = update.effective_user.id
+            chat_id = update.effective_chat.id
+        except (AttributeError, TypeError):
+            logger.error("Failed to get user_id in handle_inventory_trophy_add")
+            return
+
+        page = 0
+        owner_id = None
+        page_match = re.match(r"^inv_trophy_add_page_(\d+)_(\d+)$", data)
+        base_match = re.match(r"^inv_trophy_add_(\d+)$", data)
+        if page_match:
+            page = int(page_match.group(1))
+            owner_id = int(page_match.group(2))
+        elif base_match:
+            owner_id = int(base_match.group(1))
+
+        if owner_id != user_id:
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
+        await query.answer()
+
+        player = db.get_player(user_id, chat_id)
+        balance = int(player.get('coins', 0)) if player else 0
+
+        caught_fish = db.get_caught_fish(user_id, chat_id)
+        candidates = [
+            fish for fish in caught_fish
+            if fish.get('sold', 0) == 0 and not bool(fish.get('is_trash'))
+        ]
+        candidates.sort(key=lambda item: float(item.get('weight') or 0), reverse=True)
+
+        keyboard = []
+        if not candidates:
+            keyboard.append([InlineKeyboardButton("◀️ К трофеям", callback_data=f"inv_trophies_{user_id}")])
+            await query.edit_message_text(
+                "➕ Добавить трофей\n\n"
+                "У вас нет рыбы для создания трофея.\n"
+                "Поймайте рыбу и попробуйте снова.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return
+
+        page_size = TROPHY_ADD_PAGE_SIZE
+        total = len(candidates)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        safe_page = max(0, min(page, total_pages - 1))
+        start = safe_page * page_size
+        end = start + page_size
+        page_items = candidates[start:end]
+
+        for fish in page_items:
+            fish_name = str(fish.get('fish_name') or 'Неизвестная рыба')
+            fish_id = int(fish.get('id') or 0)
+            try:
+                fish_weight = float(fish.get('weight') or 0)
+            except (TypeError, ValueError):
+                fish_weight = 0.0
+            try:
+                fish_length = float(fish.get('length') or 0)
+            except (TypeError, ValueError):
+                fish_length = 0.0
+
+            button_text = f"🐟 {fish_name} ({fish_weight:.2f} кг, {fish_length:.1f} см)"
+            keyboard.append([
+                InlineKeyboardButton(button_text, callback_data=f"inv_trophy_make_{fish_id}_{user_id}")
+            ])
+
+        if total_pages > 1:
+            nav_buttons = []
+            if safe_page > 0:
+                nav_buttons.append(
+                    InlineKeyboardButton("⬅️", callback_data=f"inv_trophy_add_page_{safe_page - 1}_{user_id}")
+                )
+            nav_buttons.append(InlineKeyboardButton(f"{safe_page + 1}/{total_pages}", callback_data="noop"))
+            if safe_page < total_pages - 1:
+                nav_buttons.append(
+                    InlineKeyboardButton("➡️", callback_data=f"inv_trophy_add_page_{safe_page + 1}_{user_id}")
+                )
+            keyboard.append(nav_buttons)
+
+        keyboard.append([InlineKeyboardButton("◀️ К трофеям", callback_data=f"inv_trophies_{user_id}")])
+
+        message = (
+            "➕ Добавить трофей\n\n"
+            f"Стоимость создания: {TROPHY_CREATE_COST_COINS} 🪙\n"
+            f"Ваш баланс: {balance} 🪙\n"
+            f"Доступно рыбы: {total}\n\n"
+            "Выберите рыбу для превращения в трофей:"
+        )
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def handle_inventory_trophy_make(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Конвертировать выбранную рыбу в трофей за монеты."""
+        query = update.callback_query
+        data = query.data or ""
+
+        try:
+            user_id = update.effective_user.id
+            chat_id = update.effective_chat.id
+        except (AttributeError, TypeError):
+            logger.error("Failed to get user_id in handle_inventory_trophy_make")
+            return
+
+        match = re.match(r"^inv_trophy_make_(\d+)_(\d+)$", data)
+        if not match:
+            await query.answer("Некорректная команда", show_alert=True)
+            return
+
+        fish_id = int(match.group(1))
+        owner_id = int(match.group(2))
+        if owner_id != user_id:
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
+        await query.answer()
+
+        result = db.create_trophy_from_catch(
+            user_id=user_id,
+            chat_id=chat_id,
+            caught_fish_id=fish_id,
+            cost_coins=TROPHY_CREATE_COST_COINS,
+        )
+
+        if not result.get('ok'):
+            error_code = result.get('error')
+            if error_code == 'insufficient_coins':
+                balance = int(result.get('balance', 0) or 0)
+                required = int(result.get('required', TROPHY_CREATE_COST_COINS) or TROPHY_CREATE_COST_COINS)
+                message = (
+                    "❌ Недостаточно монет\n\n"
+                    f"Нужно: {required} 🪙\n"
+                    f"У вас: {balance} 🪙"
+                )
+            elif error_code == 'fish_not_found':
+                message = "❌ Эта рыба уже недоступна. Откройте список заново."
+            elif error_code == 'profile_not_found':
+                message = "❌ Профиль не найден. Нажмите /start и попробуйте снова."
+            else:
+                message = "❌ Не удалось создать трофей. Попробуйте снова."
+
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data=f"inv_trophy_add_{user_id}")]]
+            await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+            return
+
+        trophy = result.get('trophy') or {}
+        fish_name = str(trophy.get('fish_name') or 'Неизвестная рыба')
+        weight = float(trophy.get('weight') or 0)
+        length = float(trophy.get('length') or 0)
+        new_balance = int(result.get('new_balance', 0) or 0)
+        cost = int(result.get('cost', TROPHY_CREATE_COST_COINS) or TROPHY_CREATE_COST_COINS)
+
+        message = (
+            "✅ Трофей создан\n\n"
+            f"🐟 Рыба: {fish_name}\n"
+            f"⚖️ Вес: {weight:.2f} кг\n"
+            f"📏 Размер: {length:.1f} см\n"
+            f"💸 Списано: {cost} 🪙\n"
+            f"💰 Баланс: {new_balance} 🪙"
+        )
+
+        keyboard = [
+            [InlineKeyboardButton("🏆 К трофеям", callback_data=f"inv_trophies_{user_id}")],
+            [InlineKeyboardButton("➕ Добавить ещё", callback_data=f"inv_trophy_add_{user_id}")],
+            [InlineKeyboardButton("🔙 В инвентарь", callback_data=f"inventory_{user_id}")],
+        ]
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def handle_inventory_trophy_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Сделать выбранный трофей активным для отображения в мини-апке."""
+        query = update.callback_query
+        data = query.data or ""
+
+        try:
+            user_id = update.effective_user.id
+        except (AttributeError, TypeError):
+            logger.error("Failed to get user_id in handle_inventory_trophy_set")
+            return
+
+        match = re.match(r"^inv_trophy_set_(\d+)_(\d+)$", data)
+        if not match:
+            await query.answer("Некорректная команда", show_alert=True)
+            return
+
+        trophy_id = int(match.group(1))
+        owner_id = int(match.group(2))
+        if owner_id != user_id:
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+
+        success = db.set_active_trophy(user_id, trophy_id)
+        if not success:
+            await query.answer("Трофей не найден", show_alert=True)
+            return
+
+        await query.answer("✅ Активный трофей обновлен")
+        await self._render_inventory_trophies_menu(query, user_id, page=0)
     
     async def handle_sell_treasure(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Продажа предмета из клада"""
@@ -7064,6 +8488,278 @@ class FishBot:
         pool = same_rarity if same_rarity else available_fish
         return random.choice(pool) if pool else None
 
+    def _extract_attempt_datetime_utc(self, update: Update) -> datetime:
+        """Извлечь время сообщения Telegram в UTC для анти-абуз анализа ритма."""
+        effective_message = update.effective_message
+        raw_dt = getattr(effective_message, "date", None)
+
+        if isinstance(raw_dt, datetime):
+            if raw_dt.tzinfo is None:
+                return raw_dt.replace(tzinfo=timezone.utc)
+            return raw_dt.astimezone(timezone.utc)
+
+        return datetime.now(timezone.utc)
+
+    def _remaining_seconds_from_iso(self, raw_iso: Optional[str]) -> int:
+        """Остаток времени до UTC-ISO timestamp."""
+        if not raw_iso:
+            return 0
+        try:
+            dt_val = datetime.fromisoformat(str(raw_iso))
+            if dt_val.tzinfo is None:
+                dt_val = dt_val.replace(tzinfo=timezone.utc)
+            else:
+                dt_val = dt_val.astimezone(timezone.utc)
+        except Exception:
+            return 0
+
+        now = datetime.now(timezone.utc)
+        return max(0, int((dt_val - now).total_seconds()))
+
+    def _normalize_webapp_url(self) -> str:
+        """Нормализовать base URL mini app (добавить https:// если нужно)."""
+        webapp_url = (self.webapp_url or "").strip()
+        if not webapp_url:
+            return ""
+        if not re.match(r"^https?://", webapp_url):
+            webapp_url = f"https://{webapp_url.lstrip('/')}"
+        return webapp_url
+
+    def _build_captcha_webapp_url(self, token: str) -> str:
+        """Собрать URL mini app с токеном капчи."""
+        base_url = self._normalize_webapp_url()
+        if not base_url:
+            return ""
+
+        parsed = urlparse(base_url)
+        query_dict = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query_dict["captcha_token"] = str(token or "").strip()
+        query_dict["captcha_mode"] = "antibot"
+        new_query = urlencode(query_dict)
+
+        return urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            new_query,
+            parsed.fragment,
+        ))
+
+    def _build_captcha_link_markup(self, captcha_url: str, chat_type: Optional[str]) -> Optional[InlineKeyboardMarkup]:
+        """Построить кнопку открытия капчи в апке."""
+        if not captcha_url:
+            return None
+
+        if chat_type == "private":
+            button = InlineKeyboardButton("🧩 Пройти капчу", web_app=WebAppInfo(url=captcha_url))
+        else:
+            button = InlineKeyboardButton("🧩 Открыть апку и пройти капчу", url=captcha_url)
+
+        return InlineKeyboardMarkup([[button]])
+
+    def _build_antibot_block_message(
+        self,
+        gate_status: Dict[str, Any],
+        challenge_info: Dict[str, Any],
+        chat_type: Optional[str],
+        rhythm_detected: bool = False,
+    ) -> Dict[str, Any]:
+        """Собрать текст и markup блокировки для анти-абуза."""
+        penalty_active = bool(gate_status.get("penalty_active"))
+        challenge_token = str(challenge_info.get("token") or "").strip()
+        challenge_url = self._build_captcha_webapp_url(challenge_token)
+        reply_markup = self._build_captcha_link_markup(challenge_url, chat_type)
+
+        penalty_seconds = self._remaining_seconds_from_iso(
+            str(gate_status.get("penalty_until") or challenge_info.get("penalty_until") or "")
+        )
+        challenge_seconds = self._remaining_seconds_from_iso(str(challenge_info.get("expires_at") or ""))
+        if challenge_seconds <= 0:
+            challenge_seconds = ANTI_BOT_CAPTCHA_TTL_SECONDS
+
+        if penalty_active:
+            penalty_line = self._format_seconds_compact(penalty_seconds) if penalty_seconds > 0 else f"{ANTI_BOT_PENALTY_HOURS}ч"
+            text = (
+                "🚫 Анти-абуз штраф уже активен.\n"
+                "🎣 Бесплатная рыбалка временно отключена.\n"
+                "🧩 Откройте апку и пройдите капчу.\n"
+                f"⏳ До снятия штрафа: {penalty_line}."
+            )
+        else:
+            reason_line = "Обнаружен подозрительно ровный ритм /fish." if rhythm_detected else "Требуется подтверждение, что вы не отложенный авто-клиент."
+            text = (
+                f"🧩 {reason_line}\n"
+                "Пройдите капчу в мини-апке по кнопке ниже.\n"
+                f"⏱ Время на решение: {challenge_seconds} сек.\n"
+                f"⚠️ Если не пройти вовремя, включится штраф на {ANTI_BOT_PENALTY_HOURS} часов."
+            )
+
+        if not challenge_url:
+            text += "\n\n❌ WEBAPP_URL не настроен, ссылка на капчу недоступна."
+
+        return {
+            "text": text,
+            "reply_markup": reply_markup,
+        }
+
+    def _get_antibot_active_block(self, user_id: int, update: Update) -> Optional[Dict[str, Any]]:
+        """Проверить активный штраф/незавершённую капчу. Если есть — вернуть блок."""
+        try:
+            gate_status = db.get_antibot_gate_status(user_id, penalty_hours=ANTI_BOT_PENALTY_HOURS)
+        except Exception:
+            logger.exception("Failed to read anti-bot gate for user=%s", user_id)
+            return None
+
+        if not gate_status.get("needs_captcha"):
+            return None
+
+        try:
+            challenge_info = db.issue_antibot_challenge(
+                user_id=user_id,
+                reason="penalty_or_pending",
+                challenge_ttl_seconds=ANTI_BOT_CAPTCHA_TTL_SECONDS,
+                penalty_hours=ANTI_BOT_PENALTY_HOURS,
+            )
+        except Exception:
+            logger.exception("Failed to issue anti-bot challenge for user=%s", user_id)
+            return None
+
+        return self._build_antibot_block_message(
+            gate_status=gate_status,
+            challenge_info=challenge_info,
+            chat_type=update.effective_chat.type if update.effective_chat else None,
+            rhythm_detected=False,
+        )
+
+    def _register_free_fish_attempt_and_check_antibot(self, user_id: int, update: Update) -> Optional[Dict[str, Any]]:
+        """Зафиксировать бесплатный /fish и при подозрительном ритме выдать капчу."""
+        try:
+            attempt_time = self._extract_attempt_datetime_utc(update)
+            rhythm_state = db.register_free_fish_attempt(
+                user_id=user_id,
+                attempt_time=attempt_time,
+                min_interval_seconds=ANTI_BOT_RHYTHM_MIN_SECONDS,
+                max_interval_seconds=ANTI_BOT_RHYTHM_MAX_SECONDS,
+                trigger_streak=ANTI_BOT_RHYTHM_TRIGGER_STREAK,
+            )
+        except Exception:
+            logger.exception("Failed to register free fish attempt for anti-bot user=%s", user_id)
+            return None
+
+        if not rhythm_state.get("trigger"):
+            return None
+
+        try:
+            gate_status = db.get_antibot_gate_status(user_id, penalty_hours=ANTI_BOT_PENALTY_HOURS)
+            challenge_info = db.issue_antibot_challenge(
+                user_id=user_id,
+                reason="rhythm_detected",
+                challenge_ttl_seconds=ANTI_BOT_CAPTCHA_TTL_SECONDS,
+                penalty_hours=ANTI_BOT_PENALTY_HOURS,
+            )
+        except Exception:
+            logger.exception("Failed to create anti-bot challenge after rhythm detection user=%s", user_id)
+            return None
+
+        return self._build_antibot_block_message(
+            gate_status=gate_status,
+            challenge_info=challenge_info,
+            chat_type=update.effective_chat.type if update.effective_chat else None,
+            rhythm_detected=True,
+        )
+
+    def _is_user_beer_drunk(self, user_id: int) -> bool:
+        """Проверить, находится ли пользователь в состоянии опьянения."""
+        try:
+            return bool(db.has_active_effect(user_id, BEER_DRUNK_EFFECT))
+        except Exception:
+            logger.exception("Failed to check drunk state for user=%s", user_id)
+            return False
+
+    def _get_active_beer_bonus_percent(self, user_id: int) -> float:
+        """Суммарный активный бонус от пивных эффектов (в процентах)."""
+        try:
+            return max(0.0, float(db.get_active_beer_bonus_percent(user_id) or 0.0))
+        except Exception:
+            logger.exception("Failed to load beer bonus for user=%s", user_id)
+            return 0.0
+
+    def _generate_drunk_gibberish(self) -> str:
+        """Сгенерировать непонятную фразу для состояния опьянения."""
+        parts_count = random.randint(9, 16)
+        chunks = []
+        for _ in range(parts_count):
+            chunk = random.choice(DRUNK_GIBBERISH_SYLLABLES)
+            if random.random() < 0.25:
+                chunk += random.choice(["..", "?!", "??", "!!"])
+            chunks.append(chunk)
+        return " ".join(chunks)
+
+    def _maybe_trigger_boat_storm(self, user_id: int, result: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Независимая проверка шторма на активной лодке."""
+        # Шторм — отдельное событие, не привязанное к рыбнадзору.
+        if result and result.get('fish_inspector'):
+            return None
+
+        is_on_boat_trip = bool((result or {}).get('is_on_boat')) or db.is_user_on_boat_trip(user_id)
+        if not is_on_boat_trip:
+            return None
+
+        if random.random() >= STORM_EVENT_CHANCE_ON_BOAT:
+            return None
+
+        storm_result = db.sink_active_boat_by_storm(user_id, cooldown_hours=STORM_EVENT_COOLDOWN_HOURS)
+        if not storm_result or not storm_result.get('applied'):
+            return None
+
+        try:
+            # После сильного шторма можно получить морскую болезнь.
+            db.apply_seasick_event(user_id)
+        except Exception:
+            logger.exception("Failed to apply seasick after storm for user=%s", user_id)
+
+        return storm_result
+
+    def _format_storm_event_message(self, storm_result: Dict[str, Any]) -> str:
+        lost_count = int(storm_result.get('lost_count', 0) or 0)
+        lost_weight = float(storm_result.get('lost_weight', 0) or 0.0)
+        return (
+            "🌪️ Поднялся сильный шторм!\n"
+            "🧺 Лодку развернуло, плавание экстренно завершено.\n"
+            f"🐟 Утеряно из садка: {lost_count} шт. ({lost_weight:.1f} кг).\n"
+            f"⏳ Лодка ушла в КД на {STORM_EVENT_COOLDOWN_HOURS} часов.\n"
+            "🤢 Вы получили морскую болезнь (работает только в плавании)."
+        )
+
+    def _get_clothing_bonus_percent(self, user_id: int) -> float:
+        """Суммарный перманентный бонус от одежды (в процентах)."""
+        try:
+            return max(0.0, float(db.get_clothing_bonus_percent(user_id) or 0.0))
+        except Exception:
+            logger.exception("Failed to load clothing bonus for user=%s", user_id)
+            return 0.0
+
+    def _get_dynamite_upgrade_state(self, user_id: int, chat_id: int) -> Dict[str, Any]:
+        try:
+            level = int(db.get_dynamite_upgrade_level(user_id, chat_id))
+        except Exception:
+            level = 1
+
+        level = max(1, min(3, level))
+        next_level = level + 1 if level < 3 else None
+
+        return {
+            'level': level,
+            'name': DYNAMITE_NAME_BY_LEVEL.get(level, DYNAMITE_NAME_BY_LEVEL[1]),
+            'max_weight': float(DYNAMITE_MAX_WEIGHT_BY_LEVEL.get(level, DYNAMITE_MAX_WEIGHT_BY_LEVEL[1])),
+            'sticker': DYNAMITE_STICKER_BY_LEVEL.get(level, DYNAMITE_STICKER_FILE_ID),
+            'next_level': next_level,
+            'next_name': DYNAMITE_NAME_BY_LEVEL.get(next_level) if next_level else None,
+            'next_max_weight': float(DYNAMITE_MAX_WEIGHT_BY_LEVEL.get(next_level)) if next_level else None,
+            'next_upgrade_cost': DYNAMITE_UPGRADE_COST_BY_LEVEL.get(level),
+        }
+
     def _roll_treasure_after_trash(self, user_id: int, chat_id: int, source_tag: str, roll_index: Optional[int] = None) -> Optional[str]:
         """Second roll after trash: returns treasure key or None."""
         from treasures import TREASURES
@@ -7135,12 +8831,20 @@ class FishBot:
             )
             return
 
+        dynamite_upgrade = self._get_dynamite_upgrade_state(user_id, chat_id)
+        dynamite_level = int(dynamite_upgrade['level'])
+        dynamite_name = str(dynamite_upgrade['name'])
+        max_fish_weight_limit = float(dynamite_upgrade['max_weight'])
+        dynamite_sticker_file_id = str(dynamite_upgrade.get('sticker') or DYNAMITE_STICKER_FILE_ID)
+
         location = player.get('current_location', 'Городской пруд')
         season = get_current_season()
         player_level = int(player.get('level') or 0)
         weather = db.get_or_update_weather(location)
         weather_bonus = weather_system.get_weather_bonus(weather['condition']) if weather else 0
         feeder_bonus = db.get_active_feeder_bonus(user_id, chat_id)
+        clothing_bonus_percent = self._get_clothing_bonus_percent(user_id)
+        beer_bonus_percent = self._get_active_beer_bonus_percent(user_id)
 
         # Любой динамитный заброс учитываем в системе восстановления штрафа популяции.
         try:
@@ -7181,7 +8885,7 @@ class FishBot:
             nft_max = 20001
 
         logger.info(
-            "[DYNAMITE] start user=%s chat=%s location=%s guaranteed=%s season=%s level=%s weather_bonus=%+d feeder_bonus=%+d population_penalty=%.2f%%",
+            "[DYNAMITE] start user=%s chat=%s location=%s guaranteed=%s season=%s level=%s weather_bonus=%+d feeder_bonus=%+d clothing_bonus=+%.2f%% beer_bonus=+%.2f%% population_penalty=%.2f%% dynamite_level=%s dynamite_name=%s max_weight=%s",
             user_id,
             chat_id,
             location,
@@ -7190,7 +8894,12 @@ class FishBot:
             player_level,
             weather_bonus,
             feeder_bonus,
+            clothing_bonus_percent,
+            beer_bonus_percent,
             population_penalty,
+            dynamite_level,
+            dynamite_name,
+            max_fish_weight_limit,
         )
 
         result_lines: List[str] = []
@@ -7202,10 +8911,12 @@ class FishBot:
         treasure_count = 0
         treasure_totals: Dict[str, int] = {}
         pending_catches: List[Dict[str, Any]] = []
+        clothing_points = clothing_bonus_percent * 50
+        beer_points = beer_bonus_percent * 50
 
         for idx in range(1, DYNAMITE_BATCH_ROLLS + 1):
             roll = random.randint(0, roll_max)
-            adjusted_roll = roll + (weather_bonus * 50) + (feeder_bonus * 250)
+            adjusted_roll = roll + (weather_bonus * 50) + (feeder_bonus * 250) + clothing_points + beer_points
             adjusted_roll = max(0, min(roll_max, adjusted_roll))
 
             total_penalty = float(population_penalty or 0.0) + float(dynamite_penalty or 0.0)
@@ -7213,12 +8924,14 @@ class FishBot:
             adjusted_roll = max(0, adjusted_roll - penalty_points)
 
             logger.info(
-                "[DYNAMITE] roll=%s raw=%s/%s weather_points=%+d feeder_points=%+d population_penalty=%.2f dynamite_penalty=%.2f penalty_points=-%d adjusted=%s/%s",
+                "[DYNAMITE] roll=%s raw=%s/%s weather_points=%+d feeder_points=%+d clothing_points=%+.2f beer_points=%+.2f population_penalty=%.2f dynamite_penalty=%.2f penalty_points=-%d adjusted=%s/%s",
                 idx,
                 roll,
                 roll_max,
                 weather_bonus * 50,
                 feeder_bonus * 250,
+                clothing_points,
+                beer_points,
                 population_penalty,
                 dynamite_penalty,
                 penalty_points,
@@ -7303,7 +9016,7 @@ class FishBot:
                 continue
 
             # --- Ограничение веса рыбы при ловле динамитом ---
-            max_fish_weight = 550.0
+            max_fish_weight = max_fish_weight_limit
             rarity_order = ['Обычная', 'Редкая', 'Легендарная', 'Мифическая']
             rarity_idx = rarity_order.index(target_rarity) if target_rarity in rarity_order else 0
             found = False
@@ -7433,13 +9146,15 @@ class FishBot:
             last_dynamite_use_time=datetime.now().isoformat(),
         )
 
-        header = "🧨 <b>Вы взорвали динамит!</b>"
+        header = f"🧨 <b>Вы взорвали {dynamite_name.lower()}!</b>"
         if guaranteed:
             header += "\n⭐ Гарантированный динамит"
 
         message = (
             f"{header}\n\n"
             f"📍 Локация: {location}\n"
+            f"🧪 Взрывчатка: {dynamite_name} (ур. {dynamite_level}/3)\n"
+            f"⚖️ Лимит веса рыбы: {int(max_fish_weight_limit)} кг\n"
             f"🎯 Результатов: {DYNAMITE_BATCH_ROLLS}\n"
             f"🐟 Рыбы: {fish_count}\n"
             f"📦 Мусор: {trash_count}\n"
@@ -7478,7 +9193,7 @@ class FishBot:
 
         await self._safe_send_sticker(
             chat_id=chat_id,
-            sticker=DYNAMITE_STICKER_FILE_ID,
+            sticker=dynamite_sticker_file_id,
             reply_to_message_id=reply_to_message_id,
         )
 
@@ -7934,6 +9649,26 @@ class FishBot:
         player = db.get_player(user_id, chat_id)
         current_username = update.effective_user.username or update.effective_user.first_name or str(user_id)
         self._sync_player_username_if_changed(user_id, chat_id, player, current_username)
+
+        if self._is_user_beer_drunk(user_id):
+            await query.edit_message_text(self._generate_drunk_gibberish())
+            return
+
+        if db.is_user_seasick(user_id):
+            await query.edit_message_text(
+                "🤢 Вас укачало в плавании. Ловить сейчас нельзя.\n"
+                "Вылечите морскую болезнь и попробуйте снова."
+            )
+            return
+
+        antibot_active_block = self._get_antibot_active_block(user_id, update)
+        if antibot_active_block:
+            await query.edit_message_text(
+                antibot_active_block["text"],
+                reply_markup=antibot_active_block.get("reply_markup"),
+                parse_mode=None,
+            )
+            return
         
         # Проверяем кулдаун
         can_fish, message = game.can_fish(user_id, chat_id)
@@ -7952,9 +9687,23 @@ class FishBot:
                     message_id=query.message.message_id,
                 )
             return
+
+        antibot_rhythm_block = self._register_free_fish_attempt_and_check_antibot(user_id, update)
+        if antibot_rhythm_block:
+            await query.edit_message_text(
+                antibot_rhythm_block["text"],
+                reply_markup=antibot_rhythm_block.get("reply_markup"),
+                parse_mode=None,
+            )
+            return
         
         # Начинаем рыбалку на текущей локации
         result = game.fish(user_id, chat_id, player['current_location'])
+
+        storm_result = self._maybe_trigger_boat_storm(user_id, result=result)
+        if storm_result and storm_result.get('applied'):
+            await query.edit_message_text(self._format_storm_event_message(storm_result))
+            return
 
         try:
             raf_won = await self._process_raf_event_roll(
@@ -8219,19 +9968,7 @@ class FishBot:
                     )
                 return
             elif result.get('fish_inspector') or "рыбнадзор" in result.get('message', '').lower():
-                storm_result = None
                 if result.get('fish_inspector'):
-                    is_on_boat_trip = bool(result.get('is_on_boat')) or db.is_user_on_boat_trip(user_id)
-                    if is_on_boat_trip:
-                        storm_result = db.sink_active_boat_by_storm(user_id, cooldown_hours=18)
-                        logger.info(
-                            "[boat] callback fish_inspector storm: user_id=%s applied=%s boat_id=%s lost_count=%s",
-                            user_id,
-                            bool(storm_result.get('applied')),
-                            storm_result.get('boat_id'),
-                            storm_result.get('lost_count'),
-                        )
-
                     try:
                         inspector_image = FISH_STICKERS.get("Рыбнадзор")
                         if inspector_image:
@@ -8246,16 +9983,7 @@ class FishBot:
                     except Exception as e:
                         logger.warning(f"Could not send fish inspector sticker from callback: {e}")
 
-                inspector_message = result.get('message', '🚨 Вас поймал рыбнадзор!')
-                if storm_result and storm_result.get('applied'):
-                    inspector_message += (
-                        "\n\n🌪️ Во время рейда рыбнадзора поднялся шторм."
-                        "\n🧺 Весь улов текущего плавания утерян и не записан в caught_fish."
-                        "\n⏳ Лодка ушла в КД на 18 часов."
-                        "\n🎣 Вы больше не в плавании и ловите с берега."
-                    )
-
-                await query.edit_message_text(inspector_message)
+                await query.edit_message_text(result.get('message', '🚨 Вас поймал рыбнадзор!'))
                 return
             elif result.get('no_bite'):
                 # Отправляем сообщение с причиной и кнопкой оплаты
@@ -8435,6 +10163,41 @@ class FishBot:
                 else:
                     await query.answer(ok=False, error_message="Этот RAF-ивент нельзя оплатить в текущем статусе.")
                 return
+        elif payload.startswith("duel_invite_"):
+            parsed_duel = self._parse_duel_invite_payload(payload)
+            if not parsed_duel:
+                await query.answer(ok=False, error_message="Инвойс дуэли устарел. Создайте новый вызов.")
+                return
+
+            payload_user_id = int(parsed_duel.get("payload_user_id") or 0)
+            target_user_id = int(parsed_duel.get("target_user_id") or 0)
+            created_ts = parsed_duel.get("created_ts")
+
+            if payload_user_id != int(user_id):
+                await query.answer(ok=False, error_message="Этот инвойс создан для другого пользователя.")
+                return
+
+            if target_user_id <= 0 or target_user_id == payload_user_id:
+                await query.answer(ok=False, error_message="Некорректные данные дуэли в инвойсе.")
+                return
+
+            now_ts = int(datetime.now().timestamp())
+            if isinstance(created_ts, int) and now_ts - created_ts > 900:
+                await query.answer(ok=False, error_message="Срок действия инвойса истек. Создайте новый вызов.")
+                return
+
+            try:
+                db.expire_pending_duels()
+            except Exception:
+                logger.exception("precheckout duel: failed to expire pending duels")
+
+            if db.get_active_duel_for_user(payload_user_id):
+                await query.answer(ok=False, error_message="У вас уже есть активная или ожидающая дуэль.")
+                return
+
+            if db.get_active_duel_for_user(target_user_id):
+                await query.answer(ok=False, error_message="У соперника уже есть активная или ожидающая дуэль.")
+                return
         # Проверяем, не был ли этот инвойс уже оплачен
         if payload and payload in self.paid_payloads:
             await query.answer(ok=False, error_message="Этот инвойс уже был оплачен. Запросите новый.")
@@ -8470,6 +10233,7 @@ class FishBot:
         parsed_dynamite_payload = None
         parsed_dynamite_fine_payload = None
         parsed_raf_payload = None
+        parsed_duel_payload = None
         if payload.startswith("guaranteed_"):
             parsed_guaranteed_payload = self._parse_guaranteed_payload(payload)
             if parsed_guaranteed_payload and parsed_guaranteed_payload.get("group_chat_id"):
@@ -8503,6 +10267,12 @@ class FishBot:
                 accounting_chat_id = active_invoice_chat_id
         elif payload.startswith("raf_create_"):
             parsed_raf_payload = self._parse_raf_create_payload(payload)
+        elif payload.startswith("duel_invite_"):
+            parsed_duel_payload = self._parse_duel_invite_payload(payload)
+            if parsed_duel_payload and parsed_duel_payload.get("group_chat_id"):
+                accounting_chat_id = int(parsed_duel_payload["group_chat_id"])
+            else:
+                accounting_chat_id = active_invoice_chat_id
         elif active_invoice.get("group_chat_id") or active_invoice.get("chat_id"):
             try:
                 accounting_chat_id = int(active_invoice_chat_id)
@@ -8825,6 +10595,107 @@ class FishBot:
                 parse_mode="HTML",
             )
             return
+        elif payload and payload.startswith("duel_invite_"):
+            if not parsed_duel_payload:
+                parsed_duel_payload = self._parse_duel_invite_payload(payload)
+
+            duel_reply_id = None
+            if user_id in self.active_invoices:
+                duel_reply_id = (
+                    self.active_invoices[user_id].get('group_message_id')
+                    or self.active_invoices[user_id].get('message_id')
+                    or self.active_invoices[user_id].get('msg_id')
+                )
+                del self.active_invoices[user_id]
+
+            if not parsed_duel_payload:
+                await self._safe_send_message(
+                    chat_id=accounting_chat_id,
+                    text="❌ Не удалось распознать оплату дуэли. Средства возвращены.",
+                    reply_to_message_id=duel_reply_id,
+                )
+                if telegram_payment_charge_id:
+                    await self.refund_star_payment(user_id, telegram_payment_charge_id)
+                return
+
+            payload_user_id = int(parsed_duel_payload.get("payload_user_id") or 0)
+            target_user_id = int(parsed_duel_payload.get("target_user_id") or 0)
+            group_chat_id = int(parsed_duel_payload.get("group_chat_id") or accounting_chat_id)
+
+            if payload_user_id != int(user_id) or target_user_id <= 0 or target_user_id == payload_user_id:
+                await self._safe_send_message(
+                    chat_id=group_chat_id,
+                    text="❌ Ошибка данных оплаты дуэли. Средства возвращены.",
+                    reply_to_message_id=duel_reply_id,
+                )
+                if telegram_payment_charge_id:
+                    await self.refund_star_payment(user_id, telegram_payment_charge_id)
+                return
+
+            try:
+                db.expire_pending_duels()
+            except Exception:
+                logger.exception("successful_payment duel: failed to expire pending duels")
+
+            if db.get_active_duel_for_user(payload_user_id) or db.get_active_duel_for_user(target_user_id):
+                await self._safe_send_message(
+                    chat_id=group_chat_id,
+                    text="❌ Нельзя создать дуэль: у одного из игроков уже есть активная/ожидающая дуэль. Средства возвращены.",
+                    reply_to_message_id=duel_reply_id,
+                )
+                if telegram_payment_charge_id:
+                    await self.refund_star_payment(user_id, telegram_payment_charge_id)
+                return
+
+            inviter_username = update.effective_user.username or update.effective_user.first_name or str(payload_user_id)
+            target_username = str(parsed_duel_payload.get("target_username") or "").strip()
+            if not target_username:
+                target_username = db.get_username_by_user_id(target_user_id) or ""
+
+            create_result = db.create_duel_invitation(
+                chat_id=group_chat_id,
+                inviter_id=payload_user_id,
+                target_id=target_user_id,
+                inviter_username=inviter_username,
+                target_username=target_username or None,
+                attempt_type='paid',
+                invite_timeout_seconds=DUEL_INVITE_TIMEOUT_SECONDS,
+                free_limit=DUEL_FREE_INVITES_PER_DAY,
+            )
+
+            if not create_result.get('ok'):
+                await self._safe_send_message(
+                    chat_id=group_chat_id,
+                    text="❌ Не удалось создать дуэль после оплаты. Средства возвращены.",
+                    reply_to_message_id=duel_reply_id,
+                )
+                if telegram_payment_charge_id:
+                    await self.refund_star_payment(user_id, telegram_payment_charge_id)
+                return
+
+            duel = create_result.get('duel') or {}
+            sent_message = await self._send_duel_invitation_message(
+                chat_id=group_chat_id,
+                duel=duel,
+                attempts_left_after=None,
+                reply_to_message_id=duel_reply_id,
+            )
+            if not sent_message:
+                try:
+                    force_now = datetime.now(timezone.utc) + timedelta(seconds=DUEL_INVITE_TIMEOUT_SECONDS + 1)
+                    db.expire_duel_invitation_by_id(int(duel.get('id') or 0), now=force_now)
+                except Exception:
+                    logger.exception("Failed to rollback paid duel invite duel_id=%s", duel.get('id'))
+
+                await self._safe_send_message(
+                    chat_id=group_chat_id,
+                    text="❌ Не удалось отправить приглашение в дуэль. Средства возвращены.",
+                    reply_to_message_id=duel_reply_id,
+                )
+                if telegram_payment_charge_id:
+                    await self.refund_star_payment(user_id, telegram_payment_charge_id)
+                return
+            return
         elif payload and payload.startswith("guaranteed_"):
             parsed = parsed_guaranteed_payload or self._parse_guaranteed_payload(payload)
             invoice_group_chat_id = active_invoice.get("group_chat_id") or active_invoice.get("chat_id")
@@ -8891,6 +10762,18 @@ class FishBot:
                         reply_to_message_id=group_message_id,
                     )
                     return
+
+        if db.is_user_seasick(user_id):
+            await self.refund_star_payment(user_id, telegram_payment_charge_id)
+            await self._safe_send_message(
+                chat_id=group_chat_id,
+                text=(
+                    "🤢 Гарантированный улов отменён — у вас морская болезнь во время плавания.\n"
+                    "Оплата возвращена. Вылечитесь и попробуйте снова."
+                ),
+                reply_to_message_id=group_message_id,
+            )
+            return
 
         try:
             # Гарантированный фиш-заброс тоже должен засчитываться для снятия штрафа популяции.
@@ -9030,6 +10913,17 @@ class FishBot:
 
         # Всегда отправляем текстовое сообщение о рыбе (вынесено из блока стикера)
         await self._safe_send_message(chat_id=group_chat_id, text=message, reply_to_message_id=sticker_message.message_id if sticker_message else group_message_id)
+
+        try:
+            await self._maybe_process_duel_catch(
+                user_id=user_id,
+                chat_id=group_chat_id,
+                fish_name=fish.get('name', 'Неизвестная рыба'),
+                weight=weight,
+                length=length,
+            )
+        except Exception:
+            logger.exception("Failed to process duel catch from guaranteed flow user=%s chat=%s", user_id, group_chat_id)
 
         if result.get('temp_rod_broken'):
             await self._safe_send_message(chat_id=group_chat_id, text=(
@@ -9949,6 +11843,7 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_skip_boat_cooldown, pattern=r"^skip_boat_cd_\\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_cure_seasick, pattern=r"^cure_seasick_\\d+$"))
     application.add_handler(CommandHandler("invite", bot_instance.invite_command))
+    application.add_handler(CommandHandler("duel", bot_instance.duel_command))
     application.add_handler(CommandHandler("shop", bot_instance.handle_shop))
     application.add_handler(CommandHandler("net", bot_instance.net_command))
     application.add_handler(CommandHandler("dynamite", bot_instance.dynamite_command))
@@ -9989,6 +11884,7 @@ def main():
     application.add_handler(MessageHandler(filters.ALL, bot_instance.refunded_payment_callback))
     
     # Обработчики callback
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_noop, pattern=r"^noop$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_raf_start_callback, pattern=r"^raf_start_\d+_\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_start_fishing, pattern="^start_fishing_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_change_location, pattern="^change_location_"))
@@ -10012,6 +11908,8 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_net_skip_cd, pattern="^net_skip_cd_"))  # Сброс КД сетей
     application.add_handler(CallbackQueryHandler(bot_instance.handle_boat_invite_accept, pattern="^boat_invite_accept_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_boat_invite_decline, pattern="^boat_invite_decline_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_duel_accept, pattern=r"^duel_accept_\d+_\d+$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_duel_decline, pattern=r"^duel_decline_\d+_\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_boat_start, pattern="^boat_start_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_boat_return, pattern="^boat_return_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_buy_paid_boat, pattern="^buy_paid_boat_"))
@@ -10024,10 +11922,19 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_cancel_sell_all, pattern=r"^cancel_sell_all_\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_sell_quantity_cancel, pattern=r"^sell_quantity_cancel_\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_inventory, pattern=r"^inventory_\d+$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_inventory_trophies, pattern=r"^inv_trophies_\d+$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_inventory_trophies, pattern=r"^inv_trophies_page_\d+_\d+$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_inventory_trophy_add, pattern=r"^inv_trophy_add_\d+$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_inventory_trophy_add, pattern=r"^inv_trophy_add_page_\d+_\d+$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_inventory_trophy_make, pattern=r"^inv_trophy_make_\d+_\d+$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_inventory_trophy_set, pattern=r"^inv_trophy_set_\d+_\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_sell_treasure, pattern=r"^sell_treasure_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_inventory_treasures, pattern=r"^inv_treasures_\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_inventory_location, pattern="^inv_location_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_shop, pattern=r"^shop_\d+$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_beer, pattern="^shop_beer_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_dynamite_upgrade, pattern="^shop_dynamite_upgrade_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_clothing, pattern="^shop_clothing_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_rods, pattern="^shop_rods_"))
     # Важно: более специфичные паттерны должны идти первыми
     application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_baits_location, pattern="^shop_baits_loc_"))
@@ -10036,6 +11943,9 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_boats, pattern="^shop_boats_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_feeders, pattern="^shop_feeders_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_shop_exchange, pattern="^shop_exchange_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_buy_beer, pattern="^buy_beer_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_buy_clothing, pattern="^buy_clothing_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_buy_dynamite_upgrade, pattern="^buy_dynamite_upgrade_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_exchange_buy_diamond, pattern="^exchange_buy_diamond_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_exchange_sell_diamond, pattern="^exchange_sell_diamond_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_exchange_shell_to_pearl, pattern="^exchange_shell_to_pearl_"))

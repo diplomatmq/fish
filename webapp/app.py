@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qsl
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_from_directory
 
 
 logger = logging.getLogger(__name__)
@@ -36,20 +36,14 @@ def _get_fish_db():
 
 
 BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent
+TROPHY_ID_PREFIX = "trophy_"
 
 app = Flask(
 	__name__,
 	template_folder=str(BASE_DIR / "templates"),
 	static_folder=str(BASE_DIR / "static"),
 )
-
-
-DEFAULT_TROPHIES = [
-	{"id": "none", "name": "Без трофея"},
-	{"id": "shark_tooth", "name": "Зуб акулы"},
-	{"id": "gold_hook", "name": "Золотой крюк"},
-	{"id": "deep_pearl", "name": "Жемчужина глубин"},
-]
 
 
 def _normalize_username(value: str | None) -> str:
@@ -78,10 +72,80 @@ def _build_title(level: int) -> str:
 	return "Молодой рыбак"
 
 
+def _safe_image_file_name(filename: str | None) -> str:
+	raw = str(filename or "").strip()
+	if not raw:
+		return "fishdef.webp"
+
+	name = Path(raw).name
+	if name != raw:
+		return "fishdef.webp"
+	if Path(name).suffix.lower() not in {".webp", ".png", ".jpg", ".jpeg"}:
+		return "fishdef.webp"
+	return name
+
+
+def _format_trophy_id(trophy: dict | None) -> str:
+	if not trophy:
+		return "none"
+	try:
+		return f"{TROPHY_ID_PREFIX}{int(trophy.get('id') or 0)}"
+	except (TypeError, ValueError):
+		return "none"
+
+
+def _parse_trophy_id(value: str | None) -> Optional[int]:
+	raw = str(value or "").strip()
+	if not raw or raw == "none":
+		return None
+	if raw.startswith(TROPHY_ID_PREFIX):
+		raw = raw[len(TROPHY_ID_PREFIX):]
+	return _safe_int(raw)
+
+
+def _build_trophy_payload(trophy: dict | None) -> Optional[dict]:
+	if not trophy:
+		return None
+
+	image_file = _safe_image_file_name(trophy.get("image_file"))
+	try:
+		weight = float(trophy.get("weight") or 0)
+	except (TypeError, ValueError):
+		weight = 0.0
+	try:
+		length = float(trophy.get("length") or 0)
+	except (TypeError, ValueError):
+		length = 0.0
+
+	name = str(trophy.get("fish_name") or "Неизвестная рыба")
+	return {
+		"id": _format_trophy_id(trophy),
+		"name": name,
+		"fish_name": name,
+		"weight": round(weight, 2),
+		"length": round(length, 1),
+		"location": trophy.get("location"),
+		"image_url": f"/api/fish-image/{image_file}",
+		"is_active": bool(int(trophy.get("is_active") or 0)),
+	}
+
+
 def _auth_error_status(error_code: str) -> int:
 	if error_code == "server_misconfigured":
 		return 500
 	return 401
+
+
+def _captcha_error_status(error_code: str) -> int:
+	if error_code in {"token_required", "answer_required", "wrong_answer"}:
+		return 400
+	if error_code == "challenge_not_found":
+		return 404
+	if error_code == "challenge_expired":
+		return 410
+	if error_code == "penalty_active":
+		return 423
+	return 400
 
 
 def _verify_telegram_init_data(init_data: str) -> tuple[Optional[dict], Optional[str]]:
@@ -148,6 +212,19 @@ def health():
 	return jsonify({"ok": True})
 
 
+@app.get("/api/fish-image/<path:filename>")
+def fish_image(filename: str):
+	safe_name = _safe_image_file_name(filename)
+	target = PROJECT_ROOT / safe_name
+	if not target.exists() or not target.is_file():
+		fallback = PROJECT_ROOT / "fishdef.webp"
+		if fallback.exists() and fallback.is_file():
+			return send_from_directory(str(PROJECT_ROOT), "fishdef.webp")
+		return jsonify({"ok": False, "error": "image_not_found"}), 404
+
+	return send_from_directory(str(PROJECT_ROOT), safe_name)
+
+
 @app.get("/api/profile")
 def profile():
 	auth_user, auth_error = _get_verified_user_from_request()
@@ -194,6 +271,16 @@ def profile():
 	if not player:
 		return jsonify({"ok": False, "error": "profile_not_found"}), 404
 
+	try:
+		trophy_items = db.get_player_trophies(user_id)
+	except Exception:
+		logger.exception("WebApp trophy read failed for user_id=%s", user_id)
+		trophy_items = []
+
+	active_trophy = next((item for item in trophy_items if int(item.get("is_active") or 0) == 1), None)
+	if not active_trophy and trophy_items:
+		active_trophy = trophy_items[0]
+
 	level = int(player.get("level") or 0)
 	payload = {
 		"username": _normalize_username(player.get("username") or fallback_username),
@@ -201,36 +288,159 @@ def profile():
 		"xp": int(player.get("xp") or 0),
 		"coins": int(player.get("coins") or 0),
 		"title": _build_title(level),
-		"selected_trophy": "none",
+		"selected_trophy": _format_trophy_id(active_trophy),
+		"selected_trophy_data": _build_trophy_payload(active_trophy),
 	}
 	return jsonify(payload)
 
 
 @app.get("/api/trophies")
 def trophies():
-	_, auth_error = _get_verified_user_from_request()
+	auth_user, auth_error = _get_verified_user_from_request()
 	if auth_error:
 		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
 
-	return jsonify({"items": DEFAULT_TROPHIES})
+	user_id = int(auth_user["id"])
+	db = _get_fish_db()
+	if db is None:
+		if fish_db_import_error is not None:
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		trophies = db.get_player_trophies(user_id)
+	except Exception:
+		logger.exception("WebApp trophies read failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+	items = []
+	for trophy in trophies:
+		payload = _build_trophy_payload(trophy)
+		if payload:
+			items.append(payload)
+
+	if not items:
+		items = [{
+			"id": "none",
+			"name": "Без трофея",
+			"fish_name": "Без трофея",
+			"weight": 0,
+			"length": 0,
+			"location": None,
+			"image_url": None,
+			"is_active": True,
+		}]
+
+	return jsonify({"items": items})
 
 
 @app.post("/api/trophy/select")
 def select_trophy():
-	_, auth_error = _get_verified_user_from_request()
+	auth_user, auth_error = _get_verified_user_from_request()
 	if auth_error:
 		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
 
-	data = request.get_json(silent=True) or {}
-	trophy_id = str(data.get("trophy_id") or "").strip()
-	known_ids = {item["id"] for item in DEFAULT_TROPHIES}
+	user_id = int(auth_user["id"])
+	db = _get_fish_db()
+	if db is None:
+		if fish_db_import_error is not None:
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
 
-	if trophy_id not in known_ids:
+	data = request.get_json(silent=True) or {}
+	trophy_id_raw = str(data.get("trophy_id") or "").strip()
+	if trophy_id_raw == "none":
+		return jsonify({"ok": True, "selected_trophy": "none"})
+
+	trophy_id = _parse_trophy_id(trophy_id_raw)
+	if not trophy_id:
 		return jsonify({"ok": False, "error": "invalid_trophy"}), 400
 
-	# This is intentionally non-persistent for now.
-	# Later it can be wired to DB by telegram user id.
-	return jsonify({"ok": True, "selected_trophy": trophy_id})
+	try:
+		updated = db.set_active_trophy(user_id, trophy_id)
+	except Exception:
+		logger.exception("WebApp set trophy failed for user_id=%s trophy_id=%s", user_id, trophy_id)
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+	if not updated:
+		return jsonify({"ok": False, "error": "trophy_not_found"}), 404
+
+	return jsonify({"ok": True, "selected_trophy": _format_trophy_id({"id": trophy_id})})
+
+
+@app.get("/api/captcha/challenge")
+def captcha_challenge():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	token = str(request.args.get("token") or request.args.get("captcha_token") or "").strip()
+
+	db = _get_fish_db()
+	if db is None:
+		if fish_db_import_error is not None:
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		result = db.get_antibot_challenge_for_user(user_id, token)
+	except Exception:
+		logger.exception("WebApp captcha challenge read failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+	if not result.get("ok"):
+		error_code = str(result.get("error") or "challenge_not_found")
+		response_payload = {
+			"ok": False,
+			"error": error_code,
+			"penalty_until": result.get("penalty_until"),
+		}
+		return jsonify(response_payload), _captcha_error_status(error_code)
+
+	challenge = result.get("challenge") or {}
+	return jsonify({
+		"ok": True,
+		"challenge": challenge,
+		"penalty_active": bool(result.get("penalty_active")),
+		"penalty_until": result.get("penalty_until"),
+		"first_link_at": result.get("first_link_at"),
+	})
+
+
+@app.post("/api/captcha/solve")
+def captcha_solve():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	data = request.get_json(silent=True) or {}
+	token = str(data.get("token") or request.args.get("token") or "").strip()
+	answer = str(data.get("answer") or "").strip()
+
+	db = _get_fish_db()
+	if db is None:
+		if fish_db_import_error is not None:
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		result = db.solve_antibot_challenge(user_id, token, answer)
+	except Exception:
+		logger.exception("WebApp captcha solve failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+	if not result.get("ok"):
+		error_code = str(result.get("error") or "wrong_answer")
+		response_payload = {
+			"ok": False,
+			"error": error_code,
+			"penalty_until": result.get("penalty_until"),
+		}
+		return jsonify(response_payload), _captcha_error_status(error_code)
+
+	return jsonify({"ok": True})
 
 
 if __name__ == "__main__":

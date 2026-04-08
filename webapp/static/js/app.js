@@ -8,9 +8,28 @@ const xpInfoEl = document.getElementById("xpInfo");
 const trophySelect = document.getElementById("trophySelect");
 const saveTrophyButton = document.getElementById("saveTrophy");
 const trophyStatus = document.getElementById("trophyStatus");
+const activeTrophyImage = document.getElementById("activeTrophyImage");
+const activeTrophyEmpty = document.getElementById("activeTrophyEmpty");
+const activeTrophyName = document.getElementById("activeTrophyName");
+const activeTrophyMeta = document.getElementById("activeTrophyMeta");
+const profileView = document.getElementById("view-profile");
+const captchaView = document.getElementById("view-captcha");
+const captchaLead = document.getElementById("captchaLead");
+const captchaPenaltyInfo = document.getElementById("captchaPenaltyInfo");
+const captchaMap = document.getElementById("captchaMap");
+const captchaSteps = document.getElementById("captchaSteps");
+const captchaAnswer = document.getElementById("captchaAnswer");
+const captchaSubmit = document.getElementById("captchaSubmit");
+const captchaTimer = document.getElementById("captchaTimer");
+const captchaStatus = document.getElementById("captchaStatus");
 
 let currentProfile = null;
 let telegramAuthContext = null;
+let trophyById = {};
+let captchaCountdownId = null;
+
+const urlParams = new URLSearchParams(window.location.search);
+const captchaToken = String(urlParams.get("captcha_token") || "").trim();
 
 function getTelegramAuthContext() {
   const tg = window.Telegram?.WebApp;
@@ -47,17 +66,70 @@ function getAuthHeaders() {
   };
 }
 
-function setAppInteractive(isInteractive) {
-  if (saveTrophyButton) {
-    saveTrophyButton.disabled = !isInteractive;
+function setActiveView(viewName) {
+  if (profileView) {
+    profileView.classList.toggle("active", viewName === "profile");
   }
+  if (captchaView) {
+    captchaView.classList.toggle("active", viewName === "captcha");
+  }
+}
+
+function setAppInteractive(isInteractive, mode = "profile") {
+  if (saveTrophyButton) {
+    saveTrophyButton.disabled = !(isInteractive && mode === "profile");
+  }
+  if (trophySelect) {
+    trophySelect.disabled = !(isInteractive && mode === "profile");
+  }
+  if (captchaSubmit) {
+    captchaSubmit.disabled = !(isInteractive && mode === "captcha");
+  }
+  if (captchaAnswer) {
+    captchaAnswer.disabled = !(isInteractive && mode === "captcha");
+  }
+}
+
+function renderActiveTrophy(trophy) {
+  const isEmpty = !trophy || trophy.id === "none";
+
+  if (activeTrophyName) {
+    activeTrophyName.textContent = isEmpty ? "No trophy selected" : (trophy.fish_name || trophy.name || "Trophy");
+  }
+
+  if (activeTrophyMeta) {
+    if (isEmpty) {
+      activeTrophyMeta.textContent = "Choose a trophy from the list above.";
+    } else {
+      const weightText = `Weight: ${Number(trophy.weight || 0).toFixed(2)} kg`;
+      const lengthText = `Length: ${Number(trophy.length || 0).toFixed(1)} cm`;
+      const locationText = trophy.location ? `Location: ${trophy.location}` : null;
+      activeTrophyMeta.textContent = [weightText, lengthText, locationText].filter(Boolean).join(" | ");
+    }
+  }
+
+  if (!activeTrophyImage || !activeTrophyEmpty) {
+    return;
+  }
+
+  if (isEmpty || !trophy.image_url) {
+    activeTrophyImage.style.display = "none";
+    activeTrophyImage.removeAttribute("src");
+    activeTrophyEmpty.style.display = "flex";
+    return;
+  }
+
+  activeTrophyImage.src = trophy.image_url;
+  activeTrophyImage.alt = trophy.fish_name || trophy.name || "Trophy";
+  activeTrophyImage.style.display = "block";
+  activeTrophyEmpty.style.display = "none";
 }
 
 function updateProfile(profile) {
   currentProfile = profile;
 
   usernameEl.textContent = profile.username || "@angler";
-  titleEl.textContent = profile.title || "Рыбак";
+  titleEl.textContent = profile.title || "Fisher";
   levelEl.textContent = String(profile.level || 1);
   xpEl.textContent = String(profile.xp || 0);
   coinsEl.textContent = String(profile.coins || 0);
@@ -66,7 +138,9 @@ function updateProfile(profile) {
   const nextLevelTarget = 2000;
   const percent = Math.max(0, Math.min(100, Math.round((xp / nextLevelTarget) * 100)));
   xpFillEl.style.width = `${percent}%`;
-  xpInfoEl.textContent = `До следующего уровня: ${Math.max(0, nextLevelTarget - xp)} XP`;
+  xpInfoEl.textContent = `XP to next level: ${Math.max(0, nextLevelTarget - xp)}`;
+
+  renderActiveTrophy(profile.selected_trophy_data || null);
 }
 
 async function loadProfile() {
@@ -93,12 +167,21 @@ async function loadTrophies() {
 
   const payload = await response.json();
   const items = Array.isArray(payload.items) ? payload.items : [];
+  trophyById = {};
 
   trophySelect.innerHTML = "";
   items.forEach((item) => {
+    trophyById[item.id] = item;
+
     const option = document.createElement("option");
     option.value = item.id;
-    option.textContent = item.name;
+    if (item.id === "none") {
+      option.textContent = item.name;
+    } else {
+      const weightText = Number(item.weight || 0).toFixed(2);
+      const lengthText = Number(item.length || 0).toFixed(1);
+      option.textContent = `${item.name} (${weightText} kg, ${lengthText} cm)`;
+    }
     trophySelect.appendChild(option);
   });
 
@@ -106,11 +189,14 @@ async function loadTrophies() {
   if (items.some((item) => item.id === selected)) {
     trophySelect.value = selected;
   }
+
+  const selectedItem = trophyById[trophySelect.value] || null;
+  renderActiveTrophy(selectedItem || currentProfile?.selected_trophy_data || null);
 }
 
 async function saveTrophySelection() {
   const trophyId = trophySelect.value;
-  trophyStatus.textContent = "Сохранение...";
+  trophyStatus.textContent = "Saving...";
 
   const response = await fetch("/api/trophy/select", {
     method: "POST",
@@ -123,31 +209,261 @@ async function saveTrophySelection() {
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    trophyStatus.textContent = payload.error ? `Ошибка: ${payload.error}` : "Не удалось сохранить выбор";
+    trophyStatus.textContent = payload.error ? `Error: ${payload.error}` : "Failed to save selection";
     return;
   }
 
   const payload = await response.json();
   if (payload.ok) {
-    trophyStatus.textContent = "Трофей сохранен";
+    const selectedId = payload.selected_trophy || trophyId;
+    if (currentProfile) {
+      currentProfile.selected_trophy = selectedId;
+      currentProfile.selected_trophy_data = trophyById[selectedId] || null;
+    }
+    renderActiveTrophy(trophyById[selectedId] || null);
+    trophyStatus.textContent = "Trophy saved";
   } else {
-    trophyStatus.textContent = "Ошибка сохранения";
+    trophyStatus.textContent = "Save error";
   }
 }
 
-function bindUi() {
-  saveTrophyButton.addEventListener("click", () => {
-    saveTrophySelection().catch((error) => {
-      console.error(error);
-      trophyStatus.textContent = "Ошибка запроса";
-    });
+function clearCaptchaCountdown() {
+  if (captchaCountdownId) {
+    clearInterval(captchaCountdownId);
+    captchaCountdownId = null;
+  }
+}
+
+function formatSeconds(value) {
+  const total = Math.max(0, Number(value) || 0);
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatPenaltyUntil(rawIso) {
+  if (!rawIso) {
+    return "";
+  }
+  const date = new Date(rawIso);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
   });
+}
+
+function setCaptchaStatus(text, kind = "") {
+  if (!captchaStatus) {
+    return;
+  }
+  captchaStatus.textContent = text;
+  captchaStatus.classList.remove("ok", "error");
+  if (kind) {
+    captchaStatus.classList.add(kind);
+  }
+}
+
+function startCaptchaCountdown(initialSeconds) {
+  clearCaptchaCountdown();
+
+  let seconds = Math.max(0, Number(initialSeconds) || 0);
+  if (!captchaTimer) {
+    return;
+  }
+
+  captchaTimer.textContent = `Time left: ${formatSeconds(seconds)}`;
+  if (seconds <= 0) {
+    captchaTimer.classList.add("error");
+    setCaptchaStatus("Time is over. Request a new captcha link from the bot.", "error");
+    setAppInteractive(false, "captcha");
+    return;
+  }
+
+  captchaTimer.classList.remove("error");
+  captchaCountdownId = window.setInterval(() => {
+    seconds -= 1;
+    if (seconds <= 0) {
+      clearCaptchaCountdown();
+      captchaTimer.textContent = "Time left: 00:00";
+      captchaTimer.classList.add("error");
+      setCaptchaStatus("Captcha expired. Request a new link from the bot.", "error");
+      setAppInteractive(false, "captcha");
+      return;
+    }
+    captchaTimer.textContent = `Time left: ${formatSeconds(seconds)}`;
+  }, 1000);
+}
+
+function renderCaptchaChallenge(result) {
+  const challenge = result?.challenge || {};
+  const payload = challenge.payload || {};
+  const symbolMap = Array.isArray(payload.symbol_map) ? payload.symbol_map : [];
+  const steps = Array.isArray(payload.steps) ? payload.steps : [];
+
+  if (captchaLead) {
+    const prompt = payload.prompt || "Substitute symbol values and solve the sequence.";
+    captchaLead.textContent = prompt;
+  }
+
+  if (captchaPenaltyInfo) {
+    const penaltyText = result.penalty_active
+      ? `Penalty active until ${formatPenaltyUntil(result.penalty_until)}. Fishing is blocked until penalty expires.`
+      : "";
+    captchaPenaltyInfo.textContent = penaltyText;
+  }
+
+  if (captchaMap) {
+    captchaMap.innerHTML = "";
+    symbolMap.forEach((item) => {
+      const li = document.createElement("li");
+      const symbol = String(item?.symbol || "?");
+      const value = String(item?.value ?? "?");
+      li.textContent = `${symbol} = ${value}`;
+      captchaMap.appendChild(li);
+    });
+  }
+
+  if (captchaSteps) {
+    captchaSteps.innerHTML = "";
+    steps.forEach((stepText) => {
+      const li = document.createElement("li");
+      li.textContent = String(stepText || "");
+      captchaSteps.appendChild(li);
+    });
+  }
+
+  if (captchaAnswer) {
+    captchaAnswer.value = "";
+    captchaAnswer.focus();
+  }
+
+  const remaining = Number(challenge.remaining_seconds || 0);
+  startCaptchaCountdown(remaining > 0 ? remaining : 60);
+  setCaptchaStatus("Enter your answer and press Verify.", "");
+}
+
+async function loadCaptchaChallenge(token) {
+  const response = await fetch(`/api/captcha/challenge?token=${encodeURIComponent(token)}`, {
+    headers: getAuthHeaders(),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(payload.error || `captcha_http_${response.status}`);
+    error.payload = payload;
+    throw error;
+  }
+
+  renderCaptchaChallenge(payload);
+}
+
+async function submitCaptchaAnswer() {
+  if (!captchaToken) {
+    setCaptchaStatus("Captcha token is missing. Re-open the bot link.", "error");
+    return;
+  }
+
+  const answer = String(captchaAnswer?.value || "").trim();
+  if (!answer) {
+    setCaptchaStatus("Please enter a numeric answer.", "error");
+    return;
+  }
+
+  setCaptchaStatus("Checking answer...", "");
+
+  const response = await fetch("/api/captcha/solve", {
+    method: "POST",
+    headers: {
+      ...getAuthHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      token: captchaToken,
+      answer,
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const errorCode = String(payload.error || `captcha_solve_http_${response.status}`);
+    const errorTextByCode = {
+      answer_required: "Enter an answer before submitting.",
+      wrong_answer: "Wrong answer, please try again.",
+      challenge_not_found: "Captcha not found. Request a new link in bot.",
+      challenge_expired: "Captcha expired. Request a new link in bot.",
+      penalty_active: "Penalty is active. Fishing will unlock after timeout.",
+      db_write_failed: "Server error while checking the answer.",
+    };
+
+    const suffix = payload.penalty_until ? ` Until: ${formatPenaltyUntil(payload.penalty_until)}.` : "";
+    setCaptchaStatus((errorTextByCode[errorCode] || `Error: ${errorCode}`) + suffix, "error");
+
+    if (errorCode === "challenge_expired" || errorCode === "challenge_not_found" || errorCode === "penalty_active") {
+      setAppInteractive(false, "captcha");
+      clearCaptchaCountdown();
+    }
+    return;
+  }
+
+  clearCaptchaCountdown();
+  if (captchaTimer) {
+    captchaTimer.textContent = "Captcha passed";
+    captchaTimer.classList.remove("error");
+  }
+
+  setAppInteractive(false, "captcha");
+  setCaptchaStatus("Verification passed. Return to chat and continue fishing.", "ok");
+}
+
+function bindUi() {
+  if (saveTrophyButton) {
+    saveTrophyButton.addEventListener("click", () => {
+      saveTrophySelection().catch((error) => {
+        console.error(error);
+        if (trophyStatus) {
+          trophyStatus.textContent = "Request error";
+        }
+      });
+    });
+  }
+
+  if (captchaSubmit) {
+    captchaSubmit.addEventListener("click", () => {
+      submitCaptchaAnswer().catch((error) => {
+        console.error(error);
+        setCaptchaStatus("Request error", "error");
+      });
+    });
+  }
+
+  if (captchaAnswer) {
+    captchaAnswer.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        submitCaptchaAnswer().catch((error) => {
+          console.error(error);
+          setCaptchaStatus("Request error", "error");
+        });
+      }
+    });
+  }
 }
 
 async function bootstrap() {
   bindUi();
-  setAppInteractive(false);
-  trophyStatus.textContent = "Проверка входа...";
+  setAppInteractive(false, captchaToken ? "captcha" : "profile");
+  setActiveView(captchaToken ? "captcha" : "profile");
+
+  if (captchaToken && captchaStatus) {
+    captchaStatus.textContent = "Verifying auth and loading captcha...";
+  } else if (trophyStatus) {
+    trophyStatus.textContent = "Verifying auth...";
+  }
 
   try {
     telegramAuthContext = getTelegramAuthContext();
@@ -155,26 +471,45 @@ async function bootstrap() {
       throw new Error("telegram_auth_missing");
     }
 
+    if (captchaToken) {
+      await loadCaptchaChallenge(captchaToken);
+      setAppInteractive(true, "captcha");
+      return;
+    }
+
     await loadProfile();
     await loadTrophies();
-    trophyStatus.textContent = "Можно выбрать трофей";
-    setAppInteractive(true);
+    if (trophyStatus) {
+      trophyStatus.textContent = "You can choose a trophy";
+    }
+    setAppInteractive(true, "profile");
   } catch (error) {
     console.error(error);
 
     const messageByCode = {
-      telegram_auth_missing: "Откройте мини-апку только через кнопку в Telegram",
-      auth_required: "Не удалось подтвердить вход через Telegram",
-      auth_invalid: "Проверка Telegram-подписи не пройдена",
-      auth_expired: "Сессия входа истекла. Откройте апку заново",
-      server_misconfigured: "Сервер не настроен: BOT_TOKEN не найден",
-      profile_not_found: "Профиль не найден. Напишите /start боту и попробуйте снова.",
-      profile_create_failed: "Не удалось создать профиль пользователя",
-      db_unavailable: "База временно недоступна",
-      db_read_failed: "Ошибка чтения профиля",
+      telegram_auth_missing: "Open this mini app only from Telegram bot button",
+      auth_required: "Telegram auth is required",
+      auth_invalid: "Telegram signature check failed",
+      auth_expired: "Session expired. Re-open app from bot",
+      server_misconfigured: "Server is misconfigured: BOT_TOKEN is missing",
+      profile_not_found: "Profile not found. Run /start in bot and try again",
+      profile_create_failed: "Failed to create player profile",
+      trophy_not_found: "Trophy not found",
+      db_unavailable: "Database is temporarily unavailable",
+      db_read_failed: "Failed to read profile data",
+      db_write_failed: "Failed to save data",
+      token_required: "Captcha token is missing",
+      challenge_not_found: "Captcha not found. Request a new link in bot",
+      challenge_expired: "Captcha expired. Request a new link in bot",
+      wrong_answer: "Wrong captcha answer",
+      penalty_active: "Penalty is active. Wait until timeout",
     };
 
-    trophyStatus.textContent = messageByCode[error.message] || "Ошибка загрузки профиля";
+    const targetStatus = captchaToken ? captchaStatus : trophyStatus;
+    if (targetStatus) {
+      targetStatus.textContent = messageByCode[error.message] || "Failed to load mini app";
+      targetStatus.classList.add("error");
+    }
   }
 }
 

@@ -1,8 +1,10 @@
 import os
+import json
 import logging
 import random
+import secrets
 from typing import Any, Dict, List, Optional, Union
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -539,6 +541,8 @@ class Database:
     def cure_seasick(self, user_id: int, price: int = 10) -> bool:
         """Вылечить морскую болезнь за звёзды. Списывает звёзды, удаляет эффект."""
         self._ensure_user_effects_table()
+        if not self.is_user_seasick(user_id):
+            return False
         player = self.get_player(user_id, 0)
         stars = int(player.get('stars', 0)) if player else 0
         if stars < price:
@@ -888,6 +892,33 @@ class Database:
                 return row[0]
         return None
 
+    def get_username_by_user_id(self, user_id: int) -> Optional[str]:
+        """Получить последний известный username по user_id."""
+        try:
+            normalized_user_id = int(user_id)
+        except (TypeError, ValueError):
+            return None
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT username
+                FROM players
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                ''',
+                (normalized_user_id,),
+            )
+            row = cursor.fetchone()
+
+        if not row:
+            return None
+
+        username = str(row[0] or '').strip()
+        return username or None
+
     def _ensure_user_effects_table(self):
         """Создать таблицу user_effects, если её нет."""
         with self._connect() as conn:
@@ -900,7 +931,1493 @@ class Database:
                     expires_at TIMESTAMP NOT NULL
                 )
             ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_user_effects_user_type_expires
+                ON user_effects (user_id, effect_type, expires_at)
+            ''')
             conn.commit()
+
+    def _ensure_antibot_captcha_table(self):
+        """Создать таблицу анти-абуза для капчи Mini App, если её нет."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS anti_abuse_captcha (
+                    user_id BIGINT PRIMARY KEY,
+                    first_link_at TIMESTAMP,
+                    link_count INTEGER DEFAULT 0,
+                    rhythm_streak INTEGER DEFAULT 0,
+                    last_free_fish_at TIMESTAMP,
+                    penalty_until TIMESTAMP,
+                    active_token TEXT,
+                    active_payload TEXT,
+                    active_answer TEXT,
+                    active_difficulty INTEGER DEFAULT 1,
+                    active_created_at TIMESTAMP,
+                    active_expires_at TIMESTAMP,
+                    solved_at TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_anti_abuse_penalty_until
+                ON anti_abuse_captcha (penalty_until)
+            ''')
+            cursor.execute('''
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_anti_abuse_active_token
+                ON anti_abuse_captcha (active_token)
+            ''')
+            conn.commit()
+
+    def _ensure_duel_tables(self):
+        """Создать таблицы дуэлей и дневных бесплатных попыток."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS duel_daily_attempts (
+                    user_id BIGINT NOT NULL,
+                    day_key TEXT NOT NULL,
+                    used_invites INTEGER DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, day_key)
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS duels (
+                    id SERIAL PRIMARY KEY,
+                    chat_id BIGINT NOT NULL,
+                    inviter_id BIGINT NOT NULL,
+                    target_id BIGINT NOT NULL,
+                    inviter_username TEXT,
+                    target_username TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_type TEXT NOT NULL DEFAULT 'free',
+                    attempt_day_key TEXT,
+                    invite_expires_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    accepted_at TIMESTAMP,
+                    finished_at TIMESTAMP,
+                    inviter_catch_id BIGINT,
+                    inviter_fish_name TEXT,
+                    inviter_weight REAL,
+                    inviter_length REAL,
+                    target_catch_id BIGINT,
+                    target_fish_name TEXT,
+                    target_weight REAL,
+                    target_length REAL,
+                    winner_id BIGINT,
+                    loser_id BIGINT,
+                    free_attempt_refunded INTEGER DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_duels_status_expires
+                ON duels (status, invite_expires_at)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_duels_inviter_status
+                ON duels (inviter_id, status)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_duels_target_status
+                ON duels (target_id, status)
+            ''')
+            conn.commit()
+
+    def _parse_utc_datetime(self, raw_value: Any) -> Optional[datetime]:
+        """Безопасно распарсить datetime и привести к UTC."""
+        if raw_value is None or raw_value == "":
+            return None
+
+        if isinstance(raw_value, datetime):
+            dt_val = raw_value
+        else:
+            try:
+                dt_val = datetime.fromisoformat(str(raw_value))
+            except Exception:
+                return None
+
+        if dt_val.tzinfo is None:
+            return dt_val.replace(tzinfo=timezone.utc)
+        return dt_val.astimezone(timezone.utc)
+
+    def _to_utc_iso(self, dt_val: datetime) -> str:
+        """Преобразовать datetime в ISO-строку UTC."""
+        if dt_val.tzinfo is None:
+            dt_val = dt_val.replace(tzinfo=timezone.utc)
+        else:
+            dt_val = dt_val.astimezone(timezone.utc)
+        return dt_val.isoformat()
+
+    def _generate_wave_cipher_captcha(self, difficulty: int) -> Dict[str, Any]:
+        """Сгенерировать "морской шифр" капчу с возрастающей сложностью."""
+        normalized_difficulty = max(1, min(10, int(difficulty or 1)))
+
+        symbols_pool = ["🐟", "🐠", "🐙", "🦀", "🦐", "🐡", "🦑"]
+        symbol_count = min(len(symbols_pool), 3 + (normalized_difficulty // 2))
+        chosen_symbols = random.sample(symbols_pool, symbol_count)
+        assigned_values = random.sample(range(1, 10), symbol_count)
+        symbol_map = dict(zip(chosen_symbols, assigned_values))
+
+        start_symbol = random.choice(chosen_symbols)
+        current_value = int(symbol_map[start_symbol])
+
+        steps = [f"Старт: {start_symbol}"]
+        steps_count = 2 + min(6, normalized_difficulty)
+        used_multiply = False
+
+        for step_index in range(steps_count):
+            can_multiply = (
+                normalized_difficulty >= 3
+                and not used_multiply
+                and step_index >= 1
+                and current_value <= 220
+                and random.random() < 0.35
+            )
+            if can_multiply:
+                current_value *= 2
+                used_multiply = True
+                steps.append("Умножь результат на 2")
+                continue
+
+            can_divide = (
+                normalized_difficulty >= 7
+                and used_multiply
+                and current_value % 2 == 0
+                and current_value >= 8
+                and random.random() < 0.18
+            )
+            if can_divide:
+                current_value //= 2
+                steps.append("Раздели результат на 2")
+                continue
+
+            can_add_const = normalized_difficulty >= 5 and random.random() < 0.28
+            if can_add_const:
+                bonus_value = random.randint(2, 9)
+                current_value += bonus_value
+                steps.append(f"Прибавь {bonus_value}")
+                continue
+
+            symbol = random.choice(chosen_symbols)
+            symbol_value = int(symbol_map[symbol])
+            use_subtract = current_value >= symbol_value and random.random() < 0.45
+
+            if use_subtract:
+                current_value = max(0, current_value - symbol_value)
+                steps.append(f"Вычти {symbol}")
+            else:
+                current_value += symbol_value
+                steps.append(f"Прибавь {symbol}")
+
+        payload = {
+            "type": "wave_cipher",
+            "title": "Морской шифр",
+            "difficulty": normalized_difficulty,
+            "prompt": "Подставь значения символов и выполни шаги строго по порядку.",
+            "symbol_map": [{"symbol": symbol, "value": int(symbol_map[symbol])} for symbol in chosen_symbols],
+            "steps": steps,
+            "answer_hint": "Ответом должно быть одно число.",
+        }
+
+        return {
+            "payload": payload,
+            "answer": str(int(current_value)),
+        }
+
+    def _fetch_antibot_row(self, user_id: int) -> Dict[str, Any]:
+        """Прочитать строку анти-абуза или вернуть состояние по умолчанию."""
+        self._ensure_antibot_captcha_table()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT user_id, first_link_at, link_count, rhythm_streak, last_free_fish_at,
+                       penalty_until, active_token, active_payload, active_answer,
+                       active_difficulty, active_created_at, active_expires_at, solved_at
+                FROM anti_abuse_captcha
+                WHERE user_id = ?
+                LIMIT 1
+                ''',
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute(
+                    '''
+                    INSERT INTO anti_abuse_captcha (user_id, link_count, rhythm_streak, updated_at)
+                    VALUES (?, 0, 0, ?)
+                    ''',
+                    (user_id, self._to_utc_iso(datetime.now(timezone.utc))),
+                )
+                conn.commit()
+                return {
+                    "user_id": user_id,
+                    "first_link_at": None,
+                    "link_count": 0,
+                    "rhythm_streak": 0,
+                    "last_free_fish_at": None,
+                    "penalty_until": None,
+                    "active_token": None,
+                    "active_payload": None,
+                    "active_answer": None,
+                    "active_difficulty": 1,
+                    "active_created_at": None,
+                    "active_expires_at": None,
+                    "solved_at": None,
+                }
+
+            columns = [
+                "user_id",
+                "first_link_at",
+                "link_count",
+                "rhythm_streak",
+                "last_free_fish_at",
+                "penalty_until",
+                "active_token",
+                "active_payload",
+                "active_answer",
+                "active_difficulty",
+                "active_created_at",
+                "active_expires_at",
+                "solved_at",
+            ]
+            return dict(zip(columns, row))
+
+    def get_antibot_gate_status(self, user_id: int, penalty_hours: int = 6) -> Dict[str, Any]:
+        """
+        Текущее состояние анти-абуза.
+        Если капча просрочена, автоматически включает штраф до 6 часов от первой ссылки.
+        """
+        row = self._fetch_antibot_row(user_id)
+        now = datetime.now(timezone.utc)
+
+        first_link_at = self._parse_utc_datetime(row.get("first_link_at"))
+        penalty_until = self._parse_utc_datetime(row.get("penalty_until"))
+        active_created_at = self._parse_utc_datetime(row.get("active_created_at"))
+        active_expires_at = self._parse_utc_datetime(row.get("active_expires_at"))
+        active_token = str(row.get("active_token") or "").strip() or None
+        link_count = max(0, int(row.get("link_count") or 0))
+        rhythm_streak = max(0, int(row.get("rhythm_streak") or 0))
+        active_difficulty = max(1, int(row.get("active_difficulty") or 1))
+
+        clear_active_payload = False
+        should_update = False
+
+        if first_link_at and now >= (first_link_at + timedelta(hours=penalty_hours)):
+            first_link_at = None
+            penalty_until = None
+            link_count = 0
+            rhythm_streak = 0
+            active_token = None
+            active_expires_at = None
+            active_created_at = None
+            active_difficulty = 1
+            clear_active_payload = True
+            should_update = True
+
+        if active_token and active_expires_at and active_expires_at <= now:
+            if not first_link_at:
+                first_link_at = active_created_at or now
+
+            penalty_candidate = first_link_at + timedelta(hours=penalty_hours)
+            penalty_until = penalty_candidate if penalty_candidate > now else None
+            active_token = None
+            active_expires_at = None
+            active_created_at = None
+            active_difficulty = 1
+            clear_active_payload = True
+            should_update = True
+
+        if penalty_until and penalty_until <= now:
+            penalty_until = None
+            first_link_at = None
+            link_count = 0
+            active_token = None
+            active_expires_at = None
+            active_created_at = None
+            active_difficulty = 1
+            clear_active_payload = True
+            should_update = True
+
+        if should_update:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                if clear_active_payload:
+                    cursor.execute(
+                        '''
+                        UPDATE anti_abuse_captcha
+                        SET first_link_at = ?,
+                            link_count = ?,
+                            rhythm_streak = ?,
+                            penalty_until = ?,
+                            active_token = ?,
+                            active_payload = NULL,
+                            active_answer = NULL,
+                            active_difficulty = ?,
+                            active_created_at = ?,
+                            active_expires_at = ?,
+                            updated_at = ?
+                        WHERE user_id = ?
+                        ''',
+                        (
+                            self._to_utc_iso(first_link_at) if first_link_at else None,
+                            link_count,
+                            rhythm_streak,
+                            self._to_utc_iso(penalty_until) if penalty_until else None,
+                            active_token,
+                            active_difficulty,
+                            self._to_utc_iso(active_created_at) if active_created_at else None,
+                            self._to_utc_iso(active_expires_at) if active_expires_at else None,
+                            self._to_utc_iso(now),
+                            user_id,
+                        ),
+                    )
+                else:
+                    cursor.execute(
+                        '''
+                        UPDATE anti_abuse_captcha
+                        SET first_link_at = ?,
+                            link_count = ?,
+                            rhythm_streak = ?,
+                            penalty_until = ?,
+                            active_token = ?,
+                            active_difficulty = ?,
+                            active_created_at = ?,
+                            active_expires_at = ?,
+                            updated_at = ?
+                        WHERE user_id = ?
+                        ''',
+                        (
+                            self._to_utc_iso(first_link_at) if first_link_at else None,
+                            link_count,
+                            rhythm_streak,
+                            self._to_utc_iso(penalty_until) if penalty_until else None,
+                            active_token,
+                            active_difficulty,
+                            self._to_utc_iso(active_created_at) if active_created_at else None,
+                            self._to_utc_iso(active_expires_at) if active_expires_at else None,
+                            self._to_utc_iso(now),
+                            user_id,
+                        ),
+                    )
+                conn.commit()
+
+        penalty_active = bool(penalty_until and penalty_until > now)
+        challenge_active = bool(active_token and active_expires_at and active_expires_at > now)
+
+        return {
+            "needs_captcha": penalty_active or challenge_active,
+            "penalty_active": penalty_active,
+            "penalty_until": self._to_utc_iso(penalty_until) if penalty_until else None,
+            "first_link_at": self._to_utc_iso(first_link_at) if first_link_at else None,
+            "challenge_active": challenge_active,
+            "challenge_token": active_token,
+            "challenge_expires_at": self._to_utc_iso(active_expires_at) if active_expires_at else None,
+            "link_count": link_count,
+            "rhythm_streak": rhythm_streak,
+            "active_difficulty": active_difficulty,
+        }
+
+    def register_free_fish_attempt(
+        self,
+        user_id: int,
+        attempt_time: Optional[datetime] = None,
+        min_interval_seconds: int = 480,
+        max_interval_seconds: int = 720,
+        trigger_streak: int = 5,
+    ) -> Dict[str, Any]:
+        """
+        Зафиксировать бесплатную попытку /fish и проверить подозрительный ритм.
+        Триггер срабатывает при стабильных интервалах (по умолчанию 8-12 минут).
+        """
+        gate = self.get_antibot_gate_status(user_id)
+        if gate.get("needs_captcha"):
+            return {
+                "trigger": False,
+                "ignored": True,
+                "rhythm_streak": int(gate.get("rhythm_streak") or 0),
+                "delta_seconds": None,
+            }
+
+        now = attempt_time if isinstance(attempt_time, datetime) else datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        else:
+            now = now.astimezone(timezone.utc)
+
+        row = self._fetch_antibot_row(user_id)
+        last_attempt = self._parse_utc_datetime(row.get("last_free_fish_at"))
+        rhythm_streak = max(0, int(row.get("rhythm_streak") or 0))
+
+        delta_seconds: Optional[int] = None
+        if last_attempt:
+            delta_seconds = int((now - last_attempt).total_seconds())
+            in_rhythm = min_interval_seconds <= delta_seconds <= max_interval_seconds
+            if in_rhythm:
+                rhythm_streak += 1
+            else:
+                rhythm_streak = 0
+        else:
+            rhythm_streak = 0
+
+        trigger = rhythm_streak >= max(1, int(trigger_streak or 1))
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE anti_abuse_captcha
+                SET last_free_fish_at = ?,
+                    rhythm_streak = ?,
+                    updated_at = ?
+                WHERE user_id = ?
+                ''',
+                (
+                    self._to_utc_iso(now),
+                    rhythm_streak,
+                    self._to_utc_iso(now),
+                    user_id,
+                ),
+            )
+            conn.commit()
+
+        return {
+            "trigger": bool(trigger),
+            "ignored": False,
+            "rhythm_streak": rhythm_streak,
+            "delta_seconds": delta_seconds,
+        }
+
+    def issue_antibot_challenge(
+        self,
+        user_id: int,
+        reason: str = "rhythm_detected",
+        challenge_ttl_seconds: int = 60,
+        penalty_hours: int = 6,
+    ) -> Dict[str, Any]:
+        """Создать/обновить активную капчу для пользователя и вернуть метаданные ссылки."""
+        gate = self.get_antibot_gate_status(user_id, penalty_hours=penalty_hours)
+        now = datetime.now(timezone.utc)
+
+        first_link_at = self._parse_utc_datetime(gate.get("first_link_at"))
+        penalty_until = self._parse_utc_datetime(gate.get("penalty_until"))
+        link_count = max(0, int(gate.get("link_count") or 0))
+
+        if not first_link_at:
+            first_link_at = now
+            link_count = 0
+            penalty_until = None
+
+        window_end = first_link_at + timedelta(hours=penalty_hours)
+        if now >= window_end:
+            first_link_at = now
+            link_count = 0
+            penalty_until = None
+
+        link_count += 1
+        difficulty = 1
+        challenge_data = self._generate_wave_cipher_captcha(difficulty)
+        token = secrets.token_urlsafe(18)
+        expires_at = now + timedelta(seconds=max(15, int(challenge_ttl_seconds or 60)))
+
+        payload_json = json.dumps(challenge_data["payload"], ensure_ascii=False)
+        expected_answer = str(challenge_data["answer"])
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE anti_abuse_captcha
+                SET first_link_at = ?,
+                    link_count = ?,
+                    active_token = ?,
+                    active_payload = ?,
+                    active_answer = ?,
+                    active_difficulty = ?,
+                    active_created_at = ?,
+                    active_expires_at = ?,
+                    solved_at = NULL,
+                    updated_at = ?
+                WHERE user_id = ?
+                ''',
+                (
+                    self._to_utc_iso(first_link_at),
+                    link_count,
+                    token,
+                    payload_json,
+                    expected_answer,
+                    difficulty,
+                    self._to_utc_iso(now),
+                    self._to_utc_iso(expires_at),
+                    self._to_utc_iso(now),
+                    user_id,
+                ),
+            )
+            conn.commit()
+
+        return {
+            "ok": True,
+            "reason": str(reason or "rhythm_detected"),
+            "token": token,
+            "difficulty": difficulty,
+            "link_count": link_count,
+            "expires_at": self._to_utc_iso(expires_at),
+            "first_link_at": self._to_utc_iso(first_link_at),
+            "penalty_until": self._to_utc_iso(penalty_until) if penalty_until else None,
+            "payload": challenge_data["payload"],
+        }
+
+    def get_antibot_challenge_for_user(self, user_id: int, token: str) -> Dict[str, Any]:
+        """Получить активную капчу пользователя по токену."""
+        normalized_token = str(token or "").strip()
+        if not normalized_token:
+            return {"ok": False, "error": "token_required"}
+
+        gate = self.get_antibot_gate_status(user_id)
+        row = self._fetch_antibot_row(user_id)
+        now = datetime.now(timezone.utc)
+
+        active_token = str(row.get("active_token") or "").strip()
+        if not active_token:
+            return {
+                "ok": False,
+                "error": "challenge_not_found",
+                "penalty_until": gate.get("penalty_until"),
+            }
+
+        if active_token != normalized_token:
+            return {
+                "ok": False,
+                "error": "challenge_not_found",
+                "penalty_until": gate.get("penalty_until"),
+            }
+
+        expires_at = self._parse_utc_datetime(row.get("active_expires_at"))
+        if not expires_at or expires_at <= now:
+            self.get_antibot_gate_status(user_id)
+            gate = self.get_antibot_gate_status(user_id)
+            return {
+                "ok": False,
+                "error": "challenge_expired",
+                "penalty_until": gate.get("penalty_until"),
+            }
+
+        payload_raw = row.get("active_payload")
+        payload_data: Dict[str, Any] = {}
+        if payload_raw:
+            try:
+                payload_data = json.loads(str(payload_raw))
+            except Exception:
+                payload_data = {}
+
+        remaining_seconds = max(0, int((expires_at - now).total_seconds()))
+        return {
+            "ok": True,
+            "challenge": {
+                "token": active_token,
+                "difficulty": max(1, int(row.get("active_difficulty") or 1)),
+                "expires_at": self._to_utc_iso(expires_at),
+                "remaining_seconds": remaining_seconds,
+                "link_count": max(0, int(row.get("link_count") or 0)),
+                "payload": payload_data,
+            },
+            "penalty_active": bool(gate.get("penalty_active")),
+            "penalty_until": gate.get("penalty_until"),
+            "first_link_at": gate.get("first_link_at"),
+        }
+
+    def solve_antibot_challenge(self, user_id: int, token: str, answer: str) -> Dict[str, Any]:
+        """Проверить ответ на капчу и обновить состояние анти-абуза."""
+        normalized_token = str(token or "").strip()
+        normalized_answer = str(answer or "").strip()
+
+        if not normalized_token:
+            return {"ok": False, "error": "token_required"}
+        if not normalized_answer:
+            return {"ok": False, "error": "answer_required"}
+
+        gate = self.get_antibot_gate_status(user_id)
+        if gate.get("penalty_active"):
+            return {
+                "ok": False,
+                "error": "penalty_active",
+                "penalty_until": gate.get("penalty_until"),
+            }
+
+        row = self._fetch_antibot_row(user_id)
+        now = datetime.now(timezone.utc)
+
+        active_token = str(row.get("active_token") or "").strip()
+        expected_answer = str(row.get("active_answer") or "").strip()
+        expires_at = self._parse_utc_datetime(row.get("active_expires_at"))
+
+        if not active_token or active_token != normalized_token:
+            return {"ok": False, "error": "challenge_not_found"}
+
+        if not expires_at or expires_at <= now:
+            self.get_antibot_gate_status(user_id)
+            gate_after_expire = self.get_antibot_gate_status(user_id)
+            return {
+                "ok": False,
+                "error": "challenge_expired",
+                "penalty_until": gate_after_expire.get("penalty_until"),
+            }
+
+        if normalized_answer != expected_answer:
+            return {"ok": False, "error": "wrong_answer"}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE anti_abuse_captcha
+                SET first_link_at = NULL,
+                    link_count = 0,
+                    rhythm_streak = 0,
+                    penalty_until = NULL,
+                    active_token = NULL,
+                    active_payload = NULL,
+                    active_answer = NULL,
+                    active_difficulty = 1,
+                    active_created_at = NULL,
+                    active_expires_at = NULL,
+                    solved_at = ?,
+                    updated_at = ?
+                WHERE user_id = ?
+                ''',
+                (self._to_utc_iso(now), self._to_utc_iso(now), user_id),
+            )
+            conn.commit()
+
+        return {"ok": True}
+
+    def _duel_day_key(self, now_dt: Optional[datetime] = None) -> str:
+        base = now_dt if isinstance(now_dt, datetime) else datetime.now(timezone.utc)
+        if base.tzinfo is None:
+            base = base.replace(tzinfo=timezone.utc)
+        else:
+            base = base.astimezone(timezone.utc)
+        return base.date().isoformat()
+
+    def _normalize_duel_username(self, value: Optional[str]) -> Optional[str]:
+        raw = str(value or '').strip()
+        if not raw:
+            return None
+        if raw.startswith('@'):
+            raw = raw[1:]
+        return raw or None
+
+    def get_duel_attempts_status(self, user_id: int, free_limit: int = 3) -> Dict[str, Any]:
+        """Вернуть информацию о дневных бесплатных попытках приглашения в дуэль."""
+        self._ensure_duel_tables()
+        now_dt = datetime.now(timezone.utc)
+        day_key = self._duel_day_key(now_dt)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT used_invites
+                FROM duel_daily_attempts
+                WHERE user_id = ? AND day_key = ?
+                LIMIT 1
+                ''',
+                (int(user_id), day_key),
+            )
+            row = cursor.fetchone()
+
+        used = int((row[0] if row else 0) or 0)
+        used = max(0, used)
+        left = max(0, int(free_limit) - used)
+        return {
+            'day_key': day_key,
+            'used': used,
+            'left': left,
+            'free_limit': int(free_limit),
+        }
+
+    def get_duel_by_id(self, duel_id: int) -> Optional[Dict[str, Any]]:
+        """Получить дуэль по id."""
+        self._ensure_duel_tables()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM duels
+                WHERE id = ?
+                LIMIT 1
+                ''',
+                (int(duel_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            columns = [description[0] for description in cursor.description]
+            return dict(zip(columns, row))
+
+    def expire_duel_invitation_by_id(self, duel_id: int, now: Optional[datetime] = None) -> Dict[str, Any]:
+        """Протухание ожидающего приглашения с возвратом бесплатной попытки (если применимо)."""
+        self._ensure_duel_tables()
+        now_dt = now if isinstance(now, datetime) else datetime.now(timezone.utc)
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=timezone.utc)
+        else:
+            now_dt = now_dt.astimezone(timezone.utc)
+        now_iso = self._to_utc_iso(now_dt)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM duels WHERE id = ? LIMIT 1', (int(duel_id),))
+            row = cursor.fetchone()
+            if not row:
+                return {'ok': False, 'error': 'duel_not_found'}
+
+            columns = [description[0] for description in cursor.description]
+            duel = dict(zip(columns, row))
+
+            if str(duel.get('status') or '') != 'pending':
+                return {'ok': False, 'error': 'not_pending', 'duel': duel}
+
+            expires_at = self._parse_utc_datetime(duel.get('invite_expires_at'))
+            if expires_at and expires_at > now_dt:
+                return {'ok': False, 'error': 'not_expired', 'duel': duel}
+
+            refunded_flag = int(duel.get('free_attempt_refunded') or 0)
+            attempt_type = str(duel.get('attempt_type') or '')
+            attempt_day_key = str(duel.get('attempt_day_key') or '').strip()
+
+            if attempt_type == 'free' and refunded_flag == 0 and attempt_day_key:
+                cursor.execute(
+                    '''
+                    UPDATE duel_daily_attempts
+                    SET used_invites = CASE WHEN used_invites > 0 THEN used_invites - 1 ELSE 0 END,
+                        updated_at = ?
+                    WHERE user_id = ? AND day_key = ?
+                    ''',
+                    (now_iso, int(duel.get('inviter_id') or 0), attempt_day_key),
+                )
+                refunded_flag = 1
+
+            cursor.execute(
+                '''
+                UPDATE duels
+                SET status = 'expired',
+                    finished_at = ?,
+                    free_attempt_refunded = ?,
+                    updated_at = ?
+                WHERE id = ?
+                ''',
+                (now_iso, refunded_flag, now_iso, int(duel_id)),
+            )
+            conn.commit()
+
+            cursor.execute('SELECT * FROM duels WHERE id = ? LIMIT 1', (int(duel_id),))
+            refreshed = cursor.fetchone()
+            if not refreshed:
+                return {'ok': False, 'error': 'duel_not_found'}
+            refreshed_columns = [description[0] for description in cursor.description]
+            refreshed_duel = dict(zip(refreshed_columns, refreshed))
+
+        return {'ok': True, 'expired': True, 'duel': refreshed_duel}
+
+    def expire_pending_duels(self, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """Протухание всех ожидающих приглашений, чей таймаут истёк."""
+        self._ensure_duel_tables()
+        now_dt = now if isinstance(now, datetime) else datetime.now(timezone.utc)
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=timezone.utc)
+        else:
+            now_dt = now_dt.astimezone(timezone.utc)
+        now_iso = self._to_utc_iso(now_dt)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id
+                FROM duels
+                WHERE status = 'pending'
+                  AND invite_expires_at IS NOT NULL
+                  AND invite_expires_at <= ?
+                ''',
+                (now_iso,),
+            )
+            ids = [int(row[0]) for row in cursor.fetchall()]
+
+        expired_rows: List[Dict[str, Any]] = []
+        for duel_id in ids:
+            result = self.expire_duel_invitation_by_id(duel_id, now=now_dt)
+            if result.get('ok') and result.get('expired') and result.get('duel'):
+                expired_rows.append(result['duel'])
+
+        return expired_rows
+
+    def get_active_duel_for_user(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Получить активную/ожидающую дуэль пользователя во всех чатах."""
+        self.expire_pending_duels()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM duels
+                WHERE status IN ('pending', 'active')
+                  AND (inviter_id = ? OR target_id = ?)
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                ''',
+                (int(user_id), int(user_id)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            columns = [description[0] for description in cursor.description]
+            return dict(zip(columns, row))
+
+    def create_duel_invitation(
+        self,
+        chat_id: int,
+        inviter_id: int,
+        target_id: int,
+        inviter_username: Optional[str] = None,
+        target_username: Optional[str] = None,
+        attempt_type: str = 'free',
+        invite_timeout_seconds: int = 60,
+        free_limit: int = 3,
+    ) -> Dict[str, Any]:
+        """Создать приглашение в дуэль с проверкой лимитов и активных дуэлей."""
+        self._ensure_duel_tables()
+        self.expire_pending_duels()
+
+        inviter_id = int(inviter_id)
+        target_id = int(target_id)
+        chat_id = int(chat_id)
+        attempt_kind = str(attempt_type or 'free').strip().lower()
+        if attempt_kind not in {'free', 'paid'}:
+            attempt_kind = 'free'
+
+        if inviter_id == target_id:
+            return {'ok': False, 'error': 'self_duel'}
+
+        now_dt = datetime.now(timezone.utc)
+        now_iso = self._to_utc_iso(now_dt)
+        day_key = self._duel_day_key(now_dt)
+        invite_expires_at = now_dt + timedelta(seconds=max(15, int(invite_timeout_seconds or 60)))
+        invite_expires_iso = self._to_utc_iso(invite_expires_at)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                '''
+                SELECT id
+                FROM duels
+                WHERE status IN ('pending', 'active')
+                  AND (inviter_id = ? OR target_id = ?)
+                LIMIT 1
+                ''',
+                (inviter_id, inviter_id),
+            )
+            inviter_active = cursor.fetchone()
+            if inviter_active:
+                return {'ok': False, 'error': 'inviter_has_active_duel'}
+
+            cursor.execute(
+                '''
+                SELECT id
+                FROM duels
+                WHERE status IN ('pending', 'active')
+                  AND (inviter_id = ? OR target_id = ?)
+                LIMIT 1
+                ''',
+                (target_id, target_id),
+            )
+            target_active = cursor.fetchone()
+            if target_active:
+                return {'ok': False, 'error': 'target_has_active_duel'}
+
+            attempts_left_after = None
+            if attempt_kind == 'free':
+                cursor.execute(
+                    '''
+                    SELECT used_invites
+                    FROM duel_daily_attempts
+                    WHERE user_id = ? AND day_key = ?
+                    LIMIT 1
+                    ''',
+                    (inviter_id, day_key),
+                )
+                attempt_row = cursor.fetchone()
+                used = int((attempt_row[0] if attempt_row else 0) or 0)
+                used = max(0, used)
+                if used >= int(free_limit):
+                    return {'ok': False, 'error': 'no_free_attempts', 'left': 0, 'used': used}
+
+                new_used = used + 1
+                if attempt_row:
+                    cursor.execute(
+                        '''
+                        UPDATE duel_daily_attempts
+                        SET used_invites = ?,
+                            updated_at = ?
+                        WHERE user_id = ? AND day_key = ?
+                        ''',
+                        (new_used, now_iso, inviter_id, day_key),
+                    )
+                else:
+                    cursor.execute(
+                        '''
+                        INSERT INTO duel_daily_attempts (user_id, day_key, used_invites, updated_at)
+                        VALUES (?, ?, ?, ?)
+                        ''',
+                        (inviter_id, day_key, new_used, now_iso),
+                    )
+                attempts_left_after = max(0, int(free_limit) - new_used)
+
+            normalized_inviter_username = self._normalize_duel_username(inviter_username)
+            normalized_target_username = self._normalize_duel_username(target_username)
+
+            cursor.execute(
+                '''
+                INSERT INTO duels (
+                    chat_id,
+                    inviter_id,
+                    target_id,
+                    inviter_username,
+                    target_username,
+                    status,
+                    attempt_type,
+                    attempt_day_key,
+                    invite_expires_at,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+                RETURNING *
+                ''',
+                (
+                    chat_id,
+                    inviter_id,
+                    target_id,
+                    normalized_inviter_username,
+                    normalized_target_username,
+                    attempt_kind,
+                    day_key if attempt_kind == 'free' else None,
+                    invite_expires_iso,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            duel_row = cursor.fetchone()
+            if not duel_row:
+                conn.rollback()
+                return {'ok': False, 'error': 'duel_create_failed'}
+
+            columns = [description[0] for description in cursor.description]
+            duel = dict(zip(columns, duel_row))
+            conn.commit()
+
+        return {
+            'ok': True,
+            'duel': duel,
+            'attempts_left_after': attempts_left_after,
+        }
+
+    def accept_duel_invitation(self, duel_id: int, target_user_id: int) -> Dict[str, Any]:
+        """Принять приглашение в дуэль (только приглашённый пользователь)."""
+        self._ensure_duel_tables()
+        self.expire_pending_duels()
+        now_dt = datetime.now(timezone.utc)
+        now_iso = self._to_utc_iso(now_dt)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM duels WHERE id = ? LIMIT 1', (int(duel_id),))
+            row = cursor.fetchone()
+            if not row:
+                return {'ok': False, 'error': 'duel_not_found'}
+
+            columns = [description[0] for description in cursor.description]
+            duel = dict(zip(columns, row))
+
+            if int(duel.get('target_id') or 0) != int(target_user_id):
+                return {'ok': False, 'error': 'not_target'}
+
+            status = str(duel.get('status') or '')
+            if status != 'pending':
+                return {'ok': False, 'error': 'not_pending', 'duel': duel}
+
+            expires_at = self._parse_utc_datetime(duel.get('invite_expires_at'))
+            if expires_at and expires_at <= now_dt:
+                expired_result = self.expire_duel_invitation_by_id(int(duel_id), now=now_dt)
+                return {
+                    'ok': False,
+                    'error': 'expired',
+                    'duel': expired_result.get('duel') if isinstance(expired_result, dict) else duel,
+                }
+
+            inviter_id = int(duel.get('inviter_id') or 0)
+            target_id = int(duel.get('target_id') or 0)
+
+            cursor.execute(
+                '''
+                SELECT id
+                FROM duels
+                WHERE id <> ?
+                  AND status IN ('pending', 'active')
+                  AND (inviter_id = ? OR target_id = ?)
+                LIMIT 1
+                ''',
+                (int(duel_id), inviter_id, inviter_id),
+            )
+            if cursor.fetchone():
+                return {'ok': False, 'error': 'inviter_has_active_duel'}
+
+            cursor.execute(
+                '''
+                SELECT id
+                FROM duels
+                WHERE id <> ?
+                  AND status IN ('pending', 'active')
+                  AND (inviter_id = ? OR target_id = ?)
+                LIMIT 1
+                ''',
+                (int(duel_id), target_id, target_id),
+            )
+            if cursor.fetchone():
+                return {'ok': False, 'error': 'target_has_active_duel'}
+
+            cursor.execute(
+                '''
+                UPDATE duels
+                SET status = 'active',
+                    accepted_at = ?,
+                    updated_at = ?
+                WHERE id = ? AND status = 'pending'
+                ''',
+                (now_iso, now_iso, int(duel_id)),
+            )
+            if int(getattr(cursor, 'rowcount', 0) or 0) == 0:
+                conn.rollback()
+                return {'ok': False, 'error': 'not_pending'}
+
+            conn.commit()
+
+            cursor.execute('SELECT * FROM duels WHERE id = ? LIMIT 1', (int(duel_id),))
+            updated_row = cursor.fetchone()
+            if not updated_row:
+                return {'ok': False, 'error': 'duel_not_found'}
+            updated_columns = [description[0] for description in cursor.description]
+            updated_duel = dict(zip(updated_columns, updated_row))
+
+        return {'ok': True, 'duel': updated_duel}
+
+    def decline_duel_invitation(self, duel_id: int, target_user_id: int) -> Dict[str, Any]:
+        """Отклонить приглашение в дуэль (только приглашённый пользователь)."""
+        self._ensure_duel_tables()
+        self.expire_pending_duels()
+        now_dt = datetime.now(timezone.utc)
+        now_iso = self._to_utc_iso(now_dt)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM duels WHERE id = ? LIMIT 1', (int(duel_id),))
+            row = cursor.fetchone()
+            if not row:
+                return {'ok': False, 'error': 'duel_not_found'}
+
+            columns = [description[0] for description in cursor.description]
+            duel = dict(zip(columns, row))
+
+            if int(duel.get('target_id') or 0) != int(target_user_id):
+                return {'ok': False, 'error': 'not_target'}
+
+            if str(duel.get('status') or '') != 'pending':
+                return {'ok': False, 'error': 'not_pending', 'duel': duel}
+
+            cursor.execute(
+                '''
+                UPDATE duels
+                SET status = 'declined',
+                    finished_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                ''',
+                (now_iso, now_iso, int(duel_id)),
+            )
+            conn.commit()
+
+            cursor.execute('SELECT * FROM duels WHERE id = ? LIMIT 1', (int(duel_id),))
+            updated_row = cursor.fetchone()
+            if not updated_row:
+                return {'ok': False, 'error': 'duel_not_found'}
+            updated_columns = [description[0] for description in cursor.description]
+            updated_duel = dict(zip(updated_columns, updated_row))
+
+        return {'ok': True, 'duel': updated_duel}
+
+    def record_duel_catch(
+        self,
+        duel_id: int,
+        user_id: int,
+        fish_name: str,
+        weight: float,
+        length: float,
+        catch_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Зафиксировать улов участника дуэли и, если оба походили, завершить дуэль."""
+        self._ensure_duel_tables()
+        now_dt = datetime.now(timezone.utc)
+        now_iso = self._to_utc_iso(now_dt)
+
+        try:
+            normalized_weight = float(weight)
+        except (TypeError, ValueError):
+            normalized_weight = 0.0
+        try:
+            normalized_length = float(length)
+        except (TypeError, ValueError):
+            normalized_length = 0.0
+
+        normalized_fish_name = str(fish_name or '').strip() or 'Неизвестная рыба'
+        normalized_catch_id = int(catch_id) if catch_id is not None else None
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM duels WHERE id = ? LIMIT 1', (int(duel_id),))
+            row = cursor.fetchone()
+            if not row:
+                return {'ok': False, 'error': 'duel_not_found'}
+
+            columns = [description[0] for description in cursor.description]
+            duel = dict(zip(columns, row))
+
+            if str(duel.get('status') or '') != 'active':
+                return {'ok': False, 'error': 'duel_not_active', 'duel': duel}
+
+            inviter_id = int(duel.get('inviter_id') or 0)
+            target_id = int(duel.get('target_id') or 0)
+
+            if int(user_id) == inviter_id:
+                if duel.get('inviter_weight') is not None:
+                    return {'ok': False, 'error': 'already_submitted', 'duel': duel}
+                cursor.execute(
+                    '''
+                    UPDATE duels
+                    SET inviter_catch_id = ?,
+                        inviter_fish_name = ?,
+                        inviter_weight = ?,
+                        inviter_length = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    ''',
+                    (normalized_catch_id, normalized_fish_name, normalized_weight, normalized_length, now_iso, int(duel_id)),
+                )
+            elif int(user_id) == target_id:
+                if duel.get('target_weight') is not None:
+                    return {'ok': False, 'error': 'already_submitted', 'duel': duel}
+                cursor.execute(
+                    '''
+                    UPDATE duels
+                    SET target_catch_id = ?,
+                        target_fish_name = ?,
+                        target_weight = ?,
+                        target_length = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    ''',
+                    (normalized_catch_id, normalized_fish_name, normalized_weight, normalized_length, now_iso, int(duel_id)),
+                )
+            else:
+                return {'ok': False, 'error': 'not_participant', 'duel': duel}
+
+            cursor.execute('SELECT * FROM duels WHERE id = ? LIMIT 1', (int(duel_id),))
+            updated_row = cursor.fetchone()
+            if not updated_row:
+                conn.rollback()
+                return {'ok': False, 'error': 'duel_not_found'}
+            updated_columns = [description[0] for description in cursor.description]
+            updated_duel = dict(zip(updated_columns, updated_row))
+
+            inviter_weight = updated_duel.get('inviter_weight')
+            target_weight = updated_duel.get('target_weight')
+
+            if inviter_weight is None or target_weight is None:
+                conn.commit()
+                return {'ok': True, 'completed': False, 'duel': updated_duel}
+
+            inviter_weight_val = float(inviter_weight or 0)
+            target_weight_val = float(target_weight or 0)
+            inviter_length_val = float(updated_duel.get('inviter_length') or 0)
+            target_length_val = float(updated_duel.get('target_length') or 0)
+
+            winner_id: Optional[int] = None
+            loser_id: Optional[int] = None
+            draw = False
+
+            if inviter_weight_val > target_weight_val:
+                winner_id = inviter_id
+                loser_id = target_id
+            elif target_weight_val > inviter_weight_val:
+                winner_id = target_id
+                loser_id = inviter_id
+            elif inviter_length_val > target_length_val:
+                winner_id = inviter_id
+                loser_id = target_id
+            elif target_length_val > inviter_length_val:
+                winner_id = target_id
+                loser_id = inviter_id
+            else:
+                draw = True
+
+            cursor.execute(
+                '''
+                UPDATE duels
+                SET status = 'finished',
+                    finished_at = ?,
+                    winner_id = ?,
+                    loser_id = ?,
+                    updated_at = ?
+                WHERE id = ?
+                ''',
+                (now_iso, winner_id, loser_id, now_iso, int(duel_id)),
+            )
+
+            cursor.execute('SELECT * FROM duels WHERE id = ? LIMIT 1', (int(duel_id),))
+            final_row = cursor.fetchone()
+            if not final_row:
+                conn.rollback()
+                return {'ok': False, 'error': 'duel_not_found'}
+            final_columns = [description[0] for description in cursor.description]
+            final_duel = dict(zip(final_columns, final_row))
+            conn.commit()
+
+        return {
+            'ok': True,
+            'completed': True,
+            'draw': draw,
+            'duel': final_duel,
+        }
+
+    def get_latest_unsold_catch(self, user_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
+        """Последний непроданный улов пользователя (сначала в текущем чате)."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, user_id, chat_id, fish_name, weight, length, location, sold, caught_at
+                FROM caught_fish
+                WHERE user_id = ? AND sold = 0 AND chat_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                ''',
+                (int(user_id), int(chat_id)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute(
+                    '''
+                    SELECT id, user_id, chat_id, fish_name, weight, length, location, sold, caught_at
+                    FROM caught_fish
+                    WHERE user_id = ? AND sold = 0
+                    ORDER BY id DESC
+                    LIMIT 1
+                    ''',
+                    (int(user_id),),
+                )
+                row = cursor.fetchone()
+
+            if not row:
+                return None
+
+            columns = [description[0] for description in cursor.description]
+            return dict(zip(columns, row))
+
+    def move_caught_fish_to_user(self, fish_id: int, from_user_id: int, to_user_id: int, to_chat_id: int) -> bool:
+        """Передать конкретный улов другому пользователю."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE caught_fish
+                SET user_id = ?,
+                    chat_id = ?,
+                    sold = 0
+                WHERE id = ? AND user_id = ?
+                ''',
+                (int(to_user_id), int(to_chat_id), int(fish_id), int(from_user_id)),
+            )
+            moved = int(getattr(cursor, 'rowcount', 0) or 0) > 0
+            conn.commit()
+            return moved
+
+    def apply_timed_effect(self, user_id: int, effect_type: str, duration_minutes: int, replace_existing: bool = False):
+        """Добавить таймерный эффект пользователю."""
+        self._ensure_user_effects_table()
+        from datetime import datetime, timedelta, timezone
+
+        normalized_type = str(effect_type or '').strip()
+        if not normalized_type:
+            return
+
+        try:
+            minutes = max(1, int(duration_minutes))
+        except Exception:
+            minutes = 1
+
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            if replace_existing:
+                cursor.execute(
+                    'DELETE FROM user_effects WHERE user_id = ? AND effect_type = ?',
+                    (user_id, normalized_type),
+                )
+            cursor.execute(
+                '''
+                INSERT INTO user_effects (user_id, effect_type, expires_at)
+                VALUES (?, ?, ?)
+                ''',
+                (user_id, normalized_type, expires_at.isoformat()),
+            )
+            conn.commit()
+
+    def clear_timed_effect(self, user_id: int, effect_type: str):
+        """Удалить активные и неактивные записи эффекта пользователя."""
+        self._ensure_user_effects_table()
+        normalized_type = str(effect_type or '').strip()
+        if not normalized_type:
+            return
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'DELETE FROM user_effects WHERE user_id = ? AND effect_type = ?',
+                (user_id, normalized_type),
+            )
+            conn.commit()
+
+    def has_active_effect(self, user_id: int, effect_type: str) -> bool:
+        """Проверить, активен ли указанный эффект у пользователя."""
+        self._ensure_user_effects_table()
+        from datetime import datetime, timezone
+
+        normalized_type = str(effect_type or '').strip()
+        if not normalized_type:
+            return False
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT 1
+                FROM user_effects
+                WHERE user_id = ? AND effect_type = ? AND expires_at > ?
+                LIMIT 1
+                ''',
+                (user_id, normalized_type, now_iso),
+            )
+            return cursor.fetchone() is not None
+
+    def count_active_effects(self, user_id: int, effect_type: str) -> int:
+        """Количество активных записей эффекта у пользователя."""
+        self._ensure_user_effects_table()
+        from datetime import datetime, timezone
+
+        normalized_type = str(effect_type or '').strip()
+        if not normalized_type:
+            return 0
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT COUNT(*)
+                FROM user_effects
+                WHERE user_id = ? AND effect_type = ? AND expires_at > ?
+                ''',
+                (user_id, normalized_type, now_iso),
+            )
+            row = cursor.fetchone()
+            return int((row[0] if row else 0) or 0)
+
+    def get_effect_remaining_seconds(self, user_id: int, effect_type: str) -> int:
+        """Оставшееся время эффекта (сек). Возвращает 0, если эффект не активен."""
+        self._ensure_user_effects_table()
+        from datetime import datetime, timezone
+
+        normalized_type = str(effect_type or '').strip()
+        if not normalized_type:
+            return 0
+
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT expires_at
+                FROM user_effects
+                WHERE user_id = ? AND effect_type = ? AND expires_at > ?
+                ORDER BY expires_at DESC
+                LIMIT 1
+                ''',
+                (user_id, normalized_type, now_iso),
+            )
+            row = cursor.fetchone()
+            if not row or not row[0]:
+                return 0
+
+            try:
+                expires_at = datetime.fromisoformat(str(row[0]))
+            except Exception:
+                return 0
+
+            if expires_at <= now:
+                return 0
+
+            return max(0, int((expires_at - now).total_seconds()))
+
+    def get_active_beer_bonus_percent(self, user_id: int) -> float:
+        """Суммарный активный бонус от пивных баффов (в процентах)."""
+        self._ensure_user_effects_table()
+        from datetime import datetime, timezone
+
+        effect_bonus = {
+            'beer_courage': 5.0,
+            'beer_lucky_wave': 3.0,
+            'beer_foamy_focus': 7.0,
+        }
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        placeholders = ', '.join(['?'] * len(effect_bonus))
+        params: List[Union[int, str]] = [user_id, now_iso] + list(effect_bonus.keys())
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                SELECT effect_type, COUNT(*)
+                FROM user_effects
+                WHERE user_id = ? AND expires_at > ? AND effect_type IN ({placeholders})
+                GROUP BY effect_type
+                ''',
+                params,
+            )
+            rows = cursor.fetchall()
+
+        total_bonus = 0.0
+        for effect_type, count_val in rows:
+            bonus = float(effect_bonus.get(str(effect_type), 0.0) or 0.0)
+            count_num = int(count_val or 0)
+            total_bonus += bonus * max(0, count_num)
+
+        return min(25.0, max(0.0, total_bonus))
 
     def apply_storm_event(self, user_id: int):
         """Применить шторм: увеличить КД бесплатной лодки до 18ч или уменьшить прочность платной."""
@@ -923,29 +2440,13 @@ class Database:
 
     def apply_seasick_event(self, user_id: int):
         """Применить морскую болезнь: игрок не может ловить 1 час."""
-        from datetime import datetime, timedelta, timezone
-        self._ensure_user_effects_table()
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO user_effects (user_id, effect_type, expires_at)
-                VALUES (?, 'seasick', ?)
-            ''', (user_id, expires_at.isoformat()))
-            conn.commit()
+        self.apply_timed_effect(user_id, 'seasick', duration_minutes=60, replace_existing=True)
 
     def is_user_seasick(self, user_id: int) -> bool:
-        """Проверить, есть ли у пользователя эффект морской болезни."""
-        self._ensure_user_effects_table()
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc)
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT expires_at FROM user_effects WHERE user_id = ? AND effect_type = 'seasick' AND expires_at > ? LIMIT 1
-            ''', (user_id, now.isoformat()))
-            row = cursor.fetchone()
-            return bool(row)
+        """Проверить морскую болезнь (эффект работает только во время плавания)."""
+        if not self.is_user_on_boat_trip(user_id):
+            return False
+        return self.has_active_effect(user_id, 'seasick')
     def check_boat_weight_warning(self, user_id: int, threshold: float = 50.0) -> float:
         """Проверить, осталось ли мало веса в лодке. Возвращает остаток (кг), если меньше threshold, иначе None."""
         boat = self.get_user_boat(user_id)
@@ -1430,6 +2931,7 @@ class Database:
                     last_boat_return_time TEXT,
                     last_dynamite_use_time TEXT,
                     dynamite_ban_until TEXT,
+                    dynamite_upgrade_level INTEGER DEFAULT 1,
                     is_banned INTEGER DEFAULT 0,
                     ban_until TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -1509,6 +3011,30 @@ class Database:
                     cursor.execute("ALTER TABLE caught_fish ADD COLUMN chat_id BIGINT DEFAULT 0")
                 except:
                     pass
+
+            # Таблица трофеев игроков (отдельно от обычного инвентаря/лавки)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS player_trophies (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    fish_name TEXT NOT NULL,
+                    weight REAL NOT NULL,
+                    length REAL DEFAULT 0,
+                    location TEXT,
+                    image_file TEXT,
+                    is_active INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES players (user_id)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_player_trophies_user
+                ON player_trophies (user_id)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_player_trophies_active
+                ON player_trophies (user_id, is_active)
+            ''')
             
             # Таблица локаций
             cursor.execute('''
@@ -1609,6 +3135,27 @@ class Database:
                     FOREIGN KEY (net_name) REFERENCES nets (name),
                     UNIQUE(user_id, net_name)
                 )
+            ''')
+
+            # Таблица одежды игроков (перманентные баффы)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS player_clothing (
+                    id INTEGER PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    item_key TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    bonus_percent REAL NOT NULL DEFAULT 0,
+                    purchased_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, item_key)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_player_clothing_user
+                ON player_clothing (user_id)
+            ''')
+            cursor.execute('''
+                CREATE UNIQUE INDEX IF NOT EXISTS player_clothing_user_item_key
+                ON player_clothing (user_id, item_key)
             ''')
             
             # Таблица настроек чатов для реферальной системы
@@ -1730,6 +3277,8 @@ class Database:
             self._ensure_boat_catch_table()
             self._ensure_boat_invites_table()
             self._ensure_user_effects_table()
+            self._ensure_antibot_captcha_table()
+            self._ensure_duel_tables()
 
             conn.commit()
         
@@ -1900,6 +3449,25 @@ class Database:
             # refresh columns list after potential schema change
             columns = get_columns('players')
 
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS player_trophies (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    fish_name TEXT NOT NULL,
+                    weight REAL NOT NULL,
+                    length REAL DEFAULT 0,
+                    location TEXT,
+                    image_file TEXT,
+                    is_active INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_player_trophies_user_created
+                ON player_trophies (user_id, created_at)
+            ''')
+            conn.commit()
+
             if 'last_net_use_time' not in columns:
                 cursor.execute('ALTER TABLE players ADD COLUMN last_net_use_time TEXT')
                 conn.commit()
@@ -1937,7 +3505,13 @@ class Database:
             ensure_column('players', 'last_boat_return_time', 'TEXT')
             ensure_column('players', 'diamonds', 'INTEGER DEFAULT 0')
             ensure_column('players', 'dynamite_ban_until', 'TEXT')
+            ensure_column('players', 'dynamite_upgrade_level', 'INTEGER DEFAULT 1')
             ensure_column('raf_events', 'creator_username', 'TEXT')
+            ensure_column('player_trophies', 'length', 'REAL DEFAULT 0')
+            ensure_column('player_trophies', 'location', 'TEXT')
+            ensure_column('player_trophies', 'image_file', 'TEXT')
+            ensure_column('player_trophies', 'is_active', 'INTEGER DEFAULT 0')
+            ensure_column('player_trophies', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
 
             # Ensure unique index for ON CONFLICT targets that expect (user_id, chat_id)
             try:
@@ -1993,7 +3567,8 @@ class Database:
                 ('star_transactions', 'chat_id'),
                 ('chat_configs', 'chat_id'),
                 ('chat_configs', 'admin_user_id'),
-                ('user_ref_links', 'user_id')
+                ('user_ref_links', 'user_id'),
+                ('player_trophies', 'user_id')
             ]
             for tbl, col in bigint_targets:
                 ensure_bigint_column(tbl, col)
@@ -2894,25 +4469,29 @@ class Database:
                 template = dict(zip(cols, row))
                 coins = template.get('coins', 100)
                 stars = template.get('stars', 0)
+                diamonds = template.get('diamonds', 0)
                 xp = template.get('xp', 0)
                 level = template.get('level', 0)
+                dynamite_upgrade_level = template.get('dynamite_upgrade_level', 1)
                 current_rod = template.get('current_rod', BAMBOO_ROD)
                 current_bait = template.get('current_bait', 'Черви')
                 current_location = template.get('current_location', 'Городской пруд')
             else:
                 coins = 100
                 stars = 0
+                diamonds = 0
                 xp = 0
                 level = 0
+                dynamite_upgrade_level = 1
                 current_rod = BAMBOO_ROD
                 current_bait = 'Черви'
                 current_location = 'Городской пруд'
 
             # Create a GLOBAL profile row (chat_id = -1) to store shared player data
             cursor.execute('''
-                INSERT INTO players (user_id, username, coins, stars, xp, level, current_rod, current_bait, current_location, chat_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, -1)
-            ''', (user_id, username, coins, stars, xp, level, current_rod, current_bait, current_location))
+                INSERT INTO players (user_id, username, coins, stars, diamonds, xp, level, current_rod, current_bait, current_location, chat_id, dynamite_upgrade_level)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, -1, ?)
+            ''', (user_id, username, coins, stars, diamonds, xp, level, current_rod, current_bait, current_location, dynamite_upgrade_level))
             conn.commit()
 
             # Инициализируем удочку и сеть для игрока в этом чате
@@ -2929,7 +4508,7 @@ class Database:
         # Allow only specific fields to be updated to avoid SQL injection
         allowed_fields = {
             'username', 'coins', 'stars', 'xp', 'level', 'current_rod', 'current_bait',
-            'current_location', 'last_fish_time', 'last_boat_return_time', 'last_dynamite_use_time', 'dynamite_ban_until', 'is_banned', 'ban_until', 'ref', 'ref_link', 'last_net_use_time', 'diamonds'
+            'current_location', 'last_fish_time', 'last_boat_return_time', 'last_dynamite_use_time', 'dynamite_ban_until', 'is_banned', 'ban_until', 'ref', 'ref_link', 'last_net_use_time', 'diamonds', 'dynamite_upgrade_level'
         }
 
         # Prevent passing chat_id as a kwarg (it is a positional arg here)
@@ -3013,6 +4592,215 @@ class Database:
             self.update_player(user_id, chat_id, diamonds=new)
         except Exception:
             logger.exception('subtract_diamonds failed for user=%s chat=%s amount=%s', user_id, chat_id, amount)
+
+    def get_dynamite_upgrade_level(self, user_id: int, chat_id: int) -> int:
+        """Получить уровень апгрейда динамита: 1=динамит, 2=граната, 3=бомба."""
+        player = self.get_player(user_id, chat_id)
+        level_raw = player.get('dynamite_upgrade_level', 1) if player else 1
+
+        try:
+            level = int(level_raw)
+        except Exception:
+            level = 1
+
+        if level < 1:
+            level = 1
+        if level > 3:
+            level = 3
+
+        return level
+
+    def set_dynamite_upgrade_level(self, user_id: int, chat_id: int, level: int) -> int:
+        """Установить уровень апгрейда динамита и вернуть применённое значение."""
+        try:
+            normalized = int(level)
+        except Exception:
+            normalized = 1
+
+        normalized = max(1, min(3, normalized))
+        self.update_player(user_id, chat_id, dynamite_upgrade_level=normalized)
+        return normalized
+
+    def get_player_clothing(self, user_id: int) -> List[Dict[str, Any]]:
+        """Получить список купленной одежды игрока."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT item_key, display_name, bonus_percent, purchased_at
+                FROM player_clothing
+                WHERE user_id = ?
+                ORDER BY bonus_percent DESC, purchased_at ASC
+                ''',
+                (user_id,),
+            )
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
+
+    def has_clothing_item(self, user_id: int, item_key: str) -> bool:
+        """Проверить, куплен ли предмет одежды."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT 1 FROM player_clothing WHERE user_id = ? AND item_key = ? LIMIT 1',
+                (user_id, str(item_key or '').strip().lower()),
+            )
+            return cursor.fetchone() is not None
+
+    def get_clothing_bonus_percent(self, user_id: int) -> float:
+        """Суммарный перманентный бонус от одежды в процентах."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT COALESCE(SUM(bonus_percent), 0) FROM player_clothing WHERE user_id = ?',
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return float((row[0] if row else 0.0) or 0.0)
+
+    def purchase_clothing_item(
+        self,
+        user_id: int,
+        chat_id: int,
+        item_key: str,
+        display_name: str,
+        bonus_percent: float,
+        cost_diamonds: int,
+    ) -> Dict[str, Any]:
+        """Купить предмет одежды за бриллианты (атомарно)."""
+        normalized_key = str(item_key or '').strip().lower()
+        if not normalized_key:
+            return {"ok": False, "reason": "invalid_item"}
+
+        try:
+            normalized_cost = max(0, int(cost_diamonds))
+        except Exception:
+            normalized_cost = 0
+
+        try:
+            normalized_bonus = max(0.0, float(bonus_percent))
+        except Exception:
+            normalized_bonus = 0.0
+
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+
+                cursor.execute(
+                    'SELECT 1 FROM player_clothing WHERE user_id = ? AND item_key = ? LIMIT 1',
+                    (user_id, normalized_key),
+                )
+                if cursor.fetchone():
+                    return {"ok": False, "reason": "already_owned"}
+
+                cursor.execute("PRAGMA table_info(players)")
+                columns = [col[1] for col in cursor.fetchall()]
+                uses_chat = 'chat_id' in columns
+
+                if uses_chat:
+                    cursor.execute(
+                        '''
+                        SELECT diamonds
+                        FROM players
+                        WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1)
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        ''',
+                        (user_id,),
+                    )
+                    row = cursor.fetchone()
+                    if row is None:
+                        cursor.execute(
+                            '''
+                            SELECT diamonds
+                            FROM players
+                            WHERE user_id = ? AND chat_id = ?
+                            ORDER BY created_at DESC
+                            LIMIT 1
+                            ''',
+                            (user_id, chat_id),
+                        )
+                        row = cursor.fetchone()
+                else:
+                    cursor.execute(
+                        '''
+                        SELECT diamonds
+                        FROM players
+                        WHERE user_id = ?
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        ''',
+                        (user_id,),
+                    )
+                    row = cursor.fetchone()
+
+                if row is None:
+                    return {"ok": False, "reason": "no_player"}
+
+                current_diamonds = int((row[0] if row[0] is not None else 0) or 0)
+                if current_diamonds < normalized_cost:
+                    return {
+                        "ok": False,
+                        "reason": "not_enough_diamonds",
+                        "diamonds": current_diamonds,
+                        "cost": normalized_cost,
+                    }
+
+                new_diamonds = current_diamonds - normalized_cost
+
+                cursor.execute(
+                    '''
+                    INSERT INTO player_clothing (user_id, item_key, display_name, bonus_percent)
+                    VALUES (?, ?, ?, ?)
+                    ''',
+                    (user_id, normalized_key, str(display_name or normalized_key), normalized_bonus),
+                )
+
+                if uses_chat:
+                    cursor.execute(
+                        'UPDATE players SET diamonds = ? WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1)',
+                        (new_diamonds, user_id),
+                    )
+                    if cursor.rowcount == 0:
+                        cursor.execute(
+                            'UPDATE players SET diamonds = ? WHERE user_id = ? AND chat_id = ?',
+                            (new_diamonds, user_id, chat_id),
+                        )
+                    if cursor.rowcount == 0:
+                        raise RuntimeError('Failed to update player diamonds for clothing purchase')
+                else:
+                    cursor.execute(
+                        'UPDATE players SET diamonds = ? WHERE user_id = ?',
+                        (new_diamonds, user_id),
+                    )
+                    if cursor.rowcount == 0:
+                        raise RuntimeError('Failed to update player diamonds for clothing purchase')
+
+                cursor.execute(
+                    'SELECT COALESCE(SUM(bonus_percent), 0) FROM player_clothing WHERE user_id = ?',
+                    (user_id,),
+                )
+                total_row = cursor.fetchone()
+                total_bonus = float((total_row[0] if total_row else 0.0) or 0.0)
+
+                conn.commit()
+                return {
+                    "ok": True,
+                    "reason": "purchased",
+                    "new_diamonds": new_diamonds,
+                    "cost": normalized_cost,
+                    "item_bonus_percent": normalized_bonus,
+                    "total_bonus_percent": total_bonus,
+                }
+        except Exception:
+            logger.exception('purchase_clothing_item failed for user=%s item=%s', user_id, normalized_key)
+            try:
+                if self.has_clothing_item(user_id, normalized_key):
+                    return {"ok": False, "reason": "already_owned"}
+            except Exception:
+                pass
+            return {"ok": False, "reason": "db_error"}
 
     def get_fish_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """Получить данные рыбы по её имени."""
@@ -3208,6 +4996,207 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM caught_fish WHERE id = ?', (fish_id,))
             conn.commit()
+
+    def _resolve_fish_image_file(self, fish_name: str) -> str:
+        default_image = 'fishdef.webp'
+        if not fish_name:
+            return default_image
+
+        try:
+            from fish_stickers import FISH_STICKERS
+            image_file = FISH_STICKERS.get(str(fish_name).strip())
+            if image_file:
+                return str(image_file)
+        except Exception:
+            pass
+
+        return default_image
+
+    def get_player_trophies(self, user_id: int) -> List[Dict[str, Any]]:
+        """Получить все трофеи игрока."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, user_id, fish_name, weight, length, location, image_file, is_active, created_at
+                FROM player_trophies
+                WHERE user_id = ?
+                ORDER BY is_active DESC, created_at DESC, id DESC
+                ''',
+                (int(user_id),)
+            )
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
+
+    def get_active_trophy(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Получить активный трофей игрока (или последний, если активный не выбран)."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, user_id, fish_name, weight, length, location, image_file, is_active, created_at
+                FROM player_trophies
+                WHERE user_id = ? AND COALESCE(is_active, 0) = 1
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                ''',
+                (int(user_id),)
+            )
+            row = cursor.fetchone()
+            if row:
+                columns = [description[0] for description in cursor.description]
+                return dict(zip(columns, row))
+
+            cursor.execute(
+                '''
+                SELECT id, user_id, fish_name, weight, length, location, image_file, is_active, created_at
+                FROM player_trophies
+                WHERE user_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                ''',
+                (int(user_id),)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            columns = [description[0] for description in cursor.description]
+            return dict(zip(columns, row))
+
+    def set_active_trophy(self, user_id: int, trophy_id: int) -> bool:
+        """Установить активный трофей игрока."""
+        uid = int(user_id)
+        tid = int(trophy_id)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT 1 FROM player_trophies WHERE id = ? AND user_id = ? LIMIT 1',
+                (tid, uid)
+            )
+            if not cursor.fetchone():
+                return False
+
+            cursor.execute('UPDATE player_trophies SET is_active = 0 WHERE user_id = ?', (uid,))
+            cursor.execute('UPDATE player_trophies SET is_active = 1 WHERE id = ? AND user_id = ?', (tid, uid))
+            conn.commit()
+            return True
+
+    def create_trophy_from_catch(self, user_id: int, chat_id: int, caught_fish_id: int, cost_coins: int = 10000) -> Dict[str, Any]:
+        """Создать трофей из пойманной рыбы: списать монеты, удалить рыбу из инвентаря, сохранить трофей."""
+        uid = int(user_id)
+        cid = int(chat_id)
+        fid = int(caught_fish_id)
+        cost = max(0, int(cost_coins))
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                '''
+                SELECT coins
+                FROM players
+                WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1)
+                LIMIT 1
+                ''',
+                (uid,)
+            )
+            player_row = cursor.fetchone()
+            use_global_player_row = bool(player_row)
+
+            if not player_row:
+                cursor.execute(
+                    'SELECT coins FROM players WHERE user_id = ? AND chat_id = ? LIMIT 1',
+                    (uid, cid)
+                )
+                player_row = cursor.fetchone()
+
+            if not player_row:
+                return {'ok': False, 'error': 'profile_not_found'}
+
+            current_coins = int(player_row[0] or 0)
+            if current_coins < cost:
+                return {
+                    'ok': False,
+                    'error': 'insufficient_coins',
+                    'balance': current_coins,
+                    'required': cost,
+                }
+
+            cursor.execute(
+                '''
+                SELECT id, fish_name, weight, length, location
+                FROM caught_fish
+                WHERE id = ? AND user_id = ? AND COALESCE(sold, 0) = 0
+                LIMIT 1
+                ''',
+                (fid, uid)
+            )
+            fish_row = cursor.fetchone()
+
+            if not fish_row:
+                return {'ok': False, 'error': 'fish_not_found'}
+
+            fish_name = str(fish_row[1] or '').strip()
+            fish_weight = float(fish_row[2] or 0)
+            fish_length = float(fish_row[3] or 0)
+            fish_location = str(fish_row[4] or '').strip()
+            image_file = self._resolve_fish_image_file(fish_name)
+
+            cursor.execute('SELECT 1 FROM player_trophies WHERE user_id = ? LIMIT 1', (uid,))
+            has_any_trophy = bool(cursor.fetchone())
+            should_be_active = 0 if has_any_trophy else 1
+
+            cursor.execute(
+                '''
+                INSERT INTO player_trophies (
+                    user_id, fish_name, weight, length, location, image_file, is_active, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                RETURNING id, user_id, fish_name, weight, length, location, image_file, is_active, created_at
+                ''',
+                (uid, fish_name, fish_weight, fish_length, fish_location, image_file, should_be_active)
+            )
+            trophy_row = cursor.fetchone()
+
+            cursor.execute('DELETE FROM caught_fish WHERE id = ? AND user_id = ?', (fid, uid))
+
+            new_balance = current_coins - cost
+            if use_global_player_row:
+                cursor.execute(
+                    '''
+                    UPDATE players
+                    SET coins = ?
+                    WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1)
+                    ''',
+                    (new_balance, uid)
+                )
+                if getattr(cursor, 'rowcount', 0) == 0:
+                    cursor.execute(
+                        'UPDATE players SET coins = ? WHERE user_id = ? AND chat_id = ?',
+                        (new_balance, uid, cid)
+                    )
+            else:
+                cursor.execute(
+                    'UPDATE players SET coins = ? WHERE user_id = ? AND chat_id = ?',
+                    (new_balance, uid, cid)
+                )
+
+            conn.commit()
+
+            if not trophy_row:
+                return {'ok': False, 'error': 'trophy_insert_failed'}
+
+            columns = ['id', 'user_id', 'fish_name', 'weight', 'length', 'location', 'image_file', 'is_active', 'created_at']
+            trophy = dict(zip(columns, trophy_row))
+            return {
+                'ok': True,
+                'trophy': trophy,
+                'new_balance': new_balance,
+                'cost': cost,
+            }
 
     def rollback_reward_after_raf_win(self, user_id: int, chat_id: int, result: Dict[str, Any]) -> Dict[str, Any]:
         """Откатывает улов/награды, если вместо улова выпал RAF-приз."""

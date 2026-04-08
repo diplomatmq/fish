@@ -261,10 +261,28 @@ class FishingGame:
         # Обновляем сезон
         self.current_season = self._get_current_season()
         feeder_bonus = db.get_active_feeder_bonus(user_id, chat_id)
+        try:
+            clothing_bonus_percent = max(0.0, float(db.get_clothing_bonus_percent(user_id) or 0.0))
+        except Exception:
+            logger.exception("Failed to load clothing bonus for user=%s", user_id)
+            clothing_bonus_percent = 0.0
+        try:
+            beer_bonus_percent = max(0.0, float(db.get_active_beer_bonus_percent(user_id) or 0.0))
+        except Exception:
+            logger.exception("Failed to load beer bonus for user=%s", user_id)
+            beer_bonus_percent = 0.0
 
         # Если гарантированный улов
         if guaranteed:
-            return self._guaranteed_catch(user_id, location, player, chat_id, feeder_bonus)
+            return self._guaranteed_catch(
+                user_id,
+                location,
+                player,
+                chat_id,
+                feeder_bonus,
+                clothing_bonus_percent,
+                beer_bonus_percent,
+            )
 
         # Получаем погоду и применяем бонус
         weather = db.get_or_update_weather(location)
@@ -318,7 +336,7 @@ class FishingGame:
         is_lucky_rod = bool(rod and rod.get('name') == 'Удачливая удочка')
 
         # Применяем погодный бонус/штраф и бонус кормушки
-        adjusted_roll = roll + (weather_bonus * 50) + (feeder_bonus * 250)
+        adjusted_roll = roll + (weather_bonus * 50) + (feeder_bonus * 250) + (clothing_bonus_percent * 50) + (beer_bonus_percent * 50)
         adjusted_roll = max(0, min(ROLL_MAX, adjusted_roll))  # Ограничиваем от 0 до 15000
 
         # Применяем штраф популяции (снижаем roll за перелов на одной локации)
@@ -350,7 +368,7 @@ class FishingGame:
         logger.info(f"🎣 User {user_id} started fishing at location: {location}")
         logger.info(
             f"   🎲 Random roll: {roll}/{ROLL_MAX} (adjusted: {adjusted_roll}/{ROLL_MAX} "
-            f"with weather {weather_condition}, feeder {feeder_bonus:+d}%)"
+            f"with weather {weather_condition}, feeder {feeder_bonus:+d}%, clothing +{clothing_bonus_percent:.2f}%, beer +{beer_bonus_percent:.2f}%)"
         )
         logger.info("   📊 Ranges: 0-4999=NO_BITE, 5000-9999=TRASH, 10000-14999=COMMON, 15000-18999=RARE, 19000-19899=LEGENDARY, 19900-19999=TOP_TIER, 20000=NFT")
         
@@ -738,7 +756,16 @@ class FishingGame:
             "target_rarity": target_rarity
         }
     
-    def _guaranteed_catch(self, user_id: int, location: str, player: Dict[str, Any], chat_id: int, feeder_bonus: int = 0) -> Dict[str, Any]:
+    def _guaranteed_catch(
+        self,
+        user_id: int,
+        location: str,
+        player: Dict[str, Any],
+        chat_id: int,
+        feeder_bonus: int = 0,
+        clothing_bonus_percent: float = 0.0,
+        beer_bonus_percent: float = 0.0,
+    ) -> Dict[str, Any]:
         """Гарантированный улов с фиксированными шансами."""
         ROLL_MAX = 20000
         TRASH_MAX = 7999
@@ -750,7 +777,7 @@ class FishingGame:
         ANOMALY_MAX = 19999  # 0.25% аномалия (19950-19999)
 
         roll = random.randint(0, ROLL_MAX)
-        adjusted_roll = max(0, min(ROLL_MAX, roll + (feeder_bonus * 250)))
+        adjusted_roll = max(0, min(ROLL_MAX, roll + (feeder_bonus * 250) + (clothing_bonus_percent * 50) + (beer_bonus_percent * 50)))
         
         # Применяем штраф популяции для гарантированного улова
         population_penalty = db.get_population_penalty(user_id)
@@ -760,7 +787,7 @@ class FishingGame:
         
         logger.info(
             f"   🎲 Guaranteed roll: {roll}/{ROLL_MAX} "
-            f"(adjusted: {adjusted_roll}/{ROLL_MAX}, feeder {feeder_bonus:+d}%, population penalty: {population_penalty:.1f}%)"
+            f"(adjusted: {adjusted_roll}/{ROLL_MAX}, feeder {feeder_bonus:+d}%, clothing +{clothing_bonus_percent:.2f}%, beer +{beer_bonus_percent:.2f}%, population penalty: {population_penalty:.1f}%)"
         )
 
         is_lucky_rod_g = (player.get('current_rod') == 'Удачливая удочка')
