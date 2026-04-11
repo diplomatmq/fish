@@ -3155,6 +3155,7 @@ class Database:
                     username TEXT NOT NULL,
                     coins INTEGER DEFAULT 100,
                     stars INTEGER DEFAULT 0,
+                    tickets INTEGER DEFAULT 0,
                     diamonds INTEGER DEFAULT 0,
                     xp INTEGER DEFAULT 0,
                     level INTEGER DEFAULT 0,
@@ -3739,6 +3740,7 @@ class Database:
             ensure_column('players', 'last_dynamite_use_time', 'TEXT')
             ensure_column('players', 'last_boat_return_time', 'TEXT')
             ensure_column('players', 'diamonds', 'INTEGER DEFAULT 0')
+            ensure_column('players', 'tickets', 'INTEGER DEFAULT 0')
             ensure_column('players', 'dynamite_ban_until', 'TEXT')
             ensure_column('players', 'dynamite_upgrade_level', 'INTEGER DEFAULT 1')
             ensure_column('raf_events', 'creator_username', 'TEXT')
@@ -4669,6 +4671,8 @@ class Database:
                     player['xp'] = 0
                 if player.get('level') is None:
                     player['level'] = 0
+                if player.get('tickets') is None:
+                    player['tickets'] = 0
 
                 return player
             return None
@@ -4704,6 +4708,7 @@ class Database:
                 template = dict(zip(cols, row))
                 coins = template.get('coins', 100)
                 stars = template.get('stars', 0)
+                tickets = template.get('tickets', 0)
                 diamonds = template.get('diamonds', 0)
                 xp = template.get('xp', 0)
                 level = template.get('level', 0)
@@ -4714,6 +4719,7 @@ class Database:
             else:
                 coins = 100
                 stars = 0
+                tickets = 0
                 diamonds = 0
                 xp = 0
                 level = 0
@@ -4724,9 +4730,9 @@ class Database:
 
             # Create a GLOBAL profile row (chat_id = -1) to store shared player data
             cursor.execute('''
-                INSERT INTO players (user_id, username, coins, stars, diamonds, xp, level, current_rod, current_bait, current_location, chat_id, dynamite_upgrade_level)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, -1, ?)
-            ''', (user_id, username, coins, stars, diamonds, xp, level, current_rod, current_bait, current_location, dynamite_upgrade_level))
+                INSERT INTO players (user_id, username, coins, stars, tickets, diamonds, xp, level, current_rod, current_bait, current_location, chat_id, dynamite_upgrade_level)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, -1, ?)
+            ''', (user_id, username, coins, stars, tickets, diamonds, xp, level, current_rod, current_bait, current_location, dynamite_upgrade_level))
             conn.commit()
 
             # Инициализируем удочку и сеть для игрока в этом чате
@@ -4743,7 +4749,7 @@ class Database:
         # Allow only specific fields to be updated to avoid SQL injection
         allowed_fields = {
             'username', 'coins', 'stars', 'xp', 'level', 'current_rod', 'current_bait',
-            'current_location', 'last_fish_time', 'last_boat_return_time', 'last_dynamite_use_time', 'dynamite_ban_until', 'is_banned', 'ban_until', 'ref', 'ref_link', 'last_net_use_time', 'diamonds', 'dynamite_upgrade_level'
+            'current_location', 'last_fish_time', 'last_boat_return_time', 'last_dynamite_use_time', 'dynamite_ban_until', 'is_banned', 'ban_until', 'ref', 'ref_link', 'last_net_use_time', 'diamonds', 'tickets', 'dynamite_upgrade_level'
         }
 
         # Prevent passing chat_id as a kwarg (it is a positional arg here)
@@ -6046,6 +6052,110 @@ class Database:
     def get_leaderboard(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Получить таблицу лидеров (по умолчанию - глобально за все время)"""
         return self.get_leaderboard_period(limit=limit)
+
+    def add_tickets(self, user_id: int, amount: int) -> int:
+        """Начислить билеты пользователю и вернуть новый баланс билетов."""
+        delta = int(amount or 0)
+        if delta <= 0:
+            return self.get_user_tickets(user_id)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(players)")
+            columns = [col[1] for col in cursor.fetchall()]
+            uses_chat = 'chat_id' in columns
+
+            if uses_chat:
+                cursor.execute(
+                    'UPDATE players SET tickets = COALESCE(tickets, 0) + ? WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1)',
+                    (delta, user_id),
+                )
+                if cursor.rowcount == 0:
+                    cursor.execute(
+                        'UPDATE players SET tickets = COALESCE(tickets, 0) + ? WHERE user_id = ?',
+                        (delta, user_id),
+                    )
+            else:
+                cursor.execute(
+                    'UPDATE players SET tickets = COALESCE(tickets, 0) + ? WHERE user_id = ?',
+                    (delta, user_id),
+                )
+            conn.commit()
+
+        return self.get_user_tickets(user_id)
+
+    def get_user_tickets(self, user_id: int) -> int:
+        """Текущее количество билетов пользователя (глобально по user_id)."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT COALESCE(MAX(tickets), 0) FROM players WHERE user_id = ?',
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return int(row[0] or 0) if row else 0
+
+    def get_tickets_leaderboard(self, limit: int = 3) -> List[Dict[str, Any]]:
+        """Топ пользователей по билетам (глобально)."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    user_id,
+                    COALESCE(MAX(username), 'Неизвестно') AS username,
+                    COALESCE(MAX(tickets), 0) AS tickets
+                FROM players
+                GROUP BY user_id
+                ORDER BY tickets DESC, user_id ASC
+                LIMIT ?
+                ''',
+                (limit,),
+            )
+            rows = cursor.fetchall()
+            return [
+                {
+                    'user_id': int(row[0]),
+                    'username': row[1],
+                    'tickets': int(row[2] or 0),
+                }
+                for row in rows
+            ]
+
+    def get_user_tickets_rank(self, user_id: int) -> Dict[str, int]:
+        """Вернуть место пользователя в глобальном рейтинге билетов и его билеты."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT user_id, COALESCE(MAX(tickets), 0) AS tickets
+                FROM players
+                GROUP BY user_id
+                ORDER BY tickets DESC, user_id ASC
+                '''
+            )
+            rows = cursor.fetchall()
+
+        rank = 0
+        tickets = 0
+        total_users = len(rows)
+        for idx, row in enumerate(rows, start=1):
+            row_user_id = int(row[0])
+            row_tickets = int(row[1] or 0)
+            if row_user_id == int(user_id):
+                rank = idx
+                tickets = row_tickets
+                break
+
+        if rank == 0:
+            tickets = self.get_user_tickets(user_id)
+            rank = total_users + 1 if total_users > 0 else 1
+
+        return {
+            'rank': rank,
+            'tickets': tickets,
+            'total_users': total_users,
+        }
 
     def get_chat_leaderboard_period(self, chat_id: int, limit: int = 10, since: Optional[datetime] = None, until: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """Получить топ по общему весу улова в конкретном чате за период.
