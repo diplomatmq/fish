@@ -8616,38 +8616,6 @@ class FishBot:
         else:
             await update.callback_query.edit_message_text(message, parse_mode="HTML")
 
-    async def tickets_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /tickets - топ-3 по билетам и место пользователя."""
-        user_id = update.effective_user.id
-        top_rows = db.get_tickets_leaderboard(limit=3)
-        my_rank_info = db.get_user_tickets_rank(user_id)
-
-        if not top_rows:
-            top_body = "Пока нет данных"
-        else:
-            lines = []
-            for idx, row in enumerate(top_rows, start=1):
-                medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉"
-                username = html.escape(str(row.get('username') or f"id{row.get('user_id', '?')}"))
-                tickets = int(row.get('tickets') or 0)
-                lines.append(f"{medal} {username}: {tickets} 🎟")
-            top_body = "\n".join(lines)
-
-        rank = int(my_rank_info.get('rank') or 1)
-        my_tickets = int(my_rank_info.get('tickets') or 0)
-
-        message = (
-            "🎟 Топ по билетам (за всё время)\n"
-            f"{top_body}\n\n"
-            f"Ваше место: #{rank}\n"
-            f"Ваши билеты: {my_tickets} 🎫"
-        )
-
-        if update.message:
-            await update.message.reply_text(message)
-        else:
-            await update.callback_query.edit_message_text(message)
-    
     async def leaderboard_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /leaderboard - таблица лидеров"""
         import logging as _logging
@@ -12552,7 +12520,6 @@ def main():
     application.add_handler(CommandHandler("weather", bot_instance.weather_command))
     application.add_handler(CommandHandler("testweather", bot_instance.test_weather_command))
     application.add_handler(CommandHandler("stats", bot_instance.stats_command))
-    application.add_handler(CommandHandler("tickets", bot_instance.tickets_command))
     application.add_handler(CommandHandler("rules", bot_instance.rules_command))
     application.add_handler(CommandHandler("info", bot_instance.info_command))
     application.add_handler(CommandHandler("treasureinfo", bot_instance.treasureinfo_command))
