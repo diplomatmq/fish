@@ -2503,6 +2503,20 @@ class FishBot:
             "⚠️ Ответственность за выдачу призов несёт создатель ивента. "
             "Создатель бота не отвечает за выдачу призов."
         )
+        self.TICKET_POINTS = {
+            'snap': 1,
+            'no_bite': 1,
+            'trash': 2,
+            'Обычная': 3,
+            'Редкая': 5,
+            'Легендарная': 7,
+            'Аквариумная': 7,
+            'Мифическая': 8,
+            'Аномалия': 9,
+        }
+        self.TICKET_JACKPOT_CHANCE = 0.05
+        self.TICKET_JACKPOT_MIN = 10
+        self.TICKET_JACKPOT_MAX = 15
         self.RAF_ALLOWED_TRIGGER_SOURCES = {
             'fish_command',
             'start_fishing_callback',
@@ -2586,6 +2600,43 @@ class FishBot:
         fish = result.get('fish') or {}
         raw_rarity = fish.get('rarity') or result.get('target_rarity')
         return self._normalize_raf_rarity(str(raw_rarity or ''))
+
+    def _calculate_tickets_for_result(self, result: Dict[str, Any]) -> int:
+        if result.get('snap'):
+            return int(self.TICKET_POINTS['snap'])
+        if result.get('no_bite'):
+            return int(self.TICKET_POINTS['no_bite'])
+        if result.get('is_trash'):
+            return int(self.TICKET_POINTS['trash'])
+
+        fish = result.get('fish') or {}
+        rarity = fish.get('rarity') or result.get('target_rarity')
+        if rarity in self.TICKET_POINTS:
+            return int(self.TICKET_POINTS[rarity])
+        return 0
+
+    def _calculate_tickets_for_rarity(self, rarity: str) -> int:
+        return int(self.TICKET_POINTS.get(str(rarity or ''), 0))
+
+    def _award_tickets(self, user_id: int, base_tickets: int):
+        base = int(base_tickets or 0)
+        if base <= 0:
+            return 0, 0, db.get_user_tickets(user_id)
+
+        jackpot = 0
+        if random.random() < self.TICKET_JACKPOT_CHANCE:
+            jackpot = random.randint(self.TICKET_JACKPOT_MIN, self.TICKET_JACKPOT_MAX)
+
+        total_awarded = base + jackpot
+        new_total = db.add_tickets(user_id, total_awarded)
+        return total_awarded, jackpot, new_total
+
+    def _format_tickets_award_line(self, awarded: int, jackpot: int, total_tickets: int) -> str:
+        if awarded <= 0:
+            return ""
+        if jackpot > 0:
+            return f"\n🎟 Билеты: +{awarded} (джекпот +{jackpot})\n🎫 Всего билетов: {total_tickets}"
+        return f"\n🎟 Билеты: +{awarded}\n🎫 Всего билетов: {total_tickets}"
 
     def _format_raf_prizes_summary(self, prizes: List[Dict[str, Any]]) -> str:
         lines = []
@@ -3950,6 +4001,12 @@ class FishBot:
                 pass
             return
 
+        tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(
+            user_id,
+            self._calculate_tickets_for_result(result),
+        )
+        tickets_line = self._format_tickets_award_line(tickets_awarded, tickets_jackpot, tickets_total)
+
         if result.get('nft_win'):
             nft_message = (
                 "🎉 Поздравляю, вы выиграли NFT.\n"
@@ -3999,6 +4056,7 @@ class FishBot:
 
 💎 Стоимость: {treasure_price} 🪙
 📍 Место: {result['location']}
+{tickets_line}
                     """
 
                     sticker_message = await self._send_catch_image(
@@ -4051,7 +4109,7 @@ class FishBot:
 ⚖️ Вес: {trash.get('weight', 0)} кг
 💰 Стоимость: {trash.get('price', 0)} 🪙
 📍 Место: {result['location']}
-{xp_line}{progress_line}
+{xp_line}{progress_line}{tickets_line}
                 """
 
                 sticker_message = await self._send_catch_image(
@@ -4164,7 +4222,7 @@ class FishBot:
 📏 Размер: {length}см | Вес: {weight} кг
 💰 Стоимость: {fish_price} 🪙
 📍 Место: {result['location']}
-⭐ Редкость: {fish['rarity']}{xp_line}{progress_line}"""
+⭐ Редкость: {fish['rarity']}{xp_line}{progress_line}{tickets_line}"""
 
             if result.get('is_on_boat'):
                 message += "\n⛵ <b>Рыба добавлена в лодку!</b> (Её раздаст владелец по возвращении)"
@@ -4282,7 +4340,7 @@ class FishBot:
 
 📦 Мусор: {result['trash']['name']}
 ⚖️ Вес: {result['trash']['weight']} кг
-💰 Стоимость: {result['earned']} 🪙{xp_line}{progress_line}
+💰 Стоимость: {result['earned']} 🪙{xp_line}{progress_line}{tickets_line}
                     """
                     duel_attempt_name = str(result.get('trash', {}).get('name') or 'Мусор')
                     try:
@@ -4307,7 +4365,7 @@ class FishBot:
                     except Exception as e:
                         logger.warning(f"Could not send trash image: {e}")
                 else:
-                    message = f"😔 {result['message']}"
+                    message = f"😔 {result['message']}{tickets_line}"
                     if result.get('no_bite'):
                         duel_attempt_name = "Ничего не клюет"
 
@@ -4445,11 +4503,13 @@ class FishBot:
             durability_line = f"🔧 Прочность: {player_rod['current_durability']}/{player_rod['max_durability']}\n"
 
         diamond_count = player.get('diamonds', 0)
+        tickets_count = player.get('tickets', 0)
         menu_text = f"""
     {FISHING_EMOJI_TAG} Меню рыбалки
 
     {COIN_EMOJI_TAG} Монеты: {html.escape(str(player['coins']))} {html.escape(COIN_NAME)}
     {DIAMOND_EMOJI_TAG} Бриллианты: {html.escape(str(diamond_count))}
+    🎟 Билеты: {html.escape(str(tickets_count))}
     {FISHING_EMOJI_TAG} Удочка: {html.escape(str(player['current_rod']))}
     {LOCATION_EMOJI_TAG} Локация: {html.escape(str(player['current_location']))}
     {WORM_EMOJI_TAG} Наживка: {html.escape(str(player['current_bait']))}
@@ -5213,6 +5273,7 @@ class FishBot:
         # Вытаскиваем случайные рыбы и мусор
         catch_results = []
         total_value = 0
+        net_tickets_base = 0
         net_treasure_totals: Dict[str, int] = {}
         feeder_bonus = db.get_active_feeder_bonus(user_id, chat_id)
         clothing_bonus_percent = self._get_clothing_bonus_percent(user_id)
@@ -5241,6 +5302,7 @@ class FishBot:
                         'name': get_treasure_name(treasure_key),
                         'price': 0,
                     })
+                    net_tickets_base += int(self.TICKET_POINTS['trash'])
                     logger.info(
                         "Net catch (trash->treasure): user=%s chat_id=%s chat_title=%s trash=%s treasure=%s location=%s",
                         user_id,
@@ -5270,6 +5332,7 @@ class FishBot:
                         'price': trash['price']
                     })
                     total_value += trash['price']
+                    net_tickets_base += int(self.TICKET_POINTS['trash'])
             elif available_fish:
                 # Ловим рыбу — с весами по редкости (легенда/миф бьётся реже)
                 _RARITY_WEIGHTS = {
@@ -5307,12 +5370,15 @@ class FishBot:
                     'name': fish['name'],
                     'weight': weight,
                     'length': length,
-                    'price': fish_price
+                    'price': fish_price,
+                    'rarity': fish.get('rarity', 'Обычная'),
                 })
                 total_value += fish_price
+                net_tickets_base += self._calculate_tickets_for_rarity(fish.get('rarity', 'Обычная'))
         
         # Используем сеть
         db.use_net(user_id, net_name, chat_id)
+        tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(user_id, net_tickets_base)
         
         # Формируем сообщение
         message = f"🕸️ Сеть '{net_name}' использована!\n"
@@ -5331,6 +5397,12 @@ class FishBot:
         
         message += "─" * 30 + "\n"
         message += f"💰 Итого: {total_value} {COIN_NAME}\n"
+        if tickets_awarded > 0:
+            if tickets_jackpot > 0:
+                message += f"🎟 Билеты: +{tickets_awarded} (джекпот +{tickets_jackpot})\n"
+            else:
+                message += f"🎟 Билеты: +{tickets_awarded}\n"
+            message += f"🎫 Всего билетов: {tickets_total}\n"
         if net_treasure_totals:
             from treasures import get_treasure_name
 
@@ -8543,6 +8615,38 @@ class FishBot:
             await update.message.reply_text(message, parse_mode="HTML")
         else:
             await update.callback_query.edit_message_text(message, parse_mode="HTML")
+
+    async def tickets_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /tickets - топ-3 по билетам и место пользователя."""
+        user_id = update.effective_user.id
+        top_rows = db.get_tickets_leaderboard(limit=3)
+        my_rank_info = db.get_user_tickets_rank(user_id)
+
+        if not top_rows:
+            top_body = "Пока нет данных"
+        else:
+            lines = []
+            for idx, row in enumerate(top_rows, start=1):
+                medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉"
+                username = html.escape(str(row.get('username') or f"id{row.get('user_id', '?')}"))
+                tickets = int(row.get('tickets') or 0)
+                lines.append(f"{medal} {username}: {tickets} 🎟")
+            top_body = "\n".join(lines)
+
+        rank = int(my_rank_info.get('rank') or 1)
+        my_tickets = int(my_rank_info.get('tickets') or 0)
+
+        message = (
+            "🎟 Топ по билетам (за всё время)\n"
+            f"{top_body}\n\n"
+            f"Ваше место: #{rank}\n"
+            f"Ваши билеты: {my_tickets} 🎫"
+        )
+
+        if update.message:
+            await update.message.reply_text(message)
+        else:
+            await update.callback_query.edit_message_text(message)
     
     async def leaderboard_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /leaderboard - таблица лидеров"""
@@ -9318,6 +9422,7 @@ class FishBot:
         fail_count = 0
         total_trash_coins = 0
         total_haul_coins = 0
+        total_tickets_base = 0
         treasure_count = 0
         treasure_totals: Dict[str, int] = {}
         pending_catches: List[Dict[str, Any]] = []
@@ -9351,6 +9456,7 @@ class FishBot:
 
             if not guaranteed and adjusted_roll <= no_bite_max:
                 fail_count += 1
+                total_tickets_base += int(self.TICKET_POINTS['no_bite'])
                 result_lines.append(f"{idx}. Срыв")
                 logger.info("[DYNAMITE] roll=%s branch=NO_BITE threshold<=%s", idx, no_bite_max)
                 continue
@@ -9371,6 +9477,7 @@ class FishBot:
 
                         treasure_count += 1
                         treasure_totals[treasure_key] = int(treasure_totals.get(treasure_key, 0) or 0) + 1
+                        total_tickets_base += int(self.TICKET_POINTS['trash'])
                         result_lines.append(f"{idx}. {get_treasure_name(treasure_key)}")
                         logger.info(
                             "[DYNAMITE] roll=%s branch=TRASH_REPLACED_BY_TREASURE trash=%s treasure=%s",
@@ -9387,6 +9494,7 @@ class FishBot:
                         total_trash_coins += trash_price
                         total_haul_coins += trash_price
                         trash_count += 1
+                        total_tickets_base += int(self.TICKET_POINTS['trash'])
                         result_lines.append(f"{idx}. {trash_name}")
                         logger.info(
                             "[DYNAMITE] roll=%s branch=TRASH name=%s weight=%skg price=%s",
@@ -9397,6 +9505,7 @@ class FishBot:
                         )
                 else:
                     fail_count += 1
+                    total_tickets_base += int(self.TICKET_POINTS['no_bite'])
                     result_lines.append(f"{idx}. Срыв")
                     logger.info("[DYNAMITE] roll=%s branch=TRASH but no trash in location -> NO_BITE", idx)
                 continue
@@ -9421,6 +9530,7 @@ class FishBot:
             fish = self._pick_dynamite_fish(location, season, player_level, target_rarity)
             if not fish:
                 fail_count += 1
+                total_tickets_base += int(self.TICKET_POINTS['no_bite'])
                 result_lines.append(f"{idx}. Срыв")
                 logger.info("[DYNAMITE] roll=%s branch=FISH rarity=%s but pool empty -> NO_BITE", idx, target_rarity)
                 continue
@@ -9460,6 +9570,7 @@ class FishBot:
                 fish_value = int(db.calculate_fish_price(fish_candidate, weight, length))
                 total_haul_coins += fish_value
                 fish_count += 1
+                total_tickets_base += self._calculate_tickets_for_rarity(fish_candidate.get('rarity', target_rarity))
                 result_lines.append(
                     f"{idx}. {rarity_circle} {format_fish_name(fish_candidate['name'])} ({length} см, {weight} кг)"
                 )
@@ -9475,6 +9586,7 @@ class FishBot:
                 )
             else:
                 fail_count += 1
+                total_tickets_base += int(self.TICKET_POINTS['no_bite'])
                 result_lines.append(f"{idx}. Срыв (нет подходящей рыбы)")
                 logger.info("[DYNAMITE] roll=%s branch=FISH no suitable fish found", idx)
 
@@ -9555,6 +9667,7 @@ class FishBot:
             coins=new_coins,
             last_dynamite_use_time=datetime.now().isoformat(),
         )
+        tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(user_id, total_tickets_base)
 
         header = f"🧨 <b>Вы взорвали {dynamite_name.lower()}!</b>"
         if guaranteed:
@@ -9573,6 +9686,13 @@ class FishBot:
             f"💰 Монеты за весь улов: +{total_haul_coins} {COIN_NAME}\n\n"
             + "\n".join(result_lines)
         )
+
+        if tickets_awarded > 0:
+            if tickets_jackpot > 0:
+                message += f"\n\n🎟 Билеты: +{tickets_awarded} (джекпот +{tickets_jackpot})"
+            else:
+                message += f"\n\n🎟 Билеты: +{tickets_awarded}"
+            message += f"\n🎫 Всего билетов: {tickets_total}"
 
         if treasure_totals:
             from treasures import get_treasure_name
@@ -10120,6 +10240,12 @@ class FishBot:
                 return
         except Exception:
             logger.exception("RAF roll failed in start_fishing flow user=%s chat=%s", user_id, chat_id)
+
+        tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(
+            user_id,
+            self._calculate_tickets_for_result(result),
+        )
+        tickets_line = self._format_tickets_award_line(tickets_awarded, tickets_jackpot, tickets_total)
         
         if result['success']:
             if result.get('is_trash'):
@@ -10132,6 +10258,7 @@ class FishBot:
 📏 Вес: {trash.get('weight', 0)} кг
 💰 Стоимость: {trash.get('price', 0)} 🪙
 📍 Место: {location_val}
+{tickets_line}
                 """
                 sticker_message = None
                 # Нормализуем имя мусора для поиска
@@ -10252,6 +10379,7 @@ class FishBot:
 💰 Стоимость: {fish['price']} 🪙
 📍 Место: {result['location']}
 ⭐ Редкость: {fish['rarity']}
+{tickets_line}
 
 Ваш баланс: {result['new_balance']} 🪙
             """
@@ -10337,6 +10465,7 @@ class FishBot:
 
 🪱 Вы использовали: {wrong_bait_text}
 📍 Локация: {result['location']}
+{tickets_line}
 
 💡 Совет: Попробуйте другую наживку!
                 """
@@ -10364,7 +10493,7 @@ class FishBot:
 📦 Мусор: {result['trash']['name']}
 ⚖️ Вес: {result['trash']['weight']} кг
 💰 Стоимость: {result['trash']['price']} 🪙
-{xp_line}{progress_line}
+{xp_line}{progress_line}{tickets_line}
 
 Ваш баланс: {result['new_balance']} 🪙
                 """
@@ -10435,6 +10564,7 @@ class FishBot:
 😔 {result['message']}
 
 📍 Локация: {result.get('location', player.get('current_location', 'Неизвестно'))}
+{tickets_line}
                 """
                 
                 await query.edit_message_text(message, reply_markup=reply_markup)
@@ -11283,6 +11413,12 @@ class FishBot:
             await self.refund_star_payment(user_id, telegram_payment_charge_id)
             return
 
+        tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(
+            user_id,
+            self._calculate_tickets_for_result(result),
+        )
+        tickets_line = self._format_tickets_award_line(tickets_awarded, tickets_jackpot, tickets_total)
+
         try:
             raf_won = await self._process_raf_event_roll(
                 chat_id=group_chat_id,
@@ -11306,6 +11442,7 @@ class FishBot:
 📏 Вес: {trash.get('weight', 0)} кг
 💰 Стоимость: {trash.get('price', 0)} 🪙
 📍 Место: {result.get('location', location)}
+{tickets_line}
             """
 
             # Try to send trash sticker in reply to the original group message (invoice button)
@@ -11398,6 +11535,7 @@ class FishBot:
 💰 Стоимость: {fish['price']} 🪙
 📍 Место: {result['location']}
 ⭐ Редкость: {fish['rarity']}
+{tickets_line}
         """
 
         # Получаем информацию о сообщении с кнопкой (уже получена выше перед удалением из active_invoices)
@@ -12414,6 +12552,7 @@ def main():
     application.add_handler(CommandHandler("weather", bot_instance.weather_command))
     application.add_handler(CommandHandler("testweather", bot_instance.test_weather_command))
     application.add_handler(CommandHandler("stats", bot_instance.stats_command))
+    application.add_handler(CommandHandler("tickets", bot_instance.tickets_command))
     application.add_handler(CommandHandler("rules", bot_instance.rules_command))
     application.add_handler(CommandHandler("info", bot_instance.info_command))
     application.add_handler(CommandHandler("treasureinfo", bot_instance.treasureinfo_command))
