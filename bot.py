@@ -9652,6 +9652,7 @@ class FishBot:
         )
 
         new_coins = int(player.get('coins', 0) or 0) + total_trash_coins
+        current_username = str(player.get('username') or player.get('first_name') or user_id)
         db.update_player(
             user_id,
             chat_id,
@@ -9661,7 +9662,7 @@ class FishBot:
         tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(
             user_id,
             total_tickets_base,
-            username=update.effective_user.username or update.effective_user.first_name or str(user_id),
+            username=current_username,
             source_type='dynamite',
             source_ref=str(location),
         )
