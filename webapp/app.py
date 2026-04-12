@@ -73,7 +73,7 @@ def _parse_date_input(value: str | None, end_of_day: bool = False) -> Optional[d
 	raw = str(value or "").strip()
 	if not raw:
 		return None
-	for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+	for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
 		try:
 			parsed = datetime.strptime(raw, fmt)
 			if fmt == "%Y-%m-%d" and end_of_day:
@@ -474,7 +474,15 @@ def tickets_draw():
 		return jsonify({"ok": False, "error": "db_read_failed"}), 500
 
 	if not draws:
-		return jsonify({"ok": False, "error": "no_tickets_in_range"}), 404
+		return jsonify({
+			"ok": True,
+			"items": [],
+			"period": {
+				"start_date": start_date.strftime("%Y-%m-%d %H:%M:%S"),
+				"end_date": end_date.strftime("%Y-%m-%d %H:%M:%S"),
+				"count": 0,
+			},
+		})
 
 	items = []
 	for idx, row in enumerate(draws, start=1):
@@ -494,8 +502,8 @@ def tickets_draw():
 		"ok": True,
 		"items": items,
 		"period": {
-			"start_date": start_date.strftime("%Y-%m-%d"),
-			"end_date": end_date.strftime("%Y-%m-%d"),
+			"start_date": start_date.strftime("%Y-%m-%d %H:%M:%S"),
+			"end_date": end_date.strftime("%Y-%m-%d %H:%M:%S"),
 			"count": len(items),
 		},
 	})

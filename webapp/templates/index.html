@@ -93,11 +93,11 @@
           <p class="subtext">Доступно только для администратора. Выберите диапазон и количество случайных билетов.</p>
 
           <div class="ticket-draw-grid">
-            <label class="field-label" for="ticketDrawStart">Дата начала</label>
-            <input id="ticketDrawStart" class="input" type="date" />
+            <label class="field-label" for="ticketDrawStart">Дата и время начала</label>
+            <input id="ticketDrawStart" class="input" type="datetime-local" step="60" />
 
-            <label class="field-label" for="ticketDrawEnd">Дата конца</label>
-            <input id="ticketDrawEnd" class="input" type="date" />
+            <label class="field-label" for="ticketDrawEnd">Дата и время конца</label>
+            <input id="ticketDrawEnd" class="input" type="datetime-local" step="60" />
 
             <label class="field-label" for="ticketDrawCount">Количество билетов</label>
             <input id="ticketDrawCount" class="input" type="number" min="1" max="100" value="1" />

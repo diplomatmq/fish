@@ -185,14 +185,17 @@ function updateProfile(profile) {
   renderActiveTrophy(profile.selected_trophy_data || null);
 }
 
-function formatDateInputOffset(daysOffset) {
+function formatDateTimeLocalOffset(daysOffset, hour = 0, minute = 0) {
   const date = new Date();
-  date.setHours(0, 0, 0, 0);
+  date.setSeconds(0, 0);
   date.setDate(date.getDate() + daysOffset);
+  date.setHours(hour, minute, 0, 0);
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hh}:${mm}`;
 }
 
 function renderTicketRating(payload) {
@@ -340,6 +343,10 @@ async function loadTicketDraw() {
     return;
   }
 
+  if (!ticketDrawStart.value || !ticketDrawEnd.value) {
+    throw new Error("invalid_date_range");
+  }
+
   if (ticketDrawSummary) {
     ticketDrawSummary.textContent = "Выбираю случайные билеты...";
   }
@@ -366,6 +373,7 @@ async function loadTicketDraw() {
   ticketDrawVisible = true;
   if (ticketDrawPanel) {
     ticketDrawPanel.hidden = false;
+    ticketDrawPanel.classList.add("visible");
   }
   if (ticketDrawButton) {
     ticketDrawButton.textContent = "Переразобрать билет";
@@ -379,10 +387,11 @@ function setupAdminTicketControls() {
   }
 
   if (ticketDrawStart && !ticketDrawStart.value) {
-    ticketDrawStart.value = formatDateInputOffset(-7);
+    ticketDrawStart.value = formatDateTimeLocalOffset(-7, 0, 0);
   }
   if (ticketDrawEnd && !ticketDrawEnd.value) {
-    ticketDrawEnd.value = formatDateInputOffset(0);
+    const now = new Date();
+    ticketDrawEnd.value = formatDateTimeLocalOffset(0, now.getHours(), now.getMinutes());
   }
   if (ticketDrawCount && !ticketDrawCount.value) {
     ticketDrawCount.value = "1";
@@ -720,7 +729,29 @@ function bindUi() {
       loadTicketDraw().catch((error) => {
         console.error(error);
         if (ticketDrawSummary) {
-          ticketDrawSummary.textContent = "Не удалось выбрать билет.";
+          const code = String(error?.message || "");
+          const errorTextByCode = {
+            invalid_date_range: "Укажите корректные дату и время начала/конца.",
+            no_tickets_in_range: "В указанном диапазоне нет билетов.",
+            forbidden: "Нет доступа к розыгрышу.",
+            auth_required: "Требуется авторизация в Telegram.",
+            auth_invalid: "Ошибка авторизации. Откройте апку заново из бота.",
+            auth_expired: "Сессия истекла. Откройте апку заново из бота.",
+            db_read_failed: "Ошибка чтения БД при розыгрыше.",
+            db_unavailable: "База данных временно недоступна.",
+          };
+          ticketDrawSummary.textContent = errorTextByCode[code] || "Не удалось выбрать билет.";
+        }
+        if (ticketDrawPanel) {
+          ticketDrawPanel.hidden = false;
+          ticketDrawPanel.classList.add("visible");
+        }
+        if (ticketDrawList) {
+          ticketDrawList.innerHTML = "";
+          const li = document.createElement("li");
+          li.className = "leaderboard-item leaderboard-empty";
+          li.textContent = "Нет данных для отображения.";
+          ticketDrawList.appendChild(li);
         }
       });
     });
