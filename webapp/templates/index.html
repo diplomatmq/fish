@@ -76,6 +76,40 @@
           </div>
           <p id="xpInfo" class="subtext">До следующего уровня: 0 XP</p>
         </article>
+
+        <article class="card">
+          <h3>Рейтинг билетов</h3>
+          <p class="subtext">Топ-100 участников по общему количеству билетов.</p>
+          <button id="ticketRatingButton" class="btn btn-secondary">Показать рейтинг билетов</button>
+
+          <div id="ticketRatingPanel" class="ticket-rating-panel" hidden>
+            <p id="ticketRatingSummary" class="status">Нажмите кнопку, чтобы загрузить рейтинг.</p>
+            <ol id="ticketRatingList" class="leaderboard-list"></ol>
+          </div>
+        </article>
+
+        <article id="ticketDrawCard" class="card" hidden>
+          <h3>Розыгрыш билета</h3>
+          <p class="subtext">Доступно только для администратора. Выберите диапазон и количество случайных билетов.</p>
+
+          <div class="ticket-draw-grid">
+            <label class="field-label" for="ticketDrawStart">Дата начала</label>
+            <input id="ticketDrawStart" class="input" type="date" />
+
+            <label class="field-label" for="ticketDrawEnd">Дата конца</label>
+            <input id="ticketDrawEnd" class="input" type="date" />
+
+            <label class="field-label" for="ticketDrawCount">Количество билетов</label>
+            <input id="ticketDrawCount" class="input" type="number" min="1" max="100" value="1" />
+          </div>
+
+          <button id="ticketDrawButton" class="btn btn-secondary">Выбрать случайный билет</button>
+
+          <div id="ticketDrawPanel" class="ticket-rating-panel" hidden>
+            <p id="ticketDrawSummary" class="status">Укажите диапазон и нажмите кнопку.</p>
+            <ol id="ticketDrawList" class="leaderboard-list"></ol>
+          </div>
+        </article>
       </section>
 
       <section id="view-captcha" class="view">

@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qsl
@@ -66,6 +67,23 @@ def _safe_int(value: str | None) -> Optional[int]:
 		return int(str(value).strip())
 	except (TypeError, ValueError):
 		return None
+
+
+def _parse_date_input(value: str | None, end_of_day: bool = False) -> Optional[datetime]:
+	raw = str(value or "").strip()
+	if not raw:
+		return None
+	for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+		try:
+			parsed = datetime.strptime(raw, fmt)
+			if fmt == "%Y-%m-%d" and end_of_day:
+				return parsed.replace(hour=23, minute=59, second=59)
+			if fmt == "%Y-%m-%d" and not end_of_day:
+				return parsed.replace(hour=0, minute=0, second=0)
+			return parsed
+		except Exception:
+			continue
+	return None
 
 
 def _build_title(level: int) -> str:
@@ -290,6 +308,8 @@ def profile():
 
 	level = int(player.get("level") or 0)
 	payload = {
+		"user_id": user_id,
+		"is_admin": user_id == 793216884,
 		"username": _normalize_username(player.get("username") or fallback_username),
 		"level": level,
 		"xp": int(player.get("xp") or 0),
@@ -373,6 +393,147 @@ def select_trophy():
 		return jsonify({"ok": False, "error": "trophy_not_found"}), 404
 
 	return jsonify({"ok": True, "selected_trophy": _format_trophy_id({"id": trophy_id})})
+
+
+@app.get("/api/tickets/rating")
+def tickets_rating():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	limit = _safe_int(request.args.get("limit")) or 100
+	limit = max(1, min(limit, 100))
+
+	db = _get_fish_db()
+	if db is None:
+		if fish_db_import_error is not None:
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		rows = db.get_tickets_leaderboard(limit=limit)
+		my_rank = db.get_user_tickets_rank(user_id)
+	except Exception:
+		logger.exception("WebApp ticket rating read failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+	items = []
+	for idx, row in enumerate(rows, start=1):
+		items.append({
+			"place": idx,
+			"user_id": int(row.get("user_id") or 0),
+			"username": str(row.get("username") or "Неизвестно"),
+			"tickets": int(row.get("tickets") or 0),
+		})
+
+	return jsonify({
+		"ok": True,
+		"items": items,
+		"my_rank": my_rank,
+		"limit": limit,
+	})
+
+
+@app.post("/api/tickets/draw")
+def tickets_draw():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	if user_id != 793216884:
+		return jsonify({"ok": False, "error": "forbidden"}), 403
+
+	data = request.get_json(silent=True) or {}
+	start_date = _parse_date_input(data.get("start_date"), end_of_day=False)
+	end_date = _parse_date_input(data.get("end_date"), end_of_day=True)
+	count = _safe_int(data.get("count")) or 1
+	count = max(1, min(count, 100))
+
+	if not start_date or not end_date:
+		return jsonify({"ok": False, "error": "invalid_date_range"}), 400
+	if start_date > end_date:
+		return jsonify({"ok": False, "error": "invalid_date_range"}), 400
+
+	db = _get_fish_db()
+	if db is None:
+		if fish_db_import_error is not None:
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		draws = db.get_random_tickets_in_period(start_date, end_date, limit=count)
+		user_counts = db.get_ticket_counts_for_users_in_period(
+			[user_id for user_id in {int(row.get("user_id") or 0) for row in draws}],
+			start_date,
+			end_date,
+		)
+	except Exception:
+		logger.exception("WebApp ticket draw failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+	if not draws:
+		return jsonify({"ok": False, "error": "no_tickets_in_range"}), 404
+
+	items = []
+	for idx, row in enumerate(draws, start=1):
+		row_user_id = int(row.get("user_id") or 0)
+		items.append({
+			"place": idx,
+			"ticket_code": row.get("ticket_code"),
+			"user_id": row_user_id,
+			"username": str(row.get("username") or "Неизвестно"),
+			"tickets_in_period": int(user_counts.get(row_user_id, 0)),
+			"created_at": row.get("created_at"),
+			"source_type": row.get("source_type"),
+			"source_ref": row.get("source_ref"),
+		})
+
+	return jsonify({
+		"ok": True,
+		"items": items,
+		"period": {
+			"start_date": start_date.strftime("%Y-%m-%d"),
+			"end_date": end_date.strftime("%Y-%m-%d"),
+			"count": len(items),
+		},
+	})
+
+
+@app.get("/api/tickets/random")
+def tickets_random():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	db = _get_fish_db()
+	if db is None:
+		if fish_db_import_error is not None:
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		row = db.get_random_ticket()
+	except Exception:
+		logger.exception("WebApp random ticket draw failed for user_id=%s", auth_user.get("id"))
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+	if not row:
+		return jsonify({"ok": False, "error": "no_tickets"}), 404
+
+	return jsonify({
+		"ok": True,
+		"ticket": {
+			"ticket_code": row.get("ticket_code"),
+			"award_id": row.get("award_id"),
+			"user_id": row.get("user_id"),
+			"username": row.get("username"),
+			"source_type": row.get("source_type"),
+			"source_ref": row.get("source_ref"),
+			"created_at": row.get("created_at"),
+		},
+	})
 
 
 @app.get("/api/captcha/challenge")

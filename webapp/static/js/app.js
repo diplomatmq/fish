@@ -12,6 +12,18 @@ const activeTrophyImage = document.getElementById("activeTrophyImage");
 const activeTrophyEmpty = document.getElementById("activeTrophyEmpty");
 const activeTrophyName = document.getElementById("activeTrophyName");
 const activeTrophyMeta = document.getElementById("activeTrophyMeta");
+const ticketRatingButton = document.getElementById("ticketRatingButton");
+const ticketRatingPanel = document.getElementById("ticketRatingPanel");
+const ticketRatingSummary = document.getElementById("ticketRatingSummary");
+const ticketRatingList = document.getElementById("ticketRatingList");
+const ticketDrawCard = document.getElementById("ticketDrawCard");
+const ticketDrawStart = document.getElementById("ticketDrawStart");
+const ticketDrawEnd = document.getElementById("ticketDrawEnd");
+const ticketDrawCount = document.getElementById("ticketDrawCount");
+const ticketDrawButton = document.getElementById("ticketDrawButton");
+const ticketDrawPanel = document.getElementById("ticketDrawPanel");
+const ticketDrawSummary = document.getElementById("ticketDrawSummary");
+const ticketDrawList = document.getElementById("ticketDrawList");
 const profileHeader = document.getElementById("profileHeader");
 const profileView = document.getElementById("view-profile");
 const captchaView = document.getElementById("view-captcha");
@@ -28,6 +40,11 @@ let currentProfile = null;
 let telegramAuthContext = null;
 let trophyById = {};
 let captchaCountdownId = null;
+let ticketRatingLoaded = false;
+let ticketRatingVisible = false;
+let ticketDrawLoaded = false;
+let ticketDrawVisible = false;
+let isAdminUser = false;
 
 const urlParams = new URLSearchParams(window.location.search);
 const captchaToken = String(urlParams.get("captcha_token") || "").trim();
@@ -87,6 +104,21 @@ function setAppInteractive(isInteractive, mode = "profile") {
   if (trophySelect) {
     trophySelect.disabled = !(isInteractive && mode === "profile");
   }
+  if (ticketRatingButton) {
+    ticketRatingButton.disabled = !(isInteractive && mode === "profile");
+  }
+  if (ticketDrawButton) {
+    ticketDrawButton.disabled = !(isInteractive && mode === "profile" && isAdminUser);
+  }
+  if (ticketDrawStart) {
+    ticketDrawStart.disabled = !(isInteractive && mode === "profile" && isAdminUser);
+  }
+  if (ticketDrawEnd) {
+    ticketDrawEnd.disabled = !(isInteractive && mode === "profile" && isAdminUser);
+  }
+  if (ticketDrawCount) {
+    ticketDrawCount.disabled = !(isInteractive && mode === "profile" && isAdminUser);
+  }
   if (captchaSubmit) {
     captchaSubmit.disabled = !(isInteractive && mode === "captcha");
   }
@@ -132,6 +164,7 @@ function renderActiveTrophy(trophy) {
 
 function updateProfile(profile) {
   currentProfile = profile;
+  isAdminUser = Boolean(profile.is_admin) || Number(profile.user_id || telegramAuthContext?.userId || 0) === 793216884;
 
   usernameEl.textContent = profile.username || "@angler";
   titleEl.textContent = profile.title || "Fisher";
@@ -145,7 +178,215 @@ function updateProfile(profile) {
   xpFillEl.style.width = `${percent}%`;
   xpInfoEl.textContent = `XP to next level: ${Math.max(0, nextLevelTarget - xp)}`;
 
+  if (ticketDrawCard) {
+    ticketDrawCard.hidden = !isAdminUser;
+  }
+
   renderActiveTrophy(profile.selected_trophy_data || null);
+}
+
+function formatDateInputOffset(daysOffset) {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() + daysOffset);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function renderTicketRating(payload) {
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  const myRank = payload?.my_rank || {};
+
+  if (ticketRatingSummary) {
+    const rank = Number(myRank.rank || 0);
+    const tickets = Number(myRank.tickets || 0);
+    const totalUsers = Number(myRank.total_users || 0);
+    ticketRatingSummary.textContent = rank > 0
+      ? `Ваше место: #${rank} из ${Math.max(totalUsers, items.length)}. У вас ${tickets} билетов.`
+      : "Ваше место в рейтинге пока не определено.";
+  }
+
+  if (!ticketRatingList) {
+    return;
+  }
+
+  ticketRatingList.innerHTML = "";
+  if (items.length === 0) {
+    const li = document.createElement("li");
+    li.className = "leaderboard-item leaderboard-empty";
+    li.textContent = "Пока нет билетов.";
+    ticketRatingList.appendChild(li);
+    return;
+  }
+
+  items.forEach((item) => {
+    const li = document.createElement("li");
+    li.className = "leaderboard-item";
+
+    const place = document.createElement("span");
+    place.className = "leaderboard-place";
+    place.textContent = String(item.place || "-");
+
+    const name = document.createElement("span");
+    name.className = "leaderboard-name";
+    name.textContent = String(item.username || "Неизвестно");
+
+    const count = document.createElement("span");
+    count.className = "leaderboard-count";
+    count.textContent = `${Number(item.tickets || 0)} бил.`;
+
+    li.appendChild(place);
+    li.appendChild(name);
+    li.appendChild(count);
+    ticketRatingList.appendChild(li);
+  });
+}
+
+async function loadTicketRating() {
+  if (!ticketRatingPanel || !ticketRatingList) {
+    return;
+  }
+
+  if (ticketRatingSummary) {
+    ticketRatingSummary.textContent = "Загрузка рейтинга...";
+  }
+
+  const response = await fetch("/api/tickets/rating?limit=100", {
+    headers: getAuthHeaders(),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `tickets_http_${response.status}`);
+  }
+
+  ticketRatingLoaded = true;
+  renderTicketRating(payload);
+}
+
+function toggleTicketRating() {
+  if (!ticketRatingPanel) {
+    return;
+  }
+
+  ticketRatingVisible = !ticketRatingVisible;
+  ticketRatingPanel.hidden = !ticketRatingVisible;
+  ticketRatingPanel.classList.toggle("visible", ticketRatingVisible);
+  if (ticketRatingButton) {
+    ticketRatingButton.textContent = ticketRatingVisible ? "Скрыть рейтинг билетов" : "Показать рейтинг билетов";
+  }
+
+  if (ticketRatingVisible && !ticketRatingLoaded) {
+    loadTicketRating().catch((error) => {
+      console.error(error);
+      if (ticketRatingSummary) {
+        ticketRatingSummary.textContent = "Не удалось загрузить рейтинг.";
+      }
+    });
+  }
+}
+
+function renderTicketDraw(payload) {
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  const period = payload?.period || {};
+
+  if (ticketDrawSummary) {
+    const startDate = String(period.start_date || "");
+    const endDate = String(period.end_date || "");
+    ticketDrawSummary.textContent = items.length > 0
+      ? `Период ${startDate} — ${endDate}. Найдено ${items.length} билетов.`
+      : "Билеты в выбранном диапазоне не найдены.";
+  }
+
+  if (!ticketDrawList) {
+    return;
+  }
+
+  ticketDrawList.innerHTML = "";
+  items.forEach((item) => {
+    const li = document.createElement("li");
+    li.className = "leaderboard-item";
+
+    const place = document.createElement("span");
+    place.className = "leaderboard-place";
+    place.textContent = String(item.place || "-");
+
+    const info = document.createElement("span");
+    info.className = "leaderboard-name";
+    info.textContent = `${String(item.ticket_code || "-")} · ${String(item.username || "Неизвестно")}`;
+
+    const count = document.createElement("span");
+    count.className = "leaderboard-count";
+    count.textContent = `${Number(item.tickets_in_period || 0)} бил.`;
+
+    li.appendChild(place);
+    li.appendChild(info);
+    li.appendChild(count);
+    ticketDrawList.appendChild(li);
+  });
+
+  if (items.length === 0) {
+    const li = document.createElement("li");
+    li.className = "leaderboard-item leaderboard-empty";
+    li.textContent = "Пока нет билетов в этом диапазоне.";
+    ticketDrawList.appendChild(li);
+  }
+}
+
+async function loadTicketDraw() {
+  if (!ticketDrawStart || !ticketDrawEnd || !ticketDrawCount) {
+    return;
+  }
+
+  if (ticketDrawSummary) {
+    ticketDrawSummary.textContent = "Выбираю случайные билеты...";
+  }
+
+  const response = await fetch("/api/tickets/draw", {
+    method: "POST",
+    headers: {
+      ...getAuthHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      start_date: ticketDrawStart.value,
+      end_date: ticketDrawEnd.value,
+      count: Number(ticketDrawCount.value || 1),
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `ticket_draw_http_${response.status}`);
+  }
+
+  ticketDrawLoaded = true;
+  ticketDrawVisible = true;
+  if (ticketDrawPanel) {
+    ticketDrawPanel.hidden = false;
+  }
+  if (ticketDrawButton) {
+    ticketDrawButton.textContent = "Переразобрать билет";
+  }
+  renderTicketDraw(payload);
+}
+
+function setupAdminTicketControls() {
+  if (!isAdminUser) {
+    return;
+  }
+
+  if (ticketDrawStart && !ticketDrawStart.value) {
+    ticketDrawStart.value = formatDateInputOffset(-7);
+  }
+  if (ticketDrawEnd && !ticketDrawEnd.value) {
+    ticketDrawEnd.value = formatDateInputOffset(0);
+  }
+  if (ticketDrawCount && !ticketDrawCount.value) {
+    ticketDrawCount.value = "1";
+  }
 }
 
 async function loadProfile() {
@@ -467,6 +708,23 @@ function bindUi() {
       }
     });
   }
+
+  if (ticketRatingButton) {
+    ticketRatingButton.addEventListener("click", () => {
+      toggleTicketRating();
+    });
+  }
+
+  if (ticketDrawButton) {
+    ticketDrawButton.addEventListener("click", () => {
+      loadTicketDraw().catch((error) => {
+        console.error(error);
+        if (ticketDrawSummary) {
+          ticketDrawSummary.textContent = "Не удалось выбрать билет.";
+        }
+      });
+    });
+  }
 }
 
 async function bootstrap() {
@@ -494,6 +752,7 @@ async function bootstrap() {
 
     await loadProfile();
     await loadTrophies();
+    setupAdminTicketControls();
     if (trophyStatus) {
       trophyStatus.textContent = "You can choose a trophy";
     }

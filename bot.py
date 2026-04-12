@@ -2618,7 +2618,14 @@ class FishBot:
     def _calculate_tickets_for_rarity(self, rarity: str) -> int:
         return int(self.TICKET_POINTS.get(str(rarity or ''), 0))
 
-    def _award_tickets(self, user_id: int, base_tickets: int):
+    def _award_tickets(
+        self,
+        user_id: int,
+        base_tickets: int,
+        username: str,
+        source_type: str,
+        source_ref: Optional[str] = None,
+    ):
         base = int(base_tickets or 0)
         if base <= 0:
             return 0, 0, db.get_user_tickets(user_id)
@@ -2628,7 +2635,14 @@ class FishBot:
             jackpot = random.randint(self.TICKET_JACKPOT_MIN, self.TICKET_JACKPOT_MAX)
 
         total_awarded = base + jackpot
-        new_total = db.add_tickets(user_id, total_awarded)
+        new_total = db.add_tickets(
+            user_id,
+            total_awarded,
+            username=username,
+            source_type=source_type,
+            source_ref=source_ref,
+            jackpot_amount=jackpot,
+        )
         return total_awarded, jackpot, new_total
 
     def _format_tickets_award_line(self, awarded: int, jackpot: int, total_tickets: int) -> str:
@@ -4004,6 +4018,9 @@ class FishBot:
         tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(
             user_id,
             self._calculate_tickets_for_result(result),
+            username=current_username,
+            source_type='fish_command',
+            source_ref=str(player.get('current_location') or ''),
         )
         tickets_line = self._format_tickets_award_line(tickets_awarded, tickets_jackpot, tickets_total)
 
@@ -5378,7 +5395,13 @@ class FishBot:
         
         # Используем сеть
         db.use_net(user_id, net_name, chat_id)
-        tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(user_id, net_tickets_base)
+        tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(
+            user_id,
+            net_tickets_base,
+            username=update.effective_user.username or update.effective_user.first_name or str(user_id),
+            source_type='net',
+            source_ref=f"{net_name}:{location}",
+        )
         
         # Формируем сообщение
         message = f"🕸️ Сеть '{net_name}' использована!\n"
@@ -9635,7 +9658,13 @@ class FishBot:
             coins=new_coins,
             last_dynamite_use_time=datetime.now().isoformat(),
         )
-        tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(user_id, total_tickets_base)
+        tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(
+            user_id,
+            total_tickets_base,
+            username=update.effective_user.username or update.effective_user.first_name or str(user_id),
+            source_type='dynamite',
+            source_ref=str(location),
+        )
 
         header = f"🧨 <b>Вы взорвали {dynamite_name.lower()}!</b>"
         if guaranteed:
@@ -10212,6 +10241,9 @@ class FishBot:
         tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(
             user_id,
             self._calculate_tickets_for_result(result),
+            username=update.effective_user.username or update.effective_user.first_name or str(user_id),
+            source_type='start_fishing_callback',
+            source_ref=str(player.get('current_location') or ''),
         )
         tickets_line = self._format_tickets_award_line(tickets_awarded, tickets_jackpot, tickets_total)
         
@@ -11384,6 +11416,9 @@ class FishBot:
         tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(
             user_id,
             self._calculate_tickets_for_result(result),
+            username=update.effective_user.username or update.effective_user.first_name or str(user_id),
+            source_type='guaranteed_fish',
+            source_ref=str(location),
         )
         tickets_line = self._format_tickets_award_line(tickets_awarded, tickets_jackpot, tickets_total)
 
