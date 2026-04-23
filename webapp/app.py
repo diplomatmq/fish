@@ -230,6 +230,9 @@ def _get_verified_user_from_request() -> tuple[Optional[dict], Optional[str]]:
 
 @app.get("/")
 def index():
+	captcha_mode = request.args.get("captcha_mode")
+	if captcha_mode:
+		return render_template("index.html", captcha_mode=captcha_mode)
 	return send_from_directory(str(TRANSFERRED_UI_DIST), "index.html")
 
 
