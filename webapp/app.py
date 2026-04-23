@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qsl
 
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory
 
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,7 @@ def _get_fish_db():
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
+TRANSFERRED_UI_DIST = BASE_DIR / "ui_from_testpers" / "dist"
 TROPHY_ID_PREFIX = "trophy_"
 
 app = Flask(
@@ -127,7 +128,7 @@ def _parse_trophy_id(value: str | None) -> Optional[int]:
 	return _safe_int(raw)
 
 
-def _build_trophy_payload(trophy: dict | None) -> Optional[dict]:
+def _build_trophy_payload(trophy: dict | None, fish_rarity: str | None = None) -> Optional[dict]:
 	if not trophy:
 		return None
 
@@ -148,6 +149,7 @@ def _build_trophy_payload(trophy: dict | None) -> Optional[dict]:
 		"fish_name": name,
 		"weight": round(weight, 2),
 		"length": round(length, 1),
+		"rarity": str(fish_rarity or "Обычная"),
 		"location": trophy.get("location"),
 		"image_url": f"/api/fish-image/{image_file}",
 		"is_active": bool(int(trophy.get("is_active") or 0)),
@@ -228,8 +230,17 @@ def _get_verified_user_from_request() -> tuple[Optional[dict], Optional[str]]:
 
 @app.get("/")
 def index():
-	captcha_mode = bool(str(request.args.get("captcha_token") or "").strip())
-	return render_template("index.html", captcha_mode=captcha_mode)
+	return send_from_directory(str(TRANSFERRED_UI_DIST), "index.html")
+
+
+@app.get("/assets/<path:filename>")
+def transferred_assets(filename: str):
+	return send_from_directory(str(TRANSFERRED_UI_DIST / "assets"), filename)
+
+
+@app.get("/background.jpg")
+def transferred_background():
+	return send_from_directory(str(TRANSFERRED_UI_DIST), "background.jpg")
 
 
 @app.get("/health")
@@ -306,6 +317,14 @@ def profile():
 	if not active_trophy and trophy_items:
 		active_trophy = trophy_items[0]
 
+	active_rarity = "Обычная"
+	if active_trophy:
+		try:
+			fish = db.get_fish_by_name(str(active_trophy.get("fish_name") or ""))
+			active_rarity = str((fish or {}).get("rarity") or "Обычная")
+		except Exception:
+			active_rarity = "Обычная"
+
 	level = int(player.get("level") or 0)
 	payload = {
 		"user_id": user_id,
@@ -314,11 +333,142 @@ def profile():
 		"level": level,
 		"xp": int(player.get("xp") or 0),
 		"coins": int(player.get("coins") or 0),
+		"stars": int(player.get("stars") or 0),
 		"title": _build_title(level),
 		"selected_trophy": _format_trophy_id(active_trophy),
-		"selected_trophy_data": _build_trophy_payload(active_trophy),
+		"selected_trophy_data": _build_trophy_payload(active_trophy, fish_rarity=active_rarity),
 	}
 	return jsonify(payload)
+
+
+@app.get("/api/guilds")
+def get_guilds():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	db = _get_fish_db()
+	if not db:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		snapshot = db.get_webapp_guilds_snapshot(user_id=user_id)
+		return jsonify({"ok": True, **snapshot})
+	except Exception:
+		logger.exception("WebApp guilds snapshot failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+
+@app.post("/api/guilds/join")
+def join_guild():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	data = request.json or {}
+	guild_id = data.get("guild_id")
+	if not guild_id:
+		return jsonify({"ok": False, "error": "missing_guild_id"}), 400
+
+	db = _get_fish_db()
+	if not db:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		# Проверяем тип доступа
+		with db._connect() as conn:
+			cursor = conn.cursor()
+			cursor.execute("SELECT access_type FROM webapp_clan_profiles WHERE clan_id = ?", (guild_id,))
+			row = cursor.fetchone()
+			access_type = row[0] if row else "open"
+
+		if access_type != "open":
+			return jsonify({"ok": False, "error": "invite_only"}), 403
+
+		result = db.join_clan(user_id, guild_id)
+		return jsonify(result)
+	except Exception:
+		logger.exception("WebApp guild join failed for user_id=%s guild_id=%s", user_id, guild_id)
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+
+@app.post("/api/guilds/apply")
+def apply_guild():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	data = request.json or {}
+	guild_id = data.get("guild_id")
+	if not guild_id:
+		return jsonify({"ok": False, "error": "missing_guild_id"}), 400
+
+	# В текущей БД нет таблицы заявок, поэтому пока просто возвращаем успех
+	## В будущем можно создать таблицу clan_requests
+	return jsonify({"ok": True, "status": "applied"})
+
+
+@app.post("/api/guilds/leave")
+def leave_guild():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	db = _get_fish_db()
+	if not db:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		result = db.leave_clan(user_id)
+		return jsonify(result)
+	except Exception:
+		logger.exception("WebApp guild leave failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+
+@app.post("/api/guilds/create")
+def create_guild():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	data = request.json or {}
+	name = data.get("name")
+	avatar = data.get("avatar", "🔱")
+	color = data.get("color", "#00b4d8")
+	access_type = data.get("type", "open")
+	min_level = data.get("min_level", 0)
+
+	if not name:
+		return jsonify({"ok": False, "error": "missing_name"}), 400
+
+	db = _get_fish_db()
+	if not db:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		result = db.create_clan(user_id, name)
+		if result.get("ok"):
+			clan_id = result["clan"]["id"]
+			db.save_webapp_clan_profile(
+				clan_id=clan_id,
+				avatar_emoji=avatar,
+				color_hex=color,
+				access_type=access_type,
+				description="",
+				min_level=min_level,
+				updated_by=user_id
+			)
+			return jsonify({"ok": True, "clan_id": clan_id})
+		return jsonify(result)
+	except Exception:
+		logger.exception("WebApp guild create failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
 
 
 @app.get("/api/trophies")
@@ -342,7 +492,14 @@ def trophies():
 
 	items = []
 	for trophy in trophies:
-		payload = _build_trophy_payload(trophy)
+		rarity = "Обычная"
+		try:
+			fish = db.get_fish_by_name(str(trophy.get("fish_name") or ""))
+			rarity = str((fish or {}).get("rarity") or "Обычная")
+		except Exception:
+			rarity = "Обычная"
+
+		payload = _build_trophy_payload(trophy, fish_rarity=rarity)
 		if payload:
 			items.append(payload)
 
@@ -542,6 +699,213 @@ def tickets_random():
 			"created_at": row.get("created_at"),
 		},
 	})
+
+
+@app.get("/api/book")
+def book_entries():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	search = str(request.args.get("search") or "").strip()
+	limit = _safe_int(request.args.get("limit")) or 128
+
+	db = _get_fish_db()
+	if db is None:
+		if fish_db_import_error is not None:
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		items = db.get_webapp_book_entries(user_id=user_id, search=search, limit=limit)
+		total_all = db.get_webapp_book_total_count()
+	except Exception:
+		logger.exception("WebApp book read failed for user_id=%s", auth_user.get("id"))
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+	return jsonify({"ok": True, "items": items, "count": len(items), "total_all": int(total_all or 0), "search": search})
+
+
+@app.get("/api/adventures")
+def adventures_state():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	db = _get_fish_db()
+	if db is None:
+		if fish_db_import_error is not None:
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		state = db.get_webapp_adventures_state(user_id)
+	except Exception:
+		logger.exception("WebApp adventures read failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+	return jsonify({"ok": True, **state})
+
+
+@app.post("/api/adventures/submit")
+def adventures_submit():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	data = request.get_json(silent=True) or {}
+	game_code = str(data.get("game_code") or "").strip().lower()
+	score = _safe_int(data.get("score")) or 0
+	try:
+		distance = float(data.get("distance") or 0)
+	except Exception:
+		distance = 0.0
+
+	db = _get_fish_db()
+	if db is None:
+		if fish_db_import_error is not None:
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		result = db.save_webapp_adventure_result(user_id, game_code, score, distance)
+	except Exception:
+		logger.exception("WebApp adventures submit failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+	if not result.get("ok"):
+		return jsonify(result), 400
+
+	return jsonify(result)
+
+
+@app.get("/api/guilds")
+def guilds_state():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	limit = _safe_int(request.args.get("limit")) or 20
+
+	db = _get_fish_db()
+	if db is None:
+		if fish_db_import_error is not None:
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		payload = db.get_webapp_guilds_snapshot(user_id, limit=limit)
+	except Exception:
+		logger.exception("WebApp guilds read failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+	return jsonify({"ok": True, **payload})
+
+
+@app.post("/api/guilds/profile")
+def guilds_profile_save():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	data = request.get_json(silent=True) or {}
+	avatar_emoji = str(data.get("avatar_emoji") or "🏰").strip()
+	color_hex = str(data.get("color_hex") or "#00b4d8").strip()
+	access_type = str(data.get("access_type") or "open").strip().lower()
+	description = str(data.get("description") or "").strip()
+
+	db = _get_fish_db()
+	if db is None:
+		if fish_db_import_error is not None:
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		my_clan = db.get_clan_by_user(user_id)
+	except Exception:
+		logger.exception("WebApp guild profile load failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+	if not my_clan:
+		return jsonify({"ok": False, "error": "not_in_clan"}), 400
+	if str(my_clan.get("role") or "member") != "leader":
+		return jsonify({"ok": False, "error": "leader_only"}), 403
+
+	try:
+		result = db.save_webapp_clan_profile(
+			clan_id=int(my_clan.get("id") or 0),
+			avatar_emoji=avatar_emoji,
+			color_hex=color_hex,
+			access_type=access_type,
+			description=description,
+			updated_by=user_id,
+		)
+	except Exception:
+		logger.exception("WebApp guild profile save failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+	return jsonify(result)
+
+
+@app.get("/api/friends")
+def friends_list():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	limit = _safe_int(request.args.get("limit")) or 50
+
+	db = _get_fish_db()
+	if db is None:
+		if fish_db_import_error is not None:
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		items = db.get_webapp_friends(user_id, limit=limit)
+	except Exception:
+		logger.exception("WebApp friends read failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+	return jsonify({"ok": True, "items": items, "count": len(items)})
+
+
+@app.post("/api/friends/add")
+def friends_add():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	data = request.get_json(silent=True) or {}
+	username = str(data.get("username") or "").strip()
+
+	if not username:
+		return jsonify({"ok": False, "error": "username_required"}), 400
+
+	db = _get_fish_db()
+	if db is None:
+		if fish_db_import_error is not None:
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		result = db.add_webapp_friend_by_username(user_id, username)
+	except Exception:
+		logger.exception("WebApp friend add failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+	if not result.get("ok"):
+		error = str(result.get("reason") or "friend_add_failed")
+		return jsonify({"ok": False, "error": error}), 400
+
+	return jsonify(result)
 
 
 @app.get("/api/captcha/challenge")

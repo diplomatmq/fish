@@ -427,6 +427,24 @@ RARITY_XP_MULTIPLIERS = {
     "Мифическая": 1.15,
 }
 
+LIVE_BAIT_FISH_NAMES = ("Плотва", "Верховка")
+LIVE_BAIT_NAME = "Живец"
+
+CLAN_MEMBER_LIMITS = {
+    1: 5,
+    2: 8,
+    3: 12,
+    4: 16,
+    5: 20,
+}
+
+CLAN_UPGRADE_REQUIREMENTS = {
+    2: {"Деревянная доска": 5, "Поломанная удочка": 10},
+    3: {"Деревянная доска": 15, "Поломанная удочка": 25},
+    4: {"Деревянная доска": 30, "Поломанная удочка": 50},
+    5: {"Деревянная доска": 50, "Поломанная удочка": 80},
+}
+
 class Database:
     def get_system_flag(self, key: str) -> Optional[str]:
         """Получить значение системного флага по ключу."""
@@ -459,6 +477,570 @@ class Database:
             # Используем INSERT OR REPLACE (эмулируется в PostgresWrapper)
             cursor.execute("INSERT OR REPLACE INTO system_flags (key, value) VALUES (?, ?)", (key, value))
             conn.commit()
+
+    @staticmethod
+    def _normalize_item_name(value: Any) -> str:
+        return str(value or '').strip().casefold()
+
+    def get_clan_member_limit(self, level: int) -> int:
+        try:
+            lvl = max(1, int(level or 1))
+        except Exception:
+            lvl = 1
+        if lvl in CLAN_MEMBER_LIMITS:
+            return int(CLAN_MEMBER_LIMITS[lvl])
+        return int(CLAN_MEMBER_LIMITS[max(CLAN_MEMBER_LIMITS.keys())])
+
+    def get_active_ecological_disaster(self, location: str) -> Optional[Dict[str, Any]]:
+        """Вернуть активную эко-катастрофу на локации, если она есть."""
+        loc = str(location or '').strip()
+        if not loc:
+            return None
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE ecological_disasters
+                SET is_active = 0
+                WHERE is_active = 1 AND ends_at <= CURRENT_TIMESTAMP
+                '''
+            )
+            cursor.execute(
+                '''
+                SELECT id, location, reward_type, reward_multiplier, started_at, ends_at, is_active
+                FROM ecological_disasters
+                WHERE LOWER(TRIM(location)) = LOWER(TRIM(?))
+                  AND is_active = 1
+                  AND ends_at > CURRENT_TIMESTAMP
+                ORDER BY ends_at DESC
+                LIMIT 1
+                ''',
+                (loc,),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+
+        if not row:
+            return None
+
+        return {
+            'id': int(row[0]),
+            'location': row[1],
+            'reward_type': str(row[2] or 'xp'),
+            'reward_multiplier': int(row[3] or 5),
+            'started_at': row[4],
+            'ends_at': row[5],
+            'is_active': int(row[6] or 0),
+        }
+
+    def start_ecological_disaster(
+        self,
+        location: str,
+        reward_type: str = 'xp',
+        duration_minutes: int = 60,
+        reward_multiplier: int = 5,
+    ) -> Optional[Dict[str, Any]]:
+        """Запустить эко-катастрофу на локации."""
+        loc = str(location or '').strip()
+        if not loc:
+            return None
+
+        safe_reward_type = str(reward_type or 'xp').strip().lower()
+        if safe_reward_type not in ('xp', 'coins'):
+            safe_reward_type = 'xp'
+
+        safe_minutes = max(1, int(duration_minutes or 60))
+        safe_multiplier = max(2, int(reward_multiplier or 5))
+        now_dt = datetime.utcnow()
+        ends_dt = now_dt + timedelta(minutes=safe_minutes)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE ecological_disasters
+                SET is_active = 0
+                WHERE LOWER(TRIM(location)) = LOWER(TRIM(?))
+                  AND is_active = 1
+                ''',
+                (loc,),
+            )
+            cursor.execute(
+                '''
+                INSERT INTO ecological_disasters
+                    (location, reward_type, reward_multiplier, started_at, ends_at, is_active)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, 1)
+                RETURNING id, location, reward_type, reward_multiplier, started_at, ends_at, is_active
+                ''',
+                (loc, safe_reward_type, safe_multiplier, ends_dt.isoformat()),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+
+        if not row:
+            return None
+
+        return {
+            'id': int(row[0]),
+            'location': row[1],
+            'reward_type': str(row[2] or 'xp'),
+            'reward_multiplier': int(row[3] or safe_multiplier),
+            'started_at': row[4],
+            'ends_at': row[5],
+            'is_active': int(row[6] or 0),
+        }
+
+    def stop_ecological_disaster(self, location: str) -> bool:
+        loc = str(location or '').strip()
+        if not loc:
+            return False
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE ecological_disasters
+                SET is_active = 0
+                WHERE LOWER(TRIM(location)) = LOWER(TRIM(?))
+                  AND is_active = 1
+                ''',
+                (loc,),
+            )
+            changed = int(cursor.rowcount or 0)
+            conn.commit()
+        return changed > 0
+
+    def maybe_start_ecological_disaster(self, location: str) -> Optional[Dict[str, Any]]:
+        """С небольшим шансом запускает катастрофу (по умолчанию только в городском пруду)."""
+        loc = str(location or '').strip()
+        if self._normalize_item_name(loc) != self._normalize_item_name('Городской пруд'):
+            return None
+        if self.get_active_ecological_disaster(loc):
+            return None
+
+        # Примерно 1.5% шанс на запуск за попытку заброса.
+        if random.random() > 0.015:
+            return None
+
+        reward_type = 'xp' if random.random() < 0.5 else 'coins'
+        return self.start_ecological_disaster(
+            location=loc,
+            reward_type=reward_type,
+            duration_minutes=60,
+            reward_multiplier=5,
+        )
+
+    def set_daily_market_offer(
+        self,
+        fish_name: str,
+        multiplier: float = 2.0,
+        target_weight: float = 50.0,
+        market_day: Optional[str] = None,
+    ) -> bool:
+        """Установить рыбу дня на рынке."""
+        fish_value = str(fish_name or '').strip()
+        if not fish_value:
+            return False
+
+        day_key = str(market_day or datetime.utcnow().date().isoformat())
+        safe_multiplier = max(1.0, float(multiplier or 2.0))
+        safe_target_weight = max(1.0, float(target_weight or 50.0))
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO daily_fish_market (market_day, fish_name, multiplier, target_weight, sold_weight, created_at)
+                VALUES (?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
+                ON CONFLICT (market_day)
+                DO UPDATE SET
+                    fish_name = EXCLUDED.fish_name,
+                    multiplier = EXCLUDED.multiplier,
+                    target_weight = EXCLUDED.target_weight,
+                    sold_weight = 0,
+                    created_at = CURRENT_TIMESTAMP
+                ''',
+                (day_key, fish_value, safe_multiplier, safe_target_weight),
+            )
+            conn.commit()
+        return True
+
+    def get_today_market_offer(self, day_key: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Получить текущую акцию рыбного рынка."""
+        query_day = str(day_key or datetime.utcnow().date().isoformat())
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, market_day, fish_name, multiplier, target_weight, sold_weight, created_at
+                FROM daily_fish_market
+                WHERE market_day = ?
+                LIMIT 1
+                ''',
+                (query_day,),
+            )
+            row = cursor.fetchone()
+
+        if not row:
+            return None
+
+        target_weight = float(row[4] or 0.0)
+        sold_weight = float(row[5] or 0.0)
+        remaining = max(0.0, target_weight - sold_weight)
+
+        return {
+            'id': int(row[0]),
+            'market_day': str(row[1]),
+            'fish_name': str(row[2] or ''),
+            'multiplier': float(row[3] or 1.0),
+            'target_weight': target_weight,
+            'sold_weight': sold_weight,
+            'remaining_weight': remaining,
+            'active': remaining > 0.0,
+            'created_at': row[6],
+        }
+
+    def get_fish_price_modifiers(self, fish_name: str) -> Dict[str, Any]:
+        """Модификаторы цены: объем продаж за час, дефицит и рынок дня."""
+        name_value = str(fish_name or '').strip()
+        if not name_value:
+            return {
+                'sales_multiplier': 1.0,
+                'scarcity_multiplier': 1.0,
+                'market_multiplier': 1.0,
+                'total_multiplier': 1.0,
+                'sold_last_hour_weight': 0.0,
+                'hours_since_last_sale': None,
+                'market': None,
+            }
+
+        sold_last_hour_weight = 0.0
+        hours_since_last_sale = None
+        market_offer = self.get_today_market_offer()
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT COALESCE(SUM(weight), 0)
+                FROM fish_sales_history
+                WHERE LOWER(TRIM(fish_name)) = LOWER(TRIM(?))
+                  AND sold_at >= (CURRENT_TIMESTAMP - INTERVAL '1 hour')
+                ''',
+                (name_value,),
+            )
+            row = cursor.fetchone()
+            sold_last_hour_weight = float((row[0] if row else 0.0) or 0.0)
+
+            cursor.execute(
+                '''
+                SELECT sold_at
+                FROM fish_sales_history
+                WHERE LOWER(TRIM(fish_name)) = LOWER(TRIM(?))
+                ORDER BY sold_at DESC
+                LIMIT 1
+                ''',
+                (name_value,),
+            )
+            last_sale_row = cursor.fetchone()
+
+        if last_sale_row and last_sale_row[0]:
+            last_sale_dt = self._parse_utc_datetime(last_sale_row[0])
+            if last_sale_dt is not None:
+                now_utc = datetime.now(timezone.utc)
+                hours_since_last_sale = max(0.0, (now_utc - last_sale_dt).total_seconds() / 3600.0)
+
+        if sold_last_hour_weight >= 120.0:
+            sales_multiplier = 0.75
+        elif sold_last_hour_weight >= 70.0:
+            sales_multiplier = 0.85
+        elif sold_last_hour_weight >= 35.0:
+            sales_multiplier = 0.93
+        else:
+            sales_multiplier = 1.0
+
+        if hours_since_last_sale is None:
+            scarcity_multiplier = 1.35
+        elif hours_since_last_sale >= 12.0:
+            scarcity_multiplier = 1.35
+        elif hours_since_last_sale >= 6.0:
+            scarcity_multiplier = 1.20
+        elif hours_since_last_sale >= 3.0:
+            scarcity_multiplier = 1.10
+        else:
+            scarcity_multiplier = 1.0
+
+        market_multiplier = 1.0
+        if market_offer and market_offer.get('active'):
+            if self._normalize_item_name(market_offer.get('fish_name')) == self._normalize_item_name(name_value):
+                market_multiplier = float(market_offer.get('multiplier') or 1.0)
+
+        total_multiplier = sales_multiplier * scarcity_multiplier * market_multiplier
+        total_multiplier = max(0.45, min(3.0, total_multiplier))
+
+        return {
+            'sales_multiplier': sales_multiplier,
+            'scarcity_multiplier': scarcity_multiplier,
+            'market_multiplier': market_multiplier,
+            'total_multiplier': total_multiplier,
+            'sold_last_hour_weight': sold_last_hour_weight,
+            'hours_since_last_sale': hours_since_last_sale,
+            'market': market_offer,
+        }
+
+    def get_clan_by_user(self, user_id: int) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT c.id, c.name, c.owner_user_id, c.level, c.created_at, cm.role
+                FROM clan_members cm
+                JOIN clans c ON c.id = cm.clan_id
+                WHERE cm.user_id = ?
+                LIMIT 1
+                ''',
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            'id': int(row[0]),
+            'name': str(row[1] or ''),
+            'owner_user_id': int(row[2] or 0),
+            'level': int(row[3] or 1),
+            'created_at': row[4],
+            'role': str(row[5] or 'member'),
+        }
+
+    def list_clan_members(self, clan_id: int) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT cm.user_id, cm.role, cm.joined_at, COALESCE(MAX(p.username), '') AS username
+                FROM clan_members cm
+                LEFT JOIN players p ON p.user_id = cm.user_id
+                WHERE cm.clan_id = ?
+                GROUP BY cm.user_id, cm.role, cm.joined_at
+                ORDER BY cm.role DESC, cm.joined_at ASC
+                ''',
+                (int(clan_id),),
+            )
+            rows = cursor.fetchall() or []
+
+        result: List[Dict[str, Any]] = []
+        for row in rows:
+            result.append(
+                {
+                    'user_id': int(row[0] or 0),
+                    'role': str(row[1] or 'member'),
+                    'joined_at': row[2],
+                    'username': str(row[3] or '') or f"id{int(row[0] or 0)}",
+                }
+            )
+        return result
+
+    def get_clan_donations(self, clan_id: int) -> Dict[str, int]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT item_name, quantity
+                FROM clan_donations
+                WHERE clan_id = ?
+                ''',
+                (int(clan_id),),
+            )
+            rows = cursor.fetchall() or []
+
+        result: Dict[str, int] = {}
+        for item_name, quantity in rows:
+            result[str(item_name or '')] = int(quantity or 0)
+        return result
+
+    def get_clan_info(self, clan_id: int) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, name, owner_user_id, level, created_at
+                FROM clans
+                WHERE id = ?
+                LIMIT 1
+                ''',
+                (int(clan_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            clan_level = int(row[3] or 1)
+            cursor.execute('SELECT COUNT(*) FROM clan_members WHERE clan_id = ?', (int(clan_id),))
+            member_count_row = cursor.fetchone()
+            member_count = int(member_count_row[0] or 0) if member_count_row else 0
+
+        return {
+            'id': int(row[0]),
+            'name': str(row[1] or ''),
+            'owner_user_id': int(row[2] or 0),
+            'level': clan_level,
+            'created_at': row[4],
+            'member_count': member_count,
+            'max_members': self.get_clan_member_limit(clan_level),
+            'donations': self.get_clan_donations(int(row[0])),
+        }
+
+    def create_clan(self, owner_user_id: int, name: str) -> Dict[str, Any]:
+        clan_name = str(name or '').strip()
+        if len(clan_name) < 3:
+            return {'ok': False, 'reason': 'name_too_short'}
+
+        if self.get_clan_by_user(owner_user_id):
+            return {'ok': False, 'reason': 'already_in_clan'}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    '''
+                    INSERT INTO clans (name, owner_user_id, level, created_at)
+                    VALUES (?, ?, 1, CURRENT_TIMESTAMP)
+                    RETURNING id, name, owner_user_id, level, created_at
+                    ''',
+                    (clan_name, int(owner_user_id)),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    conn.rollback()
+                    return {'ok': False, 'reason': 'insert_failed'}
+
+                clan_id = int(row[0])
+                cursor.execute(
+                    '''
+                    INSERT INTO clan_members (clan_id, user_id, role, joined_at)
+                    VALUES (?, ?, 'leader', CURRENT_TIMESTAMP)
+                    ''',
+                    (clan_id, int(owner_user_id)),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                return {'ok': False, 'reason': 'name_taken'}
+
+        return {
+            'ok': True,
+            'clan': {
+                'id': clan_id,
+                'name': str(row[1] or ''),
+                'owner_user_id': int(row[2] or 0),
+                'level': int(row[3] or 1),
+                'created_at': row[4],
+                'member_count': 1,
+                'max_members': self.get_clan_member_limit(1),
+            },
+        }
+
+    def join_clan(self, user_id: int, clan_name: str) -> Dict[str, Any]:
+        if self.get_clan_by_user(user_id):
+            return {'ok': False, 'reason': 'already_in_clan'}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, level
+                FROM clans
+                WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+                LIMIT 1
+                ''',
+                (str(clan_name or '').strip(),),
+            )
+            clan_row = cursor.fetchone()
+            if not clan_row:
+                return {'ok': False, 'reason': 'clan_not_found'}
+
+            clan_id = int(clan_row[0])
+            level = int(clan_row[1] or 1)
+            max_members = self.get_clan_member_limit(level)
+
+            cursor.execute('SELECT COUNT(*) FROM clan_members WHERE clan_id = ?', (clan_id,))
+            count_row = cursor.fetchone()
+            member_count = int(count_row[0] or 0) if count_row else 0
+            if member_count >= max_members:
+                return {'ok': False, 'reason': 'clan_full', 'max_members': max_members}
+
+            try:
+                cursor.execute(
+                    '''
+                    INSERT INTO clan_members (clan_id, user_id, role, joined_at)
+                    VALUES (?, ?, 'member', CURRENT_TIMESTAMP)
+                    ''',
+                    (clan_id, int(user_id)),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                return {'ok': False, 'reason': 'already_in_clan'}
+
+        return {'ok': True, 'clan_id': clan_id}
+
+    def get_clan_upgrade_requirements(self, next_level: int) -> Dict[str, int]:
+        return {
+            item_name: int(qty)
+            for item_name, qty in (CLAN_UPGRADE_REQUIREMENTS.get(int(next_level), {}) or {}).items()
+        }
+
+    def upgrade_clan(self, user_id: int) -> Dict[str, Any]:
+        clan = self.get_clan_by_user(user_id)
+        if not clan:
+            return {'ok': False, 'reason': 'not_in_clan'}
+        if str(clan.get('role') or 'member') != 'leader':
+            return {'ok': False, 'reason': 'not_leader'}
+
+        current_level = int(clan.get('level') or 1)
+        next_level = current_level + 1
+        requirements = self.get_clan_upgrade_requirements(next_level)
+        if not requirements:
+            return {'ok': False, 'reason': 'max_level'}
+
+        donations = self.get_clan_donations(int(clan['id']))
+        missing: Dict[str, int] = {}
+        for item_name, required_qty in requirements.items():
+            available_qty = int(donations.get(item_name, 0) or 0)
+            if available_qty < required_qty:
+                missing[item_name] = required_qty - available_qty
+        if missing:
+            return {'ok': False, 'reason': 'not_enough_donations', 'missing': missing, 'required': requirements}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            for item_name, required_qty in requirements.items():
+                cursor.execute(
+                    '''
+                    UPDATE clan_donations
+                    SET quantity = GREATEST(0, quantity - ?), updated_at = CURRENT_TIMESTAMP
+                    WHERE clan_id = ? AND item_name = ?
+                    ''',
+                    (int(required_qty), int(clan['id']), item_name),
+                )
+
+            cursor.execute(
+                '''
+                UPDATE clans
+                SET level = ?
+                WHERE id = ?
+                ''',
+                (next_level, int(clan['id'])),
+            )
+            conn.commit()
+
+        return {
+            'ok': True,
+            'new_level': next_level,
+            'max_members': self.get_clan_member_limit(next_level),
+            'spent': requirements,
+        }
 
     def get_location_fish_leaderboard_weight(self, location_name: str, fish_name: str, starts_at: datetime, ends_at: datetime, limit: int = 10) -> list:
         """Топ по суммарному весу определённой рыбы на локации."""
@@ -1026,6 +1608,206 @@ class Database:
             ''')
             conn.commit()
 
+    def _ensure_extended_gameplay_tables(self):
+        """Создать таблицы расширенных механик: экология, рынок, артели."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ecological_disasters (
+                    id SERIAL PRIMARY KEY,
+                    location TEXT NOT NULL,
+                    reward_type TEXT NOT NULL DEFAULT 'xp',
+                    reward_multiplier INTEGER NOT NULL DEFAULT 5,
+                    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    ends_at TIMESTAMP NOT NULL,
+                    is_active INTEGER DEFAULT 1
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_ecological_disasters_active
+                ON ecological_disasters (location, is_active, ends_at)
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS fish_sales_history (
+                    id SERIAL PRIMARY KEY,
+                    fish_name TEXT NOT NULL,
+                    weight REAL NOT NULL DEFAULT 0,
+                    sold_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_fish_sales_history_name_sold_at
+                ON fish_sales_history (fish_name, sold_at)
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS daily_fish_market (
+                    id SERIAL PRIMARY KEY,
+                    market_day DATE NOT NULL UNIQUE,
+                    fish_name TEXT NOT NULL,
+                    multiplier REAL NOT NULL DEFAULT 2.0,
+                    target_weight REAL NOT NULL DEFAULT 50.0,
+                    sold_weight REAL NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_daily_fish_market_day
+                ON daily_fish_market (market_day)
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS clans (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    owner_user_id BIGINT NOT NULL,
+                    level INTEGER NOT NULL DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS clan_members (
+                    id SERIAL PRIMARY KEY,
+                    clan_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL UNIQUE,
+                    role TEXT NOT NULL DEFAULT 'member',
+                    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_clan_members_clan
+                ON clan_members (clan_id)
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS clan_donations (
+                    id SERIAL PRIMARY KEY,
+                    clan_id BIGINT NOT NULL,
+                    item_name TEXT NOT NULL,
+                    quantity INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(clan_id, item_name)
+                )
+            ''')
+            conn.commit()
+
+    def _ensure_webapp_ui_tables(self):
+        """Создать таблицы для UI-разделов webapp (приключения/друзья/состояние)."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS webapp_adventure_scores (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    game_code TEXT NOT NULL,
+                    best_score INTEGER NOT NULL DEFAULT 0,
+                    best_distance REAL NOT NULL DEFAULT 0,
+                    runs_count INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, game_code)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_webapp_adventure_game_score
+                ON webapp_adventure_scores (game_code, best_score DESC)
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS webapp_friend_links (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    friend_user_id BIGINT NOT NULL,
+                    note TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, friend_user_id)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_webapp_friend_links_user
+                ON webapp_friend_links (user_id)
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS webapp_ui_state (
+                    user_id BIGINT PRIMARY KEY,
+                    preferred_tab TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS webapp_clan_profiles (
+                    clan_id BIGINT PRIMARY KEY,
+                    avatar_emoji TEXT,
+                    color_hex TEXT,
+                    access_type TEXT,
+                    description TEXT,
+                    min_level INTEGER DEFAULT 0,
+                    created_by BIGINT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_webapp_clan_profiles_color
+                ON webapp_clan_profiles (color_hex)
+            ''')
+            conn.commit()
+
+    def get_webapp_clan(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Получить информацию об артели (клане) пользователя."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT clan_id FROM clan_members WHERE user_id = ?', (user_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            clan_id = row[0]
+            cursor.execute('''
+                SELECT 
+                    c.id, c.name, c.level, c.owner_user_id,
+                    cp.avatar_emoji, cp.color_hex, cp.description, cp.min_level
+                FROM clans c
+                LEFT JOIN webapp_clan_profiles cp ON c.id = cp.clan_id
+                WHERE c.id = ?
+            ''', (clan_id,))
+            
+            clan_row = cursor.fetchone()
+            if not clan_row:
+                return None
+            
+            cursor.execute('''
+                SELECT p.user_id, p.username, p.level, cm.role
+                FROM clan_members cm
+                JOIN players p ON cm.user_id = p.user_id
+                WHERE cm.clan_id = ?
+                ORDER BY CASE cm.role WHEN 'owner' THEN 1 WHEN 'officer' THEN 2 ELSE 3 END, p.level DESC
+            ''', (clan_id,))
+            
+            members = []
+            for m in cursor.fetchall():
+                members.append({
+                    "user_id": m[0],
+                    "username": m[1],
+                    "level": m[2],
+                    "role": m[3]
+                })
+                
+            return {
+                "id": clan_row[0],
+                "name": clan_row[1],
+                "level": clan_row[2],
+                "owner_id": clan_row[3],
+                "avatar": clan_row[4] or "🔱",
+                "color": clan_row[5] or "#00b4d8",
+                "description": clan_row[6] or "",
+                "min_level": clan_row[7] or 0,
+                "members": members
+            }
+
     def _parse_utc_datetime(self, raw_value: Any) -> Optional[datetime]:
         """Безопасно распарсить datetime и привести к UTC."""
         if raw_value is None or raw_value == "":
@@ -1050,6 +1832,617 @@ class Database:
         else:
             dt_val = dt_val.astimezone(timezone.utc)
         return dt_val.isoformat()
+
+    @staticmethod
+    def _normalize_item_name(value: Any) -> str:
+        return str(value or '').strip().lower()
+
+    def get_clan_member_limit(self, level: int) -> int:
+        lvl = max(1, int(level or 1))
+        if lvl in CLAN_MEMBER_LIMITS:
+            return int(CLAN_MEMBER_LIMITS[lvl])
+        return int(CLAN_MEMBER_LIMITS[max(CLAN_MEMBER_LIMITS.keys())])
+
+    def get_clan_upgrade_requirements(self, next_level: int) -> Dict[str, int]:
+        requirements = CLAN_UPGRADE_REQUIREMENTS.get(int(next_level or 0), {})
+        return {str(k): int(v) for k, v in requirements.items()}
+
+    def get_active_ecological_disaster(self, location: str) -> Optional[Dict[str, Any]]:
+        now_iso = datetime.utcnow().isoformat()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE ecological_disasters
+                SET is_active = 0
+                WHERE is_active = 1 AND ends_at <= ?
+                ''',
+                (now_iso,),
+            )
+            cursor.execute(
+                '''
+                SELECT id, location, reward_type, reward_multiplier, started_at, ends_at, is_active
+                FROM ecological_disasters
+                WHERE location = ? AND is_active = 1 AND ends_at > ?
+                ORDER BY started_at DESC
+                LIMIT 1
+                ''',
+                (location, now_iso),
+            )
+            row = cursor.fetchone()
+            if not row:
+                conn.commit()
+                return None
+
+            columns = [d[0] for d in cursor.description]
+            conn.commit()
+            return dict(zip(columns, row))
+
+    def start_ecological_disaster(
+        self,
+        location: str,
+        reward_type: str = 'xp',
+        reward_multiplier: int = 5,
+        duration_minutes: int = 60,
+    ) -> Dict[str, Any]:
+        normalized_type = 'coins' if str(reward_type).strip().lower() in ('coins', 'coin', 'money') else 'xp'
+        multiplier = max(2, int(reward_multiplier or 5))
+        duration = max(5, int(duration_minutes or 60))
+        now = datetime.utcnow()
+        ends_at = now + timedelta(minutes=duration)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE ecological_disasters
+                SET is_active = 0
+                WHERE location = ? AND is_active = 1
+                ''',
+                (location,),
+            )
+            cursor.execute(
+                '''
+                INSERT INTO ecological_disasters (
+                    location, reward_type, reward_multiplier, started_at, ends_at, is_active
+                )
+                VALUES (?, ?, ?, ?, ?, 1)
+                RETURNING id, location, reward_type, reward_multiplier, started_at, ends_at, is_active
+                ''',
+                (location, normalized_type, multiplier, now.isoformat(), ends_at.isoformat()),
+            )
+            row = cursor.fetchone()
+            columns = [d[0] for d in cursor.description] if cursor.description else []
+            conn.commit()
+            return dict(zip(columns, row)) if row else {}
+
+    def stop_ecological_disaster(self, location: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE ecological_disasters
+                SET is_active = 0
+                WHERE location = ? AND is_active = 1
+                ''',
+                (location,),
+            )
+            changed = int(getattr(cursor, 'rowcount', 0) or 0)
+            conn.commit()
+            return changed > 0
+
+    def maybe_start_ecological_disaster(self, location: str, chance: float = 0.03) -> Optional[Dict[str, Any]]:
+        if self._normalize_item_name(location) != self._normalize_item_name('Городской пруд'):
+            return None
+
+        active = self.get_active_ecological_disaster(location)
+        if active:
+            return active
+
+        if random.random() > max(0.0, min(1.0, float(chance or 0.0))):
+            return None
+
+        reward_type = random.choice(['xp', 'coins'])
+        return self.start_ecological_disaster(
+            location=location,
+            reward_type=reward_type,
+            reward_multiplier=5,
+            duration_minutes=60,
+        )
+
+    def _pick_daily_market_fish(self) -> Optional[str]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT name
+                FROM fish
+                WHERE rarity IN ('Обычная', 'Редкая', 'Легендарная', 'Мифическая', 'Аквариумная')
+                ORDER BY RANDOM()
+                LIMIT 1
+                '''
+            )
+            row = cursor.fetchone()
+            return str(row[0]) if row and row[0] else None
+
+    def get_daily_market_offer(self, create_if_missing: bool = True) -> Optional[Dict[str, Any]]:
+        day_key = datetime.utcnow().date().isoformat()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, market_day, fish_name, multiplier, target_weight, sold_weight, created_at
+                FROM daily_fish_market
+                WHERE market_day = ?
+                LIMIT 1
+                ''',
+                (day_key,),
+            )
+            row = cursor.fetchone()
+            if row:
+                columns = [d[0] for d in cursor.description]
+                return dict(zip(columns, row))
+
+            if not create_if_missing:
+                return None
+
+            fish_name = self._pick_daily_market_fish()
+            if not fish_name:
+                return None
+
+            cursor.execute(
+                '''
+                INSERT INTO daily_fish_market (market_day, fish_name, multiplier, target_weight, sold_weight)
+                VALUES (?, ?, 2.0, 50.0, 0)
+                RETURNING id, market_day, fish_name, multiplier, target_weight, sold_weight, created_at
+                ''',
+                (day_key, fish_name),
+            )
+            created = cursor.fetchone()
+            columns = [d[0] for d in cursor.description] if cursor.description else []
+            conn.commit()
+            return dict(zip(columns, created)) if created else None
+
+    def get_daily_market_status(self) -> Dict[str, Any]:
+        offer = self.get_daily_market_offer(create_if_missing=True)
+        if not offer:
+            return {
+                'active': False,
+                'fish_name': None,
+                'multiplier': 1.0,
+                'target_weight': 0.0,
+                'sold_weight': 0.0,
+                'remaining_weight': 0.0,
+            }
+
+        sold_weight = max(0.0, float(offer.get('sold_weight') or 0.0))
+        target_weight = max(0.0, float(offer.get('target_weight') or 0.0))
+        remaining_weight = max(0.0, target_weight - sold_weight)
+
+        return {
+            'active': True,
+            'id': offer.get('id'),
+            'market_day': offer.get('market_day'),
+            'fish_name': offer.get('fish_name'),
+            'multiplier': float(offer.get('multiplier') or 1.0),
+            'target_weight': target_weight,
+            'sold_weight': sold_weight,
+            'remaining_weight': remaining_weight,
+            'is_open': remaining_weight > 0,
+        }
+
+    def get_recent_fish_sales_weight(self, fish_name: str, hours: int = 1) -> float:
+        normalized_name = self._normalize_item_name(fish_name)
+        if not normalized_name:
+            return 0.0
+
+        window_hours = max(1, int(hours or 1))
+        since_iso = (datetime.utcnow() - timedelta(hours=window_hours)).isoformat()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT COALESCE(SUM(weight), 0)
+                FROM fish_sales_history
+                WHERE LOWER(TRIM(fish_name)) = ? AND sold_at >= ?
+                ''',
+                (normalized_name, since_iso),
+            )
+            row = cursor.fetchone()
+            return float(row[0] or 0.0) if row else 0.0
+
+    def get_hours_since_last_sale(self, fish_name: str) -> Optional[float]:
+        normalized_name = self._normalize_item_name(fish_name)
+        if not normalized_name:
+            return None
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT sold_at
+                FROM fish_sales_history
+                WHERE LOWER(TRIM(fish_name)) = ?
+                ORDER BY sold_at DESC
+                LIMIT 1
+                ''',
+                (normalized_name,),
+            )
+            row = cursor.fetchone()
+            if not row or not row[0]:
+                return None
+
+            last_sale = self._parse_utc_datetime(row[0])
+            if not last_sale:
+                return None
+            return max(0.0, (datetime.now(timezone.utc) - last_sale).total_seconds() / 3600.0)
+
+    def get_fish_price_modifiers(self, fish_name: str) -> Dict[str, Any]:
+        normalized_name = self._normalize_item_name(fish_name)
+        if not normalized_name:
+            return {
+                'volume_multiplier': 1.0,
+                'scarcity_multiplier': 1.0,
+                'dynamic_multiplier': 1.0,
+                'market_multiplier': 1.0,
+                'total_multiplier': 1.0,
+                'hour_volume': 0.0,
+                'hours_since_last_sale': None,
+                'market_active': False,
+            }
+
+        hour_volume = self.get_recent_fish_sales_weight(normalized_name, hours=1)
+        # Динамика лавки: при массовых продажах цена падает ступенчато.
+        # В пике просадка может доходить до x0.6.
+        if hour_volume >= 260.0:
+            volume_multiplier = 0.60
+        elif hour_volume >= 200.0:
+            volume_multiplier = 0.68
+        elif hour_volume >= 150.0:
+            volume_multiplier = 0.76
+        elif hour_volume >= 110.0:
+            volume_multiplier = 0.84
+        elif hour_volume >= 80.0:
+            volume_multiplier = 0.90
+        elif hour_volume >= 40.0:
+            volume_multiplier = 0.95
+        elif hour_volume >= 20.0:
+            volume_multiplier = 0.98
+        else:
+            volume_multiplier = 1.0
+
+        hours_since_last_sale = self.get_hours_since_last_sale(normalized_name)
+        if hours_since_last_sale is None:
+            scarcity_multiplier = 1.08
+        elif hours_since_last_sale >= 24:
+            scarcity_multiplier = 1.15
+        elif hours_since_last_sale >= 12:
+            scarcity_multiplier = 1.12
+        elif hours_since_last_sale >= 6:
+            scarcity_multiplier = 1.08
+        elif hours_since_last_sale >= 3:
+            scarcity_multiplier = 1.04
+        else:
+            scarcity_multiplier = 1.0
+
+        dynamic_multiplier = volume_multiplier * scarcity_multiplier
+        dynamic_multiplier = max(0.60, min(1.20, dynamic_multiplier))
+
+        market_offer = self.get_daily_market_offer(create_if_missing=True)
+        market_multiplier = 1.0
+        market_active = False
+        if market_offer:
+            market_fish = self._normalize_item_name(market_offer.get('fish_name'))
+            sold_weight = float(market_offer.get('sold_weight') or 0.0)
+            target_weight = float(market_offer.get('target_weight') or 0.0)
+            if market_fish == normalized_name and sold_weight < target_weight:
+                market_active = True
+                market_multiplier = max(1.0, float(market_offer.get('multiplier') or 1.0))
+
+        total_multiplier = dynamic_multiplier * market_multiplier
+        total_multiplier = max(0.6, min(3.0, total_multiplier))
+
+        return {
+            'volume_multiplier': volume_multiplier,
+            'scarcity_multiplier': scarcity_multiplier,
+            'dynamic_multiplier': dynamic_multiplier,
+            'market_multiplier': market_multiplier,
+            'total_multiplier': total_multiplier,
+            'hour_volume': hour_volume,
+            'hours_since_last_sale': hours_since_last_sale,
+            'market_active': market_active,
+        }
+
+    def get_clan_by_user(self, user_id: int) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT c.id, c.name, c.owner_user_id, c.level, c.created_at, cm.role,
+                       (SELECT COUNT(*) FROM clan_members m WHERE m.clan_id = c.id) AS members_count
+                FROM clan_members cm
+                JOIN clans c ON c.id = cm.clan_id
+                WHERE cm.user_id = ?
+                LIMIT 1
+                ''',
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            columns = [d[0] for d in cursor.description]
+            clan = dict(zip(columns, row))
+            clan['max_members'] = self.get_clan_member_limit(int(clan.get('level') or 1))
+            return clan
+
+    def get_clan_by_id(self, clan_id: int) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT c.id, c.name, c.owner_user_id, c.level, c.created_at,
+                       (SELECT COUNT(*) FROM clan_members m WHERE m.clan_id = c.id) AS members_count
+                FROM clans c
+                WHERE c.id = ?
+                LIMIT 1
+                ''',
+                (int(clan_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            columns = [d[0] for d in cursor.description]
+            clan = dict(zip(columns, row))
+            clan['max_members'] = self.get_clan_member_limit(int(clan.get('level') or 1))
+            return clan
+
+    def list_clans(self, limit: int = 10) -> List[Dict[str, Any]]:
+        limit_val = max(1, min(50, int(limit or 10)))
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT c.id, c.name, c.owner_user_id, c.level, c.created_at,
+                       (SELECT COUNT(*) FROM clan_members m WHERE m.clan_id = c.id) AS members_count
+                FROM clans c
+                ORDER BY c.level DESC, c.created_at ASC
+                LIMIT ?
+                ''',
+                (limit_val,),
+            )
+            rows = cursor.fetchall() or []
+            columns = [d[0] for d in cursor.description] if cursor.description else []
+            result = [dict(zip(columns, row)) for row in rows]
+            for clan in result:
+                clan['max_members'] = self.get_clan_member_limit(int(clan.get('level') or 1))
+            return result
+
+    def get_clan_donations(self, clan_id: int) -> Dict[str, int]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT item_name, quantity
+                FROM clan_donations
+                WHERE clan_id = ?
+                ''',
+                (int(clan_id),),
+            )
+            rows = cursor.fetchall() or []
+            result: Dict[str, int] = {}
+            for item_name, quantity in rows:
+                result[str(item_name)] = int(quantity or 0)
+            return result
+
+    def create_clan(self, owner_user_id: int, clan_name: str) -> Dict[str, Any]:
+        clean_name = str(clan_name or '').strip()
+        if len(clean_name) < 3:
+            return {'ok': False, 'reason': 'name_too_short'}
+        if len(clean_name) > 32:
+            return {'ok': False, 'reason': 'name_too_long'}
+
+        if self.get_clan_by_user(owner_user_id):
+            return {'ok': False, 'reason': 'already_in_clan'}
+
+        cost = 100000
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            # Check balance
+            cursor.execute('SELECT coins FROM players WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) LIMIT 1', (owner_user_id,))
+            row = cursor.fetchone()
+            if not row:
+                # Fallback to any row
+                cursor.execute('SELECT coins FROM players WHERE user_id = ? LIMIT 1', (owner_user_id,))
+                row = cursor.fetchone()
+            
+            if not row or int(row[0] or 0) < cost:
+                return {'ok': False, 'reason': 'not_enough_coins', 'cost': cost}
+
+            cursor.execute('SELECT id FROM clans WHERE LOWER(TRIM(name)) = ?', (self._normalize_item_name(clean_name),))
+            if cursor.fetchone():
+                return {'ok': False, 'reason': 'name_taken'}
+
+            # Deduct coins
+            cursor.execute('UPDATE players SET coins = coins - ? WHERE user_id = ?', (cost, int(owner_user_id)))
+
+            cursor.execute(
+                '''
+                INSERT INTO clans (name, owner_user_id, level)
+                VALUES (?, ?, 1)
+                RETURNING id, name, owner_user_id, level, created_at
+                ''',
+                (clean_name, int(owner_user_id)),
+            )
+            clan_row = cursor.fetchone()
+            if not clan_row:
+                conn.rollback()
+                return {'ok': False, 'reason': 'create_failed'}
+
+            clan_id = int(clan_row[0])
+            cursor.execute(
+                '''
+                INSERT INTO clan_members (clan_id, user_id, role)
+                VALUES (?, ?, 'leader')
+                ''',
+                (clan_id, int(owner_user_id)),
+            )
+            conn.commit()
+
+        clan = self.get_clan_by_id(clan_id)
+        return {'ok': True, 'clan': clan}
+
+    def join_clan(self, user_id: int, clan_id: Any) -> Dict[str, Any]:
+        if self.get_clan_by_user(user_id):
+            return {'ok': False, 'reason': 'already_in_clan'}
+
+        resolved_clan_id: Optional[int] = None
+        raw_value = str(clan_id or '').strip()
+        if not raw_value:
+            return {'ok': False, 'reason': 'clan_not_found'}
+
+        if raw_value.isdigit():
+            resolved_clan_id = int(raw_value)
+        else:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT id
+                    FROM clans
+                    WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+                    LIMIT 1
+                    ''',
+                    (raw_value,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    resolved_clan_id = int(row[0])
+
+        if not resolved_clan_id:
+            return {'ok': False, 'reason': 'clan_not_found'}
+
+        clan = self.get_clan_by_id(resolved_clan_id)
+        if not clan:
+            return {'ok': False, 'reason': 'clan_not_found'}
+
+        members_count = int(clan.get('members_count') or 0)
+        max_members = int(clan.get('max_members') or self.get_clan_member_limit(int(clan.get('level') or 1)))
+        if members_count >= max_members:
+            return {'ok': False, 'reason': 'clan_full'}
+
+        # Check min_level from webapp profile
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT min_level, access_type FROM webapp_clan_profiles WHERE clan_id = ?', (int(resolved_clan_id),))
+            profile_row = cursor.fetchone()
+            if profile_row:
+                min_level = int(profile_row[0] or 0)
+                access_type = str(profile_row[1] or 'open')
+                
+                # Check level
+                cursor.execute('SELECT level FROM players WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) LIMIT 1', (user_id,))
+                user_row = cursor.fetchone()
+                if not user_row:
+                     cursor.execute('SELECT level FROM players WHERE user_id = ? LIMIT 1', (user_id,))
+                     user_row = cursor.fetchone()
+                
+                user_level = int(user_row[0] or 0) if user_row else 0
+                if user_level < min_level:
+                    return {'ok': False, 'reason': 'level_too_low', 'required': min_level}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO clan_members (clan_id, user_id, role)
+                VALUES (?, ?, 'member')
+                ''',
+                (int(resolved_clan_id), int(user_id)),
+            )
+            conn.commit()
+
+        return {'ok': True, 'clan': self.get_clan_by_id(resolved_clan_id)}
+
+    def leave_clan(self, user_id: int) -> Dict[str, Any]:
+        clan = self.get_clan_by_user(user_id)
+        if not clan:
+            return {'ok': False, 'reason': 'not_in_clan'}
+
+        clan_id = int(clan['id'])
+        is_leader = str(clan.get('role') or '') == 'leader'
+        
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            
+            if is_leader:
+                # Find new leader
+                cursor.execute('''
+                    SELECT user_id 
+                    FROM clan_members 
+                     WHERE clan_id = ? AND user_id != ?
+                     ORDER BY CASE role WHEN 'officer' THEN 1 ELSE 2 END, joined_at ASC
+                     LIMIT 1
+                ''', (clan_id, int(user_id)))
+                new_leader_row = cursor.fetchone()
+                
+                if new_leader_row:
+                    new_leader_id = int(new_leader_row[0])
+                    # Transfer leadership
+                    cursor.execute('UPDATE clan_members SET role = "leader" WHERE user_id = ? AND clan_id = ?', (new_leader_id, clan_id))
+                    cursor.execute('UPDATE clans SET owner_user_id = ? WHERE id = ?', (new_leader_id, clan_id))
+                else:
+                    # No other members, but user said "она остается"
+                    # However, we still need to remove the current leader from clan_members
+                    # If we don't delete the clan, it will have 0 members and no owner.
+                    # We'll just leave the clan record in 'clans' but it will be empty.
+                    pass
+            
+            cursor.execute('DELETE FROM clan_members WHERE user_id = ? AND clan_id = ?', (int(user_id), clan_id))
+            conn.commit()
+
+        return {'ok': True, 'disbanded': False}
+
+    def upgrade_clan(self, user_id: int) -> Dict[str, Any]:
+        clan = self.get_clan_by_user(user_id)
+        if not clan:
+            return {'ok': False, 'reason': 'not_in_clan'}
+        if str(clan.get('role') or '') != 'leader':
+            return {'ok': False, 'reason': 'leader_only'}
+
+        clan_id = int(clan['id'])
+        current_level = int(clan.get('level') or 1)
+        next_level = current_level + 1
+        requirements = self.get_clan_upgrade_requirements(next_level)
+        if not requirements:
+            return {'ok': False, 'reason': 'max_level'}
+
+        donations = self.get_clan_donations(clan_id)
+        missing: Dict[str, int] = {}
+        for item_name, required_qty in requirements.items():
+            have_qty = int(donations.get(item_name, 0) or 0)
+            if have_qty < required_qty:
+                missing[item_name] = required_qty - have_qty
+
+        if missing:
+            return {'ok': False, 'reason': 'not_enough_resources', 'missing': missing, 'requirements': requirements}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            for item_name, required_qty in requirements.items():
+                cursor.execute(
+                    '''
+                    UPDATE clan_donations
+                    SET quantity = CASE WHEN quantity - ? > 0 THEN quantity - ? ELSE 0 END,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE clan_id = ? AND item_name = ?
+                    ''',
+                    (required_qty, required_qty, clan_id, item_name),
+                )
+
+            cursor.execute('UPDATE clans SET level = ? WHERE id = ?', (next_level, clan_id))
+            conn.commit()
+
+        return {'ok': True, 'clan': self.get_clan_by_id(clan_id), 'requirements': requirements}
 
     @staticmethod
     def _normalize_captcha_answer(value: str) -> str:
@@ -3601,6 +4994,8 @@ class Database:
             self._ensure_user_effects_table()
             self._ensure_antibot_captcha_table()
             self._ensure_duel_tables()
+            self._ensure_extended_gameplay_tables()
+            self._ensure_webapp_ui_tables()
 
             conn.commit()
         
@@ -5234,11 +6629,22 @@ class Database:
                 "add_caught_fish SAVED IN DB: id=%s user_id=%s chat_id=%s fish=%s weight=%s length=%s location=%s caught_at=%s",
                 saved[0], saved[1], saved[2], saved[3], saved[4], saved[5], saved[6], saved[7]
             )
+            return {
+                'id': saved[0],
+                'user_id': saved[1],
+                'chat_id': saved[2],
+                'fish_name': saved[3],
+                'weight': saved[4],
+                'length': saved[5],
+                'location': saved[6],
+                'caught_at': saved[7],
+            }
         else:
             logger.warning(
                 "add_caught_fish: INSERT returned no row — possible constraint violation. user_id=%s chat_id=%s fish=%s",
                 user_id, chat_id_to_store, normalized_name
             )
+            return None
 
     def add_caught_fish_owner_manual(
         self,
@@ -5671,9 +7077,23 @@ class Database:
         with self._connect() as conn:
             cursor = conn.cursor()
             total_updated = 0
+            sales_to_record: List[Dict[str, Any]] = []
             for i in range(0, len(fish_ids), chunk_size):
                 chunk = fish_ids[i:i + chunk_size]
                 placeholders = ','.join('?' * len(chunk))
+
+                # Для динамических цен учитываем только реальную рыбу (не мусор).
+                cursor.execute(
+                    f'''
+                    SELECT cf.fish_name, COALESCE(cf.weight, 0)
+                    FROM caught_fish cf
+                    JOIN fish f ON LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(f.name))
+                    WHERE cf.id IN ({placeholders}) AND COALESCE(cf.sold, 0) = 0
+                    ''',
+                    chunk,
+                )
+                pre_sale_rows = cursor.fetchall() or []
+
                 cursor.execute(f'''
                     UPDATE caught_fish 
                     SET sold = 1, sold_at = CURRENT_TIMESTAMP
@@ -5685,7 +7105,56 @@ class Database:
                     updated = -1
                 if isinstance(updated, int) and updated > 0:
                     total_updated += updated
+                    for fish_name, fish_weight in pre_sale_rows:
+                        sales_to_record.append({
+                            'fish_name': str(fish_name or ''),
+                            'weight': float(fish_weight or 0.0),
+                        })
                 logger.info("mark_fish_as_sold: chunk %s-%s updated %s rows", i, i+len(chunk)-1, updated)
+
+            if sales_to_record:
+                for sale in sales_to_record:
+                    cursor.execute(
+                        '''
+                        INSERT INTO fish_sales_history (fish_name, weight, sold_at)
+                        VALUES (?, ?, CURRENT_TIMESTAMP)
+                        ''',
+                        (sale['fish_name'], sale['weight']),
+                    )
+
+                day_key = datetime.utcnow().date().isoformat()
+                cursor.execute(
+                    '''
+                    SELECT id, fish_name, sold_weight, target_weight
+                    FROM daily_fish_market
+                    WHERE market_day = ?
+                    LIMIT 1
+                    ''',
+                    (day_key,),
+                )
+                market_row = cursor.fetchone()
+                if market_row:
+                    market_id = int(market_row[0])
+                    market_fish_name = self._normalize_item_name(market_row[1])
+                    sold_weight = float(market_row[2] or 0.0)
+                    target_weight = float(market_row[3] or 0.0)
+
+                    sold_add = 0.0
+                    for sale in sales_to_record:
+                        if self._normalize_item_name(sale['fish_name']) == market_fish_name:
+                            sold_add += float(sale['weight'] or 0.0)
+
+                    if sold_add > 0:
+                        new_sold_weight = min(target_weight, sold_weight + sold_add)
+                        cursor.execute(
+                            '''
+                            UPDATE daily_fish_market
+                            SET sold_weight = ?
+                            WHERE id = ?
+                            ''',
+                            (new_sold_weight, market_id),
+                        )
+
             conn.commit()
             logger.info("mark_fish_as_sold: total ids=%s total_updated=%s", len(fish_ids), total_updated)
     
@@ -5945,16 +7414,19 @@ class Database:
             return results
 
     def calculate_fish_price(self, fish: Dict[str, Any], weight: float, length: float) -> int:
-        """Рассчитать динамическую цену рыбы по редкости и размеру"""
+        """Рассчитать цену рыбы: редкость/размер + динамика спроса + дневной рынок."""
         base_price = fish.get('price', 0) or 0
         rarity = fish.get('rarity', 'Обычная')
+        fish_name = str(fish.get('fish_name') or fish.get('name') or '').strip()
 
         # Аномалия: отдельная экономика продажи.
         # Всегда минимум 10 000 + явный бонус за вес.
         if rarity == 'Аномалия':
             safe_weight = max(0.0, float(weight or 0))
             weight_bonus = int(round(safe_weight * 1000))
-            return 10000 + weight_bonus
+            base_anomaly_price = 10000 + weight_bonus
+            modifiers = self.get_fish_price_modifiers(fish_name)
+            return max(1, int(round(base_anomaly_price * float(modifiers.get('total_multiplier') or 1.0))))
 
         rarity_multipliers = {
             'Обычная': 1.15,
@@ -5980,6 +7452,8 @@ class Database:
         size_multiplier = 0.7 + (0.8 * size_ratio)
 
         price = int(round(base_price * rarity_multiplier * size_multiplier))
+        modifiers = self.get_fish_price_modifiers(fish_name)
+        price = int(round(price * float(modifiers.get('total_multiplier') or 1.0)))
         return max(1, price)
 
     def get_level_from_xp(self, xp: int) -> int:
@@ -7776,6 +9250,7 @@ class Database:
                     WHERE f.locations LIKE ? 
                     AND (f.suitable_baits LIKE '%' || b.name || '%' OR f.suitable_baits = 'Все')
                 )
+                AND LOWER(TRIM(b.name)) <> 'живец'
                 ORDER BY b.price
             ''', (f'%{location}%',))
             rows = cursor.fetchall()
@@ -7801,6 +9276,761 @@ class Database:
             rows = cursor.fetchall()
             columns = [description[0] for description in cursor.description]
             return [dict(zip(columns, row)) for row in rows]
+
+    def get_unsold_trash_summary(self, user_id: int, chat_id: int) -> List[Dict[str, Any]]:
+        """Сводка непроданного мусора игрока в чате."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    cf.fish_name,
+                    COUNT(*) AS quantity,
+                    COALESCE(SUM(cf.weight), 0) AS total_weight,
+                    COALESCE(MAX(t.price), 0) AS unit_price
+                FROM caught_fish cf
+                LEFT JOIN fish f ON LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(f.name))
+                LEFT JOIN trash t ON LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(t.name))
+                WHERE cf.user_id = ?
+                  AND (cf.chat_id = ? OR cf.chat_id IS NULL OR cf.chat_id < 1)
+                  AND COALESCE(cf.sold, 0) = 0
+                  AND f.name IS NULL
+                GROUP BY cf.fish_name
+                ORDER BY quantity DESC, cf.fish_name ASC
+                ''',
+                (int(user_id), int(chat_id)),
+            )
+            rows = cursor.fetchall() or []
+
+        result: List[Dict[str, Any]] = []
+        for fish_name, quantity, total_weight, unit_price in rows:
+            qty = int(quantity or 0)
+            price = int(unit_price or 0)
+            result.append(
+                {
+                    'fish_name': str(fish_name or ''),
+                    'quantity': qty,
+                    'total_weight': float(total_weight or 0.0),
+                    'unit_price': price,
+                    'total_price': qty * price,
+                }
+            )
+        return result
+
+    def convert_small_fish_to_live_bait(self, user_id: int, chat_id: int, quantity: int = 0) -> Dict[str, Any]:
+        """Конвертирует мелкую рыбу (Плотва/Верховка) в наживку Живец."""
+        qty_limit = max(0, int(quantity or 0))
+        placeholders = ','.join('?' for _ in LIVE_BAIT_FISH_NAMES)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                SELECT cf.id, cf.fish_name
+                FROM caught_fish cf
+                JOIN fish f ON LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(f.name))
+                WHERE cf.user_id = ?
+                  AND (cf.chat_id = ? OR cf.chat_id IS NULL OR cf.chat_id < 1)
+                  AND COALESCE(cf.sold, 0) = 0
+                  AND f.name IN ({placeholders})
+                ORDER BY cf.id ASC
+                ''',
+                [int(user_id), int(chat_id), *LIVE_BAIT_FISH_NAMES],
+            )
+            rows = cursor.fetchall() or []
+
+            if not rows:
+                return {'ok': False, 'reason': 'no_small_fish'}
+
+            selected = rows if qty_limit <= 0 else rows[:qty_limit]
+            fish_ids = [int(r[0]) for r in selected]
+            converted = len(fish_ids)
+            if converted <= 0:
+                return {'ok': False, 'reason': 'no_small_fish'}
+
+            fish_counter: Dict[str, int] = {}
+            for _, fish_name in selected:
+                key = str(fish_name or '')
+                fish_counter[key] = int(fish_counter.get(key, 0) or 0) + 1
+
+            sold_placeholders = ','.join('?' for _ in fish_ids)
+            cursor.execute(
+                f'''
+                UPDATE caught_fish
+                SET sold = 1, sold_at = CURRENT_TIMESTAMP
+                WHERE id IN ({sold_placeholders})
+                ''',
+                fish_ids,
+            )
+
+            cursor.execute(
+                '''
+                INSERT INTO player_baits (user_id, bait_name, quantity)
+                VALUES (?, ?, ?)
+                ON CONFLICT (user_id, bait_name)
+                DO UPDATE SET quantity = player_baits.quantity + EXCLUDED.quantity
+                ''',
+                (int(user_id), LIVE_BAIT_NAME, converted),
+            )
+            conn.commit()
+
+        return {
+            'ok': True,
+            'converted_count': converted,
+            'converted_by_fish': fish_counter,
+            'bait_name': LIVE_BAIT_NAME,
+            'bait_added': converted,
+        }
+
+    def convert_fish_to_bait_by_ids(self, user_id: int, chat_id: int, fish_ids: List[int]) -> Dict[str, Any]:
+        """Конвертирует выбранных рыб в наживку по их ID."""
+        if not fish_ids:
+            return {'ok': False, 'reason': 'no_fish_selected'}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            
+            # 1. Получаем инфу о рыбах
+            placeholders = ','.join('?' for _ in fish_ids)
+            cursor.execute(
+                f'''
+                SELECT cf.id, cf.fish_name
+                FROM caught_fish cf
+                WHERE cf.id IN ({placeholders})
+                  AND cf.user_id = ?
+                  AND (cf.chat_id = ? OR cf.chat_id IS NULL OR cf.chat_id < 1)
+                  AND COALESCE(cf.sold, 0) = 0
+                ''',
+                [*fish_ids, int(user_id), int(chat_id)],
+            )
+            rows = cursor.fetchall() or []
+            if not rows:
+                return {'ok': False, 'reason': 'fish_not_found'}
+
+            # 2. Получаем все существующие наживки для сопоставления
+            cursor.execute('SELECT name FROM baits')
+            existing_baits = {row[0].strip().lower(): row[0] for row in cursor.fetchall()}
+
+            converted_baits: Dict[str, int] = {}
+            actual_fish_ids = []
+            
+            live_bait_fish = [n.strip().lower() for n in LIVE_BAIT_FISH_NAMES]
+
+            for fid, fname in rows:
+                fname_clean = str(fname or '').strip()
+                fname_lower = fname_clean.lower()
+                
+                target_bait = None
+                
+                # Точное совпадение имени рыбы и наживки
+                if fname_lower in existing_baits:
+                    target_bait = existing_baits[fname_lower]
+                # Совпадение с живой наживкой (Живец)
+                elif fname_lower in live_bait_fish:
+                    target_bait = LIVE_BAIT_NAME
+                
+                if target_bait:
+                    actual_fish_ids.append(fid)
+                    converted_baits[target_bait] = converted_baits.get(target_bait, 0) + 1
+
+            if not actual_fish_ids:
+                return {'ok': False, 'reason': 'no_convertible_fish'}
+
+            # 3. Помечаем рыбу как использованную
+            id_placeholders = ','.join('?' for _ in actual_fish_ids)
+            cursor.execute(
+                f'UPDATE caught_fish SET sold = 1, sold_at = CURRENT_TIMESTAMP WHERE id IN ({id_placeholders})',
+                actual_fish_ids
+            )
+
+            # 4. Начисляем наживку
+            for bname, qty in converted_baits.items():
+                cursor.execute(
+                    '''
+                    INSERT INTO player_baits (user_id, bait_name, quantity)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT (user_id, bait_name)
+                    DO UPDATE SET quantity = player_baits.quantity + EXCLUDED.quantity
+                    ''',
+                    (int(user_id), bname, qty),
+                )
+            
+            conn.commit()
+
+        return {
+            'ok': True,
+            'converted_count': len(actual_fish_ids),
+            'details': converted_baits
+        }
+
+    def get_convertible_fish_list(self, user_id: int, chat_id: int) -> List[Dict[str, Any]]:
+        """Получить список рыб в инвентаре, которые можно переработать в наживку."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            
+            # 1. Получаем все существующие наживки
+            cursor.execute('SELECT name FROM baits')
+            existing_baits = {row[0].strip().lower() for row in cursor.fetchall()}
+            
+            # 2. Получаем всех рыб в инвентаре (не проданных)
+            cursor.execute('''
+                SELECT id, fish_name, weight
+                FROM caught_fish
+                WHERE user_id = ?
+                  AND (chat_id = ? OR chat_id IS NULL OR chat_id < 1)
+                  AND COALESCE(sold, 0) = 0
+                ORDER BY fish_name ASC, weight DESC
+            ''', (int(user_id), int(chat_id)))
+            
+            rows = cursor.fetchall() or []
+            
+            convertible = []
+            live_bait_fish = {n.strip().lower() for n in LIVE_BAIT_FISH_NAMES}
+            
+            for fid, fname, weight in rows:
+                fname_lower = str(fname or '').strip().lower()
+                if fname_lower in existing_baits or fname_lower in live_bait_fish:
+                    convertible.append({
+                        'id': fid,
+                        'name': fname,
+                        'weight': weight
+                    })
+            return convertible
+
+    def donate_trash_to_clan(self, user_id: int, chat_id: int, item_name: str, quantity: int) -> Dict[str, Any]:
+        """Пожертвовать мусор в артель, списав его из инвентаря игрока."""
+        clan = self.get_clan_by_user(user_id)
+        if not clan:
+            return {'ok': False, 'reason': 'not_in_clan'}
+
+        donate_qty = max(1, int(quantity or 1))
+        clean_item = str(item_name or '').strip()
+        if not clean_item:
+            return {'ok': False, 'reason': 'bad_item'}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT cf.id
+                FROM caught_fish cf
+                LEFT JOIN fish f ON LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(f.name))
+                WHERE cf.user_id = ?
+                  AND (cf.chat_id = ? OR cf.chat_id IS NULL OR cf.chat_id < 1)
+                  AND COALESCE(cf.sold, 0) = 0
+                  AND f.name IS NULL
+                  AND LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(?))
+                ORDER BY cf.id ASC
+                LIMIT ?
+                ''',
+                (int(user_id), int(chat_id), clean_item, donate_qty),
+            )
+            rows = cursor.fetchall() or []
+            selected_ids = [int(r[0]) for r in rows]
+
+            if len(selected_ids) < donate_qty:
+                return {
+                    'ok': False,
+                    'reason': 'not_enough_trash',
+                    'available': len(selected_ids),
+                    'required': donate_qty,
+                }
+
+            sold_placeholders = ','.join('?' for _ in selected_ids)
+            cursor.execute(
+                f'''
+                UPDATE caught_fish
+                SET sold = 1, sold_at = CURRENT_TIMESTAMP
+                WHERE id IN ({sold_placeholders})
+                ''',
+                selected_ids,
+            )
+
+            cursor.execute(
+                '''
+                INSERT INTO clan_donations (clan_id, item_name, quantity, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (clan_id, item_name)
+                DO UPDATE SET
+                    quantity = clan_donations.quantity + EXCLUDED.quantity,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (int(clan['id']), clean_item, donate_qty),
+            )
+            cursor.execute(
+                '''
+                SELECT quantity
+                FROM clan_donations
+                WHERE clan_id = ? AND item_name = ?
+                ''',
+                (int(clan['id']), clean_item),
+            )
+            total_row = cursor.fetchone()
+            conn.commit()
+
+        return {
+            'ok': True,
+            'clan_id': int(clan['id']),
+            'item_name': clean_item,
+            'donated': donate_qty,
+            'clan_total': int(total_row[0] or 0) if total_row else donate_qty,
+        }
+
+    def get_webapp_book_entries(self, user_id: Optional[int] = None, search: str = '', limit: int = 128) -> List[Dict[str, Any]]:
+        """Список рыб для webapp-книги с базовой лор-информацией."""
+        safe_limit = max(1, min(int(limit or 128), 500))
+        search_term = str(search or '').strip()
+        like_pattern = f"%{search_term}%" if search_term else "%"
+        safe_user_id = int(user_id) if user_id is not None else 0
+
+        fish_stickers: Dict[str, str] = {}
+        try:
+            from fish_stickers import FISH_STICKERS
+            fish_stickers = dict(FISH_STICKERS or {})
+        except Exception:
+            fish_stickers = {}
+
+        caught_name_set: set[str] = set()
+        if safe_user_id > 0:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT DISTINCT LOWER(TRIM(fish_name))
+                    FROM caught_fish
+                    WHERE user_id = ?
+                    ''',
+                    (safe_user_id,),
+                )
+                rows_caught = cursor.fetchall() or []
+                for row in rows_caught:
+                    if row and row[0]:
+                        caught_name_set.add(str(row[0]))
+
+                cursor.execute(
+                    '''
+                    SELECT DISTINCT LOWER(TRIM(fish_name))
+                    FROM player_trophies
+                    WHERE user_id = ?
+                    ''',
+                    (safe_user_id,),
+                )
+                rows_trophies = cursor.fetchall() or []
+                for row in rows_trophies:
+                    if row and row[0]:
+                        caught_name_set.add(str(row[0]))
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT name, rarity, min_weight, max_weight, min_length, max_length, locations, suitable_baits, price
+                FROM fish
+                WHERE LOWER(TRIM(name)) LIKE LOWER(TRIM(?))
+                ORDER BY
+                    CASE rarity
+                        WHEN 'Аномалия' THEN 6
+                        WHEN 'Мифическая' THEN 5
+                        WHEN 'Легендарная' THEN 4
+                        WHEN 'Аквариумная' THEN 3
+                        WHEN 'Редкая' THEN 2
+                        ELSE 1
+                    END DESC,
+                    name ASC
+                LIMIT ?
+                ''',
+                (like_pattern, safe_limit),
+            )
+            rows = cursor.fetchall() or []
+
+        items: List[Dict[str, Any]] = []
+        for idx, row in enumerate(rows, start=1):
+            fish_name = str(row[0] or '')
+            rarity = str(row[1] or 'Обычная')
+            min_weight = float(row[2] or 0.0)
+            max_weight = float(row[3] or 0.0)
+            min_length = float(row[4] or 0.0)
+            max_length = float(row[5] or 0.0)
+            locations = str(row[6] or 'Неизвестно')
+            baits = str(row[7] or 'Неизвестно')
+            image_file = str(fish_stickers.get(fish_name) or 'fishdef.webp')
+            is_caught = str(fish_name).strip().lower() in caught_name_set
+
+            lore = (
+                f"{fish_name} чаще встречается в локациях: {locations}. "
+                f"Рекомендуемая наживка: {baits}."
+            )
+
+            items.append(
+                {
+                    'index': idx,
+                    'name': fish_name,
+                    'rarity': rarity,
+                    'min_weight': round(min_weight, 2),
+                    'max_weight': round(max_weight, 2),
+                    'min_length': round(min_length, 1),
+                    'max_length': round(max_length, 1),
+                    'locations': locations,
+                    'baits': baits,
+                    'price': int(row[8] or 0),
+                    'lore': lore,
+                    'is_caught': is_caught,
+                    'catch_status': 'Поймана' if is_caught else 'НЕ СЛОВЛЕНА',
+                    'image_url': f'/api/fish-image/{image_file}',
+                }
+            )
+
+        return items
+
+    def get_webapp_book_total_count(self) -> int:
+        """Общее количество рыб в игре для пагинации книги."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM fish')
+            row = cursor.fetchone()
+            return int((row[0] if row else 0) or 0)
+
+    def get_webapp_adventures_state(self, user_id: int) -> Dict[str, Any]:
+        """Сводка по приключениям: личные рекорды и топы по играм."""
+        safe_user_id = int(user_id)
+        result: Dict[str, Any] = {'games': {}, 'tops': {}}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                '''
+                SELECT game_code, best_score, best_distance, runs_count
+                FROM webapp_adventure_scores
+                WHERE user_id = ?
+                ''',
+                (safe_user_id,),
+            )
+            personal_rows = cursor.fetchall() or []
+            for game_code, best_score, best_distance, runs_count in personal_rows:
+                result['games'][str(game_code)] = {
+                    'best_score': int(best_score or 0),
+                    'best_distance': float(best_distance or 0.0),
+                    'runs_count': int(runs_count or 0),
+                }
+
+            for game_code in ('runner', 'maze'):
+                cursor.execute(
+                    '''
+                    SELECT s.user_id,
+                           COALESCE(MAX(p.username), 'user') AS username,
+                           s.best_score,
+                           s.best_distance
+                    FROM webapp_adventure_scores s
+                    LEFT JOIN players p ON p.user_id = s.user_id
+                    WHERE s.game_code = ?
+                    GROUP BY s.user_id, s.best_score, s.best_distance
+                    ORDER BY s.best_score DESC, s.best_distance DESC, s.user_id ASC
+                    LIMIT 10
+                    ''',
+                    (game_code,),
+                )
+                top_rows = cursor.fetchall() or []
+                top_items: List[Dict[str, Any]] = []
+                for idx, row in enumerate(top_rows, start=1):
+                    top_items.append(
+                        {
+                            'place': idx,
+                            'user_id': int(row[0] or 0),
+                            'username': str(row[1] or 'user'),
+                            'best_score': int(row[2] or 0),
+                            'best_distance': float(row[3] or 0.0),
+                        }
+                    )
+                result['tops'][game_code] = top_items
+
+        for code in ('runner', 'maze'):
+            result['games'].setdefault(code, {'best_score': 0, 'best_distance': 0.0, 'runs_count': 0})
+            result['tops'].setdefault(code, [])
+
+        return result
+
+    def save_webapp_adventure_result(self, user_id: int, game_code: str, score: int, distance: float = 0.0) -> Dict[str, Any]:
+        """Сохранить результат приключения и вернуть обновленную статистику игрока."""
+        safe_user_id = int(user_id)
+        safe_code = str(game_code or '').strip().lower()
+        if safe_code not in ('runner', 'maze'):
+            return {'ok': False, 'reason': 'invalid_game_code'}
+
+        safe_score = max(0, int(score or 0))
+        safe_distance = max(0.0, float(distance or 0.0))
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO webapp_adventure_scores (user_id, game_code, best_score, best_distance, runs_count, updated_at)
+                VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id, game_code)
+                DO UPDATE SET
+                    best_score = GREATEST(webapp_adventure_scores.best_score, EXCLUDED.best_score),
+                    best_distance = GREATEST(webapp_adventure_scores.best_distance, EXCLUDED.best_distance),
+                    runs_count = webapp_adventure_scores.runs_count + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (safe_user_id, safe_code, safe_score, safe_distance),
+            )
+
+            cursor.execute(
+                '''
+                SELECT best_score, best_distance, runs_count
+                FROM webapp_adventure_scores
+                WHERE user_id = ? AND game_code = ?
+                LIMIT 1
+                ''',
+                (safe_user_id, safe_code),
+            )
+            row = cursor.fetchone()
+
+            if row:
+                best_score = int(row[0] or 0)
+                best_distance = float(row[1] or 0.0)
+                runs_count = int(row[2] or 0)
+            else:
+                best_score = safe_score
+                best_distance = safe_distance
+                runs_count = 1
+
+            cursor.execute(
+                '''
+                SELECT COUNT(*)
+                FROM webapp_adventure_scores
+                WHERE game_code = ?
+                  AND (best_score > ? OR (best_score = ? AND best_distance > ?))
+                ''',
+                (safe_code, best_score, best_score, best_distance),
+            )
+            rank_row = cursor.fetchone()
+            rank = int((rank_row[0] if rank_row else 0) or 0) + 1
+            conn.commit()
+
+        return {
+            'ok': True,
+            'game_code': safe_code,
+            'best_score': best_score,
+            'best_distance': best_distance,
+            'runs_count': runs_count,
+            'rank': rank,
+        }
+
+    def get_webapp_guilds_snapshot(self, user_id: int, limit: int = 20) -> Dict[str, Any]:
+        """Снимок артелей для webapp: моя артель и топ списка."""
+        my_clan = self.get_clan_by_user(int(user_id))
+        clans = self.list_clans(limit=max(1, min(int(limit or 20), 50)))
+
+        clan_ids: List[int] = []
+        for clan in clans:
+            try:
+                clan_ids.append(int(clan.get('id') or 0))
+            except Exception:
+                continue
+        if my_clan:
+            try:
+                my_id = int(my_clan.get('id') or 0)
+                if my_id > 0 and my_id not in clan_ids:
+                    clan_ids.append(my_id)
+            except Exception:
+                pass
+
+        profiles_by_clan: Dict[int, Dict[str, Any]] = {}
+        if clan_ids:
+            placeholders = ','.join('?' for _ in clan_ids)
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f'''
+                    SELECT clan_id, avatar_emoji, color_hex, access_type, description, min_level
+                    FROM webapp_clan_profiles
+                    WHERE clan_id IN ({placeholders})
+                    ''',
+                    clan_ids,
+                )
+                rows = cursor.fetchall() or []
+                for row in rows:
+                    cid = int(row[0] or 0)
+                    profiles_by_clan[cid] = {
+                        'avatar_emoji': str(row[1] or '🏰'),
+                        'color_hex': str(row[2] or '#00b4d8'),
+                        'access_type': str(row[3] or 'open'),
+                        'description': str(row[4] or ''),
+                        'min_level': int(row[5] or 0),
+                    }
+
+        def _merge_profile(clan: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+            if not clan:
+                return None
+            cid = int(clan.get('id') or 0)
+            profile = profiles_by_clan.get(cid) or {
+                'avatar_emoji': '🏰',
+                'color_hex': '#00b4d8',
+                'access_type': 'open',
+                'description': '',
+            }
+            return {**clan, **profile}
+
+        return {
+            'my_clan': _merge_profile(my_clan),
+            'items': [_merge_profile(clan) for clan in clans if clan],
+        }
+
+    def save_webapp_clan_profile(
+        self,
+        clan_id: int,
+        avatar_emoji: str,
+        color_hex: str,
+        access_type: str,
+        description: str,
+        updated_by: int,
+        min_level: int = 0,
+    ) -> Dict[str, Any]:
+        """Сохранить визуальный профиль артели для webapp."""
+        safe_clan_id = int(clan_id)
+        safe_updated_by = int(updated_by)
+        safe_avatar = str(avatar_emoji or '🏰').strip() or '🏰'
+        safe_color = str(color_hex or '#00b4d8').strip() or '#00b4d8'
+        safe_access = str(access_type or 'open').strip().lower()
+        if safe_access not in ('open', 'invite'):
+            safe_access = 'open'
+        safe_desc = str(description or '').strip()[:500]
+        safe_min_level = max(0, int(min_level or 0))
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO webapp_clan_profiles (clan_id, avatar_emoji, color_hex, access_type, description, min_level, created_by, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (clan_id)
+                DO UPDATE SET
+                    avatar_emoji = EXCLUDED.avatar_emoji,
+                    color_hex = EXCLUDED.color_hex,
+                    access_type = EXCLUDED.access_type,
+                    description = EXCLUDED.description,
+                    min_level = EXCLUDED.min_level,
+                    created_by = EXCLUDED.created_by,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (safe_clan_id, safe_avatar, safe_color, safe_access, safe_desc, safe_min_level, safe_updated_by),
+            )
+            conn.commit()
+
+        return {
+            'ok': True,
+            'clan_id': safe_clan_id,
+            'avatar_emoji': safe_avatar,
+            'color_hex': safe_color,
+            'access_type': safe_access,
+            'description': safe_desc,
+        }
+
+    def get_webapp_friends(self, user_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+        """Получить список друзей пользователя для webapp."""
+        safe_user_id = int(user_id)
+        safe_limit = max(1, min(int(limit or 50), 200))
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT f.friend_user_id,
+                       COALESCE(MAX(p.username), 'user') AS username,
+                       MAX(p.last_fish_time) AS last_fish_time,
+                       MAX(p.level) AS level
+                FROM webapp_friend_links f
+                LEFT JOIN players p ON p.user_id = f.friend_user_id
+                WHERE f.user_id = ?
+                GROUP BY f.friend_user_id
+                ORDER BY username ASC
+                LIMIT ?
+                ''',
+                (safe_user_id, safe_limit),
+            )
+            rows = cursor.fetchall() or []
+
+        result: List[Dict[str, Any]] = []
+        now_utc = datetime.now(timezone.utc)
+        for friend_user_id, username, last_fish_time, level in rows:
+            status_text = 'давно не заходил'
+            if last_fish_time:
+                dt_val = self._parse_utc_datetime(last_fish_time)
+                if dt_val is not None:
+                    minutes = int(max(0.0, (now_utc - dt_val).total_seconds()) // 60)
+                    if minutes <= 2:
+                        status_text = 'в сети'
+                    elif minutes < 60:
+                        status_text = f'{minutes} мин назад'
+                    else:
+                        hours = minutes // 60
+                        status_text = f'{hours} ч назад'
+
+            result.append(
+                {
+                    'user_id': int(friend_user_id or 0),
+                    'username': str(username or 'user'),
+                    'level': int(level or 0),
+                    'status': status_text,
+                    'is_online': status_text == 'в сети',
+                }
+            )
+
+        return result
+
+    def add_webapp_friend_by_username(self, user_id: int, username: str) -> Dict[str, Any]:
+        """Добавить дружбу по username (двусторонняя запись)."""
+        safe_user_id = int(user_id)
+        raw_username = str(username or '').strip()
+        if not raw_username:
+            return {'ok': False, 'reason': 'username_required'}
+
+        clean_username = raw_username[1:] if raw_username.startswith('@') else raw_username
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT user_id
+                FROM players
+                WHERE LOWER(TRIM(username)) = LOWER(TRIM(?))
+                   OR LOWER(TRIM(username)) = LOWER(TRIM(?))
+                ORDER BY created_at DESC
+                LIMIT 1
+                ''',
+                (clean_username, f'@{clean_username}'),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {'ok': False, 'reason': 'user_not_found'}
+
+            friend_user_id = int(row[0] or 0)
+            if friend_user_id <= 0:
+                return {'ok': False, 'reason': 'user_not_found'}
+            if friend_user_id == safe_user_id:
+                return {'ok': False, 'reason': 'cannot_add_self'}
+
+            cursor.execute(
+                '''
+                INSERT INTO webapp_friend_links (user_id, friend_user_id, created_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id, friend_user_id) DO NOTHING
+                ''',
+                (safe_user_id, friend_user_id),
+            )
+            cursor.execute(
+                '''
+                INSERT INTO webapp_friend_links (user_id, friend_user_id, created_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id, friend_user_id) DO NOTHING
+                ''',
+                (friend_user_id, safe_user_id),
+            )
+            conn.commit()
+
+        return {'ok': True, 'friend_user_id': friend_user_id, 'username': f'@{clean_username}'}
 
     def get_weather(self, location: str) -> Optional[Dict[str, Any]]:
         """Получить погоду локации"""

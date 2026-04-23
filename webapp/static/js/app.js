@@ -5,8 +5,6 @@ const xpEl = document.getElementById("xp");
 const coinsEl = document.getElementById("coins");
 const xpFillEl = document.getElementById("xpFill");
 const xpInfoEl = document.getElementById("xpInfo");
-const trophySelect = document.getElementById("trophySelect");
-const saveTrophyButton = document.getElementById("saveTrophy");
 const trophyStatus = document.getElementById("trophyStatus");
 const activeTrophyImage = document.getElementById("activeTrophyImage");
 const activeTrophyEmpty = document.getElementById("activeTrophyEmpty");
@@ -35,16 +33,55 @@ const captchaAnswer = document.getElementById("captchaAnswer");
 const captchaSubmit = document.getElementById("captchaSubmit");
 const captchaTimer = document.getElementById("captchaTimer");
 const captchaStatus = document.getElementById("captchaStatus");
+const appTabbar = document.getElementById("appTabbar");
+const tabButtons = Array.from(document.querySelectorAll(".tab-btn"));
+const profileTabViews = Array.from(document.querySelectorAll(".profile-tab-view"));
+const bookSearchInput = document.getElementById("bookSearchInput");
+const bookSearchButton = document.getElementById("bookSearchButton");
+const bookStatus = document.getElementById("bookStatus");
+const bookFishName = document.getElementById("bookFishName");
+const bookFishMeta = document.getElementById("bookFishMeta");
+const bookStatWeight = document.getElementById("bookStatWeight");
+const bookStatLength = document.getElementById("bookStatLength");
+const bookStatBait = document.getElementById("bookStatBait");
+const bookFishLore = document.getElementById("bookFishLore");
+const bookFishImage = document.getElementById("bookFishImage");
+const bookCatchState = document.getElementById("bookCatchState");
+const bookPrevButton = document.getElementById("bookPrevButton");
+const bookNextButton = document.getElementById("bookNextButton");
+const bookCounterCurrent = document.getElementById("bookCounterCurrent");
+const bookCounterTotal = document.getElementById("bookCounterTotal");
+const adventuresStatus = document.getElementById("adventuresStatus");
+const advRunnerMeta = document.getElementById("advRunnerMeta");
+const advMazeMeta = document.getElementById("advMazeMeta");
+const advRunnerPlayButton = document.getElementById("advRunnerPlayButton");
+const advMazePlayButton = document.getElementById("advMazePlayButton");
+const guildGrid = document.getElementById("guildGrid");
+const guildsStatus = document.getElementById("guildsStatus");
+const friendsList = document.getElementById("friendsList");
+const friendsStatus = document.getElementById("friendsStatus");
+const friendInput = document.getElementById("friendInput");
+const friendAddButton = document.getElementById("friendAddButton");
 
 let currentProfile = null;
 let telegramAuthContext = null;
-let trophyById = {};
 let captchaCountdownId = null;
 let ticketRatingLoaded = false;
 let ticketRatingVisible = false;
 let ticketDrawLoaded = false;
 let ticketDrawVisible = false;
 let isAdminUser = false;
+let activeTab = "profile";
+let bookEntries = [];
+let bookCursor = 0;
+let bookTotalAll = 0;
+
+function setText(node, value) {
+  if (!node) {
+    return;
+  }
+  node.textContent = String(value ?? "");
+}
 
 const urlParams = new URLSearchParams(window.location.search);
 const captchaToken = String(urlParams.get("captcha_token") || "").trim();
@@ -89,21 +126,343 @@ function setActiveView(viewName) {
     profileHeader.style.display = viewName === "captcha" ? "none" : "";
   }
 
-  if (profileView) {
-    profileView.classList.toggle("active", viewName === "profile");
+  if (appTabbar) {
+    appTabbar.style.display = viewName === "captcha" ? "none" : "grid";
   }
+
+  if (viewName === "profile") {
+    setActiveTab(activeTab, false);
+  } else if (profileTabViews.length > 0) {
+    profileTabViews.forEach((section) => section.classList.remove("active"));
+  }
+
   if (captchaView) {
     captchaView.classList.toggle("active", viewName === "captcha");
   }
 }
 
+function setActiveTab(tabName, updateView = true) {
+  const normalized = String(tabName || "profile").trim().toLowerCase();
+  const nextTab = normalized || "profile";
+  const targetSection = document.getElementById(`view-${nextTab}`);
+  if (!targetSection) {
+    return;
+  }
+
+  activeTab = nextTab;
+
+  profileTabViews.forEach((section) => {
+    section.classList.toggle("active", section.id === `view-${nextTab}`);
+  });
+
+  tabButtons.forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.tab === nextTab);
+  });
+
+  if (updateView) {
+    setActiveView("profile");
+  }
+
+  if (nextTab === "book" && bookEntries.length === 0) {
+    loadBookEntries().catch((error) => {
+      console.error(error);
+      setText(bookStatus, "Не удалось загрузить книгу.");
+    });
+  }
+
+  if (nextTab === "adventures") {
+    loadAdventuresState().catch((error) => {
+      console.error(error);
+      setText(adventuresStatus, "Не удалось загрузить приключения.");
+    });
+  }
+
+  if (nextTab === "guilds") {
+    loadGuilds().catch((error) => {
+      console.error(error);
+      setText(guildsStatus, "Не удалось загрузить артели.");
+    });
+  }
+
+  if (nextTab === "friends") {
+    loadFriends().catch((error) => {
+      console.error(error);
+      setText(friendsStatus, "Не удалось загрузить друзей.");
+    });
+  }
+}
+
+function renderBookEntry() {
+  if (!bookEntries.length) {
+    setText(bookStatus, "По запросу ничего не найдено.");
+    setText(bookFishName, "🐟 Рыба не найдена");
+    setText(bookFishMeta, "Попробуйте другой запрос.");
+    setText(bookStatWeight, "⚖️ —");
+    setText(bookStatLength, "📏 —");
+    setText(bookStatBait, "🎣 —");
+    setText(bookFishLore, "Нет данных.");
+    setText(bookCatchState, "НЕ СЛОВЛЕНА");
+    if (bookCatchState) {
+      bookCatchState.classList.remove("caught");
+    }
+    if (bookFishImage) {
+      bookFishImage.src = "/api/fish-image/fishdef.webp";
+    }
+    setText(bookCounterCurrent, "0");
+    setText(bookCounterTotal, String(bookTotalAll || 0));
+    if (bookPrevButton) bookPrevButton.disabled = true;
+    if (bookNextButton) bookNextButton.disabled = true;
+    return;
+  }
+
+  const safeIndex = Math.max(0, Math.min(bookCursor, bookEntries.length - 1));
+  bookCursor = safeIndex;
+  const item = bookEntries[safeIndex];
+
+  setText(bookFishName, `🐟 ${item.name || "Неизвестная рыба"}`);
+  setText(bookFishMeta, `Редкость: ${item.rarity || "Обычная"} • Среда: ${item.locations || "Неизвестно"}`);
+  setText(bookStatWeight, `⚖️ ${Number(item.min_weight || 0).toFixed(2)}-${Number(item.max_weight || 0).toFixed(2)} кг`);
+  setText(bookStatLength, `📏 ${Number(item.min_length || 0).toFixed(1)}-${Number(item.max_length || 0).toFixed(1)} см`);
+  setText(bookStatBait, `🎣 Наживка: ${item.baits || "Любая"}`);
+  setText(bookFishLore, item.lore || "Описание отсутствует.");
+  if (bookFishImage) {
+    bookFishImage.src = item.image_url || "/api/fish-image/fishdef.webp";
+    bookFishImage.alt = item.name || "Рыба";
+  }
+  const caught = Boolean(item.is_caught);
+  setText(bookCatchState, caught ? "ПОЙМАНА" : "НЕ СЛОВЛЕНА");
+  if (bookCatchState) {
+    bookCatchState.classList.toggle("caught", caught);
+  }
+  setText(bookCounterCurrent, String(safeIndex + 1));
+  setText(bookCounterTotal, String(bookTotalAll || bookEntries.length));
+  setText(bookStatus, `Загружено: ${bookEntries.length} из ${bookTotalAll || bookEntries.length}`);
+
+  if (bookPrevButton) {
+    bookPrevButton.disabled = safeIndex <= 0;
+  }
+  if (bookNextButton) {
+    bookNextButton.disabled = safeIndex >= bookEntries.length - 1;
+  }
+}
+
+async function loadBookEntries() {
+  const query = String(bookSearchInput?.value || "").trim();
+  setText(bookStatus, "Загрузка энциклопедии...");
+
+  const response = await fetch(`/api/book?limit=256&search=${encodeURIComponent(query)}`, {
+    headers: getAuthHeaders(),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `book_http_${response.status}`);
+  }
+
+  bookEntries = Array.isArray(payload.items) ? payload.items : [];
+  bookTotalAll = Number(payload.total_all || bookEntries.length || 0);
+  bookCursor = 0;
+  renderBookEntry();
+}
+
+function renderGuilds(payload) {
+  if (!guildGrid) {
+    return;
+  }
+
+  guildGrid.innerHTML = "";
+  const myClan = payload?.my_clan || null;
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+
+  if (myClan) {
+    const card = document.createElement("div");
+    card.className = "guild-card";
+    const myColor = String(myClan.color_hex || "#00b4d8");
+    const myEmoji = String(myClan.avatar_emoji || "🏰");
+    const myAccess = String(myClan.access_type || "open") === "invite" ? "🔒 По приглашению" : "🔓 Открытая";
+    card.innerHTML = `
+      <p class="guild-name" style="color:${myColor}">${myEmoji} Моя артель: ${String(myClan.name || "—")}</p>
+      <p class="subtext">Уровень ${Number(myClan.level || 1)} • ${Number(myClan.members_count || 0)}/${Number(myClan.max_members || 0)} участников</p>
+      <p class="subtext">${myAccess}${myClan.description ? ` • ${String(myClan.description)}` : ""}</p>
+    `;
+    guildGrid.appendChild(card);
+  }
+
+  items.forEach((item) => {
+    const card = document.createElement("div");
+    card.className = "guild-card";
+    const color = String(item.color_hex || "#00b4d8");
+    const emoji = String(item.avatar_emoji || "🏰");
+    const access = String(item.access_type || "open") === "invite" ? "🔒 По приглашению" : "🔓 Открытая";
+    card.innerHTML = `
+      <p class="guild-name" style="color:${color}">${emoji} ${String(item.name || "Без названия")}</p>
+      <p class="subtext">Уровень ${Number(item.level || 1)} • ${Number(item.members_count || 0)}/${Number(item.max_members || 0)} участников</p>
+      <p class="subtext">${access}${item.description ? ` • ${String(item.description)}` : ""}</p>
+    `;
+    guildGrid.appendChild(card);
+  });
+
+  if (!myClan && items.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "guild-card";
+    empty.innerHTML = "<p class='subtext'>Пока нет артелей. Создайте первую через /guild create.</p>";
+    guildGrid.appendChild(empty);
+  }
+
+  setText(guildsStatus, `Артелей в списке: ${items.length}`);
+}
+
+async function loadGuilds() {
+  setText(guildsStatus, "Загрузка артелей...");
+  const response = await fetch("/api/guilds?limit=20", {
+    headers: getAuthHeaders(),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `guilds_http_${response.status}`);
+  }
+  renderGuilds(payload);
+}
+
+function renderFriends(payload) {
+  if (!friendsList) {
+    return;
+  }
+
+  friendsList.innerHTML = "";
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  if (!items.length) {
+    const empty = document.createElement("li");
+    empty.className = "friend-item";
+    empty.innerHTML = "<span>Пока нет друзей</span><span class='friend-status'>добавьте @username</span>";
+    friendsList.appendChild(empty);
+    setText(friendsStatus, "Список друзей пуст.");
+    return;
+  }
+
+  items.forEach((item) => {
+    const li = document.createElement("li");
+    li.className = "friend-item";
+
+    const left = document.createElement("span");
+    const username = String(item.username || "user");
+    left.textContent = `🎣 ${username.startsWith("@") ? username : `@${username}`}`;
+
+    const right = document.createElement("span");
+    right.className = `friend-status${item.is_online ? " online" : ""}`;
+    right.textContent = String(item.status || "неизвестно");
+
+    li.appendChild(left);
+    li.appendChild(right);
+    friendsList.appendChild(li);
+  });
+
+  setText(friendsStatus, `Друзей: ${items.length}`);
+}
+
+async function loadFriends() {
+  setText(friendsStatus, "Загрузка списка друзей...");
+  const response = await fetch("/api/friends?limit=50", {
+    headers: getAuthHeaders(),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `friends_http_${response.status}`);
+  }
+  renderFriends(payload);
+}
+
+async function addFriendFromInput() {
+  const username = String(friendInput?.value || "").trim();
+  if (!username) {
+    setText(friendsStatus, "Введите username, например @angler");
+    return;
+  }
+
+  setText(friendsStatus, "Добавляю друга...");
+  const response = await fetch("/api/friends/add", {
+    method: "POST",
+    headers: {
+      ...getAuthHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ username }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const errorCode = String(payload.error || `friend_add_http_${response.status}`);
+    const map = {
+      username_required: "Введите username.",
+      user_not_found: "Игрок с таким username не найден.",
+      cannot_add_self: "Нельзя добавить себя в друзья.",
+      db_write_failed: "Ошибка БД при добавлении.",
+    };
+    setText(friendsStatus, map[errorCode] || "Не удалось добавить друга.");
+    return;
+  }
+
+  if (friendInput) {
+    friendInput.value = "";
+  }
+  setText(friendsStatus, "Друг добавлен.");
+  await loadFriends();
+}
+
+function applyAdventureState(payload) {
+  const games = payload?.games || {};
+  const runner = games.runner || { best_score: 0, runs_count: 0, rank: 0 };
+  const maze = games.maze || { best_score: 0, runs_count: 0, rank: 0 };
+
+  setText(
+    advRunnerMeta,
+    `Лучший счёт: ${Number(runner.best_score || 0)} • Забегов: ${Number(runner.runs_count || 0)}`
+  );
+  setText(
+    advMazeMeta,
+    `Лучший счёт: ${Number(maze.best_score || 0)} • Забегов: ${Number(maze.runs_count || 0)}`
+  );
+  setText(adventuresStatus, "Статистика приключений обновлена.");
+}
+
+async function loadAdventuresState() {
+  setText(adventuresStatus, "Загрузка статистики приключений...");
+  const response = await fetch("/api/adventures", {
+    headers: getAuthHeaders(),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `adventures_http_${response.status}`);
+  }
+  applyAdventureState(payload);
+}
+
+async function submitAdventure(gameCode) {
+  const seed = Math.floor(Math.random() * 400) + 120;
+  setText(adventuresStatus, `Фиксирую результат ${gameCode}...`);
+  const response = await fetch("/api/adventures/submit", {
+    method: "POST",
+    headers: {
+      ...getAuthHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      game_code: gameCode,
+      score: seed,
+      distance: Number((seed / 3).toFixed(1)),
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `adventure_submit_http_${response.status}`);
+  }
+
+  setText(adventuresStatus, `${gameCode}: новый результат принят. Ваш ранг: #${Number(payload.rank || 0)}`);
+  await loadAdventuresState();
+}
+
 function setAppInteractive(isInteractive, mode = "profile") {
-  if (saveTrophyButton) {
-    saveTrophyButton.disabled = !(isInteractive && mode === "profile");
-  }
-  if (trophySelect) {
-    trophySelect.disabled = !(isInteractive && mode === "profile");
-  }
   if (ticketRatingButton) {
     ticketRatingButton.disabled = !(isInteractive && mode === "profile");
   }
@@ -131,17 +490,18 @@ function renderActiveTrophy(trophy) {
   const isEmpty = !trophy || trophy.id === "none";
 
   if (activeTrophyName) {
-    activeTrophyName.textContent = isEmpty ? "No trophy selected" : (trophy.fish_name || trophy.name || "Trophy");
+    activeTrophyName.textContent = isEmpty ? "Трофей не выбран" : (trophy.fish_name || trophy.name || "Трофей");
   }
 
   if (activeTrophyMeta) {
     if (isEmpty) {
-      activeTrophyMeta.textContent = "Choose a trophy from the list above.";
+      activeTrophyMeta.textContent = "Поймайте рыбу и создайте трофей в боте.";
     } else {
-      const weightText = `Weight: ${Number(trophy.weight || 0).toFixed(2)} kg`;
-      const lengthText = `Length: ${Number(trophy.length || 0).toFixed(1)} cm`;
-      const locationText = trophy.location ? `Location: ${trophy.location}` : null;
-      activeTrophyMeta.textContent = [weightText, lengthText, locationText].filter(Boolean).join(" | ");
+      const weightText = `Вес: ${Number(trophy.weight || 0).toFixed(2)} кг`;
+      const lengthText = `Длина: ${Number(trophy.length || 0).toFixed(1)} см`;
+      const rarityText = `Редкость: ${String(trophy.rarity || "Обычная")}`;
+      const locationText = trophy.location ? `Локация: ${trophy.location}` : null;
+      activeTrophyMeta.textContent = [weightText, lengthText, rarityText, locationText].filter(Boolean).join(" | ");
     }
   }
 
@@ -157,7 +517,7 @@ function renderActiveTrophy(trophy) {
   }
 
   activeTrophyImage.src = trophy.image_url;
-  activeTrophyImage.alt = trophy.fish_name || trophy.name || "Trophy";
+  activeTrophyImage.alt = trophy.fish_name || trophy.name || "Трофей";
   activeTrophyImage.style.display = "block";
   activeTrophyEmpty.style.display = "none";
 }
@@ -412,6 +772,10 @@ async function loadProfile() {
 }
 
 async function loadTrophies() {
+  if (!trophyStatus) {
+    return;
+  }
+
   const response = await fetch("/api/trophies", {
     headers: getAuthHeaders(),
   });
@@ -422,64 +786,12 @@ async function loadTrophies() {
 
   const payload = await response.json();
   const items = Array.isArray(payload.items) ? payload.items : [];
-  trophyById = {};
 
-  trophySelect.innerHTML = "";
-  items.forEach((item) => {
-    trophyById[item.id] = item;
-
-    const option = document.createElement("option");
-    option.value = item.id;
-    if (item.id === "none") {
-      option.textContent = item.name;
-    } else {
-      const weightText = Number(item.weight || 0).toFixed(2);
-      const lengthText = Number(item.length || 0).toFixed(1);
-      option.textContent = `${item.name} (${weightText} kg, ${lengthText} cm)`;
-    }
-    trophySelect.appendChild(option);
-  });
-
-  const selected = currentProfile?.selected_trophy || "none";
-  if (items.some((item) => item.id === selected)) {
-    trophySelect.value = selected;
-  }
-
-  const selectedItem = trophyById[trophySelect.value] || null;
-  renderActiveTrophy(selectedItem || currentProfile?.selected_trophy_data || null);
-}
-
-async function saveTrophySelection() {
-  const trophyId = trophySelect.value;
-  trophyStatus.textContent = "Saving...";
-
-  const response = await fetch("/api/trophy/select", {
-    method: "POST",
-    headers: {
-      ...getAuthHeaders(),
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ trophy_id: trophyId }),
-  });
-
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({}));
-    trophyStatus.textContent = payload.error ? `Error: ${payload.error}` : "Failed to save selection";
-    return;
-  }
-
-  const payload = await response.json();
-  if (payload.ok) {
-    const selectedId = payload.selected_trophy || trophyId;
-    if (currentProfile) {
-      currentProfile.selected_trophy = selectedId;
-      currentProfile.selected_trophy_data = trophyById[selectedId] || null;
-    }
-    renderActiveTrophy(trophyById[selectedId] || null);
-    trophyStatus.textContent = "Trophy saved";
-  } else {
-    trophyStatus.textContent = "Save error";
-  }
+  const activeItem = items.find((item) => Boolean(item.is_active)) || items[0] || null;
+  renderActiveTrophy(activeItem || currentProfile?.selected_trophy_data || null);
+  trophyStatus.textContent = activeItem && activeItem.id !== "none"
+    ? "Трофей загружен из вашего профиля бота"
+    : "У вас пока нет трофея";
 }
 
 function clearCaptchaCountdown() {
@@ -686,16 +998,12 @@ async function submitCaptchaAnswer() {
 }
 
 function bindUi() {
-  if (saveTrophyButton) {
-    saveTrophyButton.addEventListener("click", () => {
-      saveTrophySelection().catch((error) => {
-        console.error(error);
-        if (trophyStatus) {
-          trophyStatus.textContent = "Request error";
-        }
-      });
+  tabButtons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tab = btn.dataset.tab || "profile";
+      setActiveTab(tab);
     });
-  }
+  });
 
   if (captchaSubmit) {
     captchaSubmit.addEventListener("click", () => {
@@ -756,9 +1064,84 @@ function bindUi() {
       });
     });
   }
+
+  if (bookSearchButton) {
+    bookSearchButton.addEventListener("click", () => {
+      loadBookEntries().catch((error) => {
+        console.error(error);
+        setText(bookStatus, "Не удалось загрузить книгу.");
+      });
+    });
+  }
+
+  if (bookSearchInput) {
+    bookSearchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        loadBookEntries().catch((error) => {
+          console.error(error);
+          setText(bookStatus, "Не удалось загрузить книгу.");
+        });
+      }
+    });
+  }
+
+  if (bookPrevButton) {
+    bookPrevButton.addEventListener("click", () => {
+      bookCursor = Math.max(0, bookCursor - 1);
+      renderBookEntry();
+    });
+  }
+
+  if (bookNextButton) {
+    bookNextButton.addEventListener("click", () => {
+      bookCursor = Math.min(bookEntries.length - 1, bookCursor + 1);
+      renderBookEntry();
+    });
+  }
+
+  if (advRunnerPlayButton) {
+    advRunnerPlayButton.addEventListener("click", () => {
+      submitAdventure("runner").catch((error) => {
+        console.error(error);
+        setText(adventuresStatus, "Не удалось сохранить результат runner.");
+      });
+    });
+  }
+
+  if (advMazePlayButton) {
+    advMazePlayButton.addEventListener("click", () => {
+      submitAdventure("maze").catch((error) => {
+        console.error(error);
+        setText(adventuresStatus, "Не удалось сохранить результат maze.");
+      });
+    });
+  }
+
+  if (friendAddButton) {
+    friendAddButton.addEventListener("click", () => {
+      addFriendFromInput().catch((error) => {
+        console.error(error);
+        setText(friendsStatus, "Не удалось добавить друга.");
+      });
+    });
+  }
+
+  if (friendInput) {
+    friendInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        addFriendFromInput().catch((error) => {
+          console.error(error);
+          setText(friendsStatus, "Не удалось добавить друга.");
+        });
+      }
+    });
+  }
 }
 
 async function bootstrap() {
+  setActiveTab("profile", false);
   bindUi();
   setAppInteractive(false, captchaToken ? "captcha" : "profile");
   setActiveView(captchaToken ? "captcha" : "profile");
@@ -783,6 +1166,10 @@ async function bootstrap() {
 
     await loadProfile();
     await loadTrophies();
+    await loadBookEntries();
+    await loadAdventuresState();
+    await loadGuilds();
+    await loadFriends();
     setupAdminTicketControls();
     if (trophyStatus) {
       trophyStatus.textContent = "You can choose a trophy";

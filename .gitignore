@@ -28,6 +28,7 @@ backups/
 TunnelBear-Installer.exe
 *.exe
 fishbot.db 
-fishbot.db 
-fishbot.db 
-fishbot.db 
+
+# Node modules
+node_modules/
+**/node_modules/
