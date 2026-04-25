@@ -1,8 +1,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // TrophyModal — bottom sheet modal for choosing trophy
 // ─────────────────────────────────────────────────────────────────────────────
-import { FISH_DATA, RARITY_COLORS } from '../data';
+import { RARITY_COLORS } from '../data';
 import { tgService } from '../modules/telegram';
+import { selectTrophy } from '../modules/trophiesData';
 import { getIcon } from './icons';
 import type { FishData } from '../types';
 
@@ -15,6 +16,7 @@ export class TrophyModal {
 
   private onSelectCallback: ((index: number) => void) | null = null;
   private currentActiveIndex = 0;
+  private items: FishData[] = [];
 
   // Swipe-to-close state
   private sheetStartY = 0;
@@ -44,7 +46,12 @@ export class TrophyModal {
   }
 
   private buildList(): void {
-    this.listEl.innerHTML = FISH_DATA.map((f, i) => {
+    if (this.items.length === 0) {
+      this.listEl.innerHTML = '<div class="modal-empty">У вас пока нет трофеев</div>';
+      return;
+    }
+
+    this.listEl.innerHTML = this.items.map((f, i) => {
       const color   = RARITY_COLORS[f.rarity];
       const isActive = i === this.currentActiveIndex;
       return `
@@ -56,11 +63,11 @@ export class TrophyModal {
           tabindex="0"
           aria-label="${f.name}"
         >
-          <span class="modal-fish-emoji">${getIcon(f.id)}</span>
+          <span class="modal-fish-emoji">${f.imageUrl ? `<img src="${f.imageUrl}" alt="${f.name}" class="modal-fish-image" loading="lazy">` : getIcon(f.id)}</span>
           <div class="modal-fish-info">
             <div class="modal-fish-name">${f.name}</div>
             <div class="modal-fish-rarity" style="color:${color}">${f.rarityStars} ${f.rarityLabel}</div>
-            <div class="modal-fish-stats">⚖️ ${f.weight} · 🌊 ${f.depth}</div>
+            <div class="modal-fish-stats">⚖️ ${f.weight} · 📏 ${f.depth}</div>
           </div>
           ${isActive ? '<span class="modal-check">✓</span>' : ''}
         </div>
@@ -71,7 +78,7 @@ export class TrophyModal {
     this.listEl.querySelectorAll<HTMLElement>('.modal-fish-item').forEach(item => {
       item.addEventListener('click', () => {
         const idx = parseInt(item.dataset['index'] ?? '0', 10);
-        this.select(idx);
+        void this.select(idx);
       });
     });
   }
@@ -109,10 +116,21 @@ export class TrophyModal {
     this.onSelectCallback = cb;
   }
 
+  setItems(items: FishData[]): void {
+    this.items = [...items];
+    this.currentActiveIndex = Math.max(0, Math.min(this.currentActiveIndex, this.items.length - 1));
+  }
+
   // ── Internal ───────────────────────────────────────────────────────────────
-  private select(index: number): void {
+  private async select(index: number): Promise<void> {
     this.currentActiveIndex = index;
-    tgService.haptic('medium');
+    const item = this.items[index];
+    const selected = item?.trophyId ? await selectTrophy(item.trophyId) : true;
+    tgService.haptic(selected ? 'medium' : 'error');
+    if (!selected) {
+      alert('Не удалось выбрать трофей. Попробуйте еще раз.');
+      return;
+    }
     this.onSelectCallback?.(index);
     this.close();
   }
@@ -150,5 +168,5 @@ export class TrophyModal {
     }, { passive: true });
   }
 
-  get fish(): FishData[] { return FISH_DATA; }
+  get fish(): FishData[] { return this.items; }
 }

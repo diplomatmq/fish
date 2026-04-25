@@ -79,13 +79,20 @@ export class FriendsScreen {
       tgService.haptic('medium');
     });
 
-    this.el.querySelector('#btn-add-search')?.addEventListener('click', () => {
+    this.el.querySelector('#btn-add-search')?.addEventListener('click', async () => {
       const input = this.el.querySelector('#friend-search') as HTMLInputElement;
       if (input.value.trim()) {
-        sendFriendRequest(input.value);
-        alert('Запрос отправлен!');
-        input.value = '';
-        tgService.haptic('light');
+        const success = await sendFriendRequest(input.value.trim());
+        if (success) {
+          alert('Запрос отправлен!');
+          input.value = '';
+          tgService.haptic('light');
+          await loadFriends();
+          this.render();
+        } else {
+          tgService.haptic('error');
+          alert('Не удалось отправить заявку.');
+        }
       }
     });
   }
@@ -122,19 +129,19 @@ export class FriendsScreen {
     });
 
     this.el.querySelectorAll('.req-btn--yes').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         const id = btn.getAttribute('data-id')!;
-        acceptRequest(id);
-        tgService.haptic('heavy');
+        const success = await acceptRequest(id);
+        tgService.haptic(success ? 'heavy' : 'error');
         this.render();
       });
     });
 
     this.el.querySelectorAll('.req-btn--no').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         const id = btn.getAttribute('data-id')!;
-        declineRequest(id);
-        tgService.haptic('medium');
+        const success = await declineRequest(id);
+        tgService.haptic(success ? 'medium' : 'error');
         this.render();
       });
     });

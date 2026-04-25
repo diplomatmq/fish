@@ -75,9 +75,9 @@ export const FISH_DATA: FishData[] = [
     emoji: '🦈',
     name: 'Белая акула',
     latinName: 'Carcharodon carcharias',
-    rarity: 'epic',
-    rarityLabel: 'Эпическая',
-    rarityStars: '★★★★',
+    rarity: 'mythical',
+    rarityLabel: 'Мифическая',
+    rarityStars: '★★★★★',
     weight: '120 кг',
     depth: '0–250 м',
   },
@@ -109,6 +109,8 @@ export const USER_PROFILE: UserProfile = {
 export const RARITY_COLORS: Record<FishData['rarity'], string> = {
   common:    '#90e0ef',
   rare:      '#00b4d8',
-  epic:      '#9b5de5',
   legendary: '#f4a82e',
+  aquarium:  '#4cc9f0',
+  mythical:  '#ef476f',
+  anomaly:   '#7b2cbf',
 };

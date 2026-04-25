@@ -3,13 +3,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { fetchApi } from './api';
+import { normalizeRarity, rarityColor } from './rarity';
 
 export interface EncyclopediaEntry {
   id: string;
   emoji: string;
   name: string;
   latinName: string;
-  rarity: 'common' | 'rare' | 'epic' | 'legendary';
+  rarity: 'common' | 'rare' | 'legendary' | 'aquarium' | 'mythical' | 'anomaly';
   glowColor: string;
   depth: string;
   habitat: string;
@@ -18,14 +19,17 @@ export interface EncyclopediaEntry {
   funFact: string;
   chapter: string;
   isCaught?: boolean;
+  imageUrl?: string;
 }
 
 export let ENCYCLOPEDIA: EncyclopediaEntry[] = [];
+export let ENCYCLOPEDIA_TOTAL_ALL = 0;
 
 export async function loadEncyclopedia(): Promise<void> {
   try {
-    const data = await fetchApi<any>('/api/book');
+    const data = await fetchApi<any>('/api/book?limit=500');
     if (data && data.ok) {
+      ENCYCLOPEDIA_TOTAL_ALL = Number(data.total_all || 0);
       ENCYCLOPEDIA = data.items.map((f: any) => ({
         id: f.image_file || 'fishdef',
         emoji: '🐟',
@@ -33,13 +37,14 @@ export async function loadEncyclopedia(): Promise<void> {
         latinName: f.name,
         rarity: mapRarity(f.rarity),
         glowColor: getGlowColor(f.rarity),
-        depth: '1-100 м',
+        depth: `${f.min_weight}-${f.max_weight} кг`,
         habitat: f.locations,
         length: `${f.min_length}-${f.max_length} см`,
         description: f.lore || `Рыба вида ${f.name}.`,
-        funFact: 'Информации пока нет.',
+        funFact: f.baits ? `Лучше ловится на: ${f.baits}.` : 'Информации пока нет.',
         chapter: 'Общий атлас',
-        isCaught: f.is_caught
+        isCaught: f.is_caught,
+        imageUrl: f.image_url || undefined
       }));
     }
   } catch (e) {
@@ -47,22 +52,10 @@ export async function loadEncyclopedia(): Promise<void> {
   }
 }
 
-function mapRarity(r: string): any {
-  const map: any = {
-    'Обычная': 'common',
-    'Редкая': 'rare',
-    'Легендарная': 'legendary',
-    'Мифическая': 'epic'
-  };
-  return map[r] || 'common';
+function mapRarity(r: string): EncyclopediaEntry['rarity'] {
+  return normalizeRarity(r);
 }
 
 function getGlowColor(r: string): string {
-  const map: any = {
-    'Обычная': '#90e0ef',
-    'Редкая': '#00b4d8',
-    'Легендарная': '#f4a82e',
-    'Мифическая': '#9b5de5'
-  };
-  return map[r] || '#90e0ef';
+  return rarityColor(r);
 }

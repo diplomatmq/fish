@@ -1731,6 +1731,25 @@ class Database:
             ''')
 
             cursor.execute('''
+                CREATE TABLE IF NOT EXISTS webapp_friend_requests (
+                    id SERIAL PRIMARY KEY,
+                    requester_user_id BIGINT NOT NULL,
+                    addressee_user_id BIGINT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    processed_at TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_webapp_friend_requests_addressee
+                ON webapp_friend_requests (addressee_user_id, status, created_at DESC)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_webapp_friend_requests_requester
+                ON webapp_friend_requests (requester_user_id, status, created_at DESC)
+            ''')
+
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS webapp_ui_state (
                     user_id BIGINT PRIMARY KEY,
                     preferred_tab TEXT,
@@ -9981,7 +10000,7 @@ class Database:
         return result
 
     def add_webapp_friend_by_username(self, user_id: int, username: str) -> Dict[str, Any]:
-        """Добавить дружбу по username (двусторонняя запись)."""
+        """Создать заявку в друзья по username."""
         safe_user_id = int(user_id)
         raw_username = str(username or '').strip()
         if not raw_username:
@@ -10014,23 +10033,172 @@ class Database:
 
             cursor.execute(
                 '''
-                INSERT INTO webapp_friend_links (user_id, friend_user_id, created_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT (user_id, friend_user_id) DO NOTHING
+                SELECT 1
+                FROM webapp_friend_links
+                WHERE user_id = ? AND friend_user_id = ?
+                LIMIT 1
                 ''',
                 (safe_user_id, friend_user_id),
             )
+            if cursor.fetchone():
+                return {'ok': False, 'reason': 'already_friends'}
+
             cursor.execute(
                 '''
-                INSERT INTO webapp_friend_links (user_id, friend_user_id, created_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT (user_id, friend_user_id) DO NOTHING
+                SELECT id
+                FROM webapp_friend_requests
+                WHERE requester_user_id = ?
+                  AND addressee_user_id = ?
+                  AND status = 'pending'
+                LIMIT 1
+                ''',
+                (safe_user_id, friend_user_id),
+            )
+            existing_pending = cursor.fetchone()
+            if existing_pending:
+                return {
+                    'ok': True,
+                    'request_id': int(existing_pending[0] or 0),
+                    'username': f'@{clean_username}',
+                    'already_pending': True,
+                }
+
+            cursor.execute(
+                '''
+                SELECT id
+                FROM webapp_friend_requests
+                WHERE requester_user_id = ?
+                  AND addressee_user_id = ?
+                  AND status = 'pending'
+                LIMIT 1
                 ''',
                 (friend_user_id, safe_user_id),
             )
+            reverse_pending = cursor.fetchone()
+            if reverse_pending:
+                return {
+                    'ok': False,
+                    'reason': 'incoming_request_exists',
+                    'request_id': int(reverse_pending[0] or 0),
+                }
+
+            cursor.execute(
+                '''
+                INSERT INTO webapp_friend_requests (requester_user_id, addressee_user_id, status, created_at)
+                VALUES (?, ?, 'pending', CURRENT_TIMESTAMP)
+                ''',
+                (safe_user_id, friend_user_id),
+            )
+            request_id = int(cursor.lastrowid or 0)
             conn.commit()
 
-        return {'ok': True, 'friend_user_id': friend_user_id, 'username': f'@{clean_username}'}
+        return {
+            'ok': True,
+            'request_id': request_id,
+            'friend_user_id': friend_user_id,
+            'username': f'@{clean_username}',
+        }
+
+    def get_webapp_friend_requests(self, user_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+        """Входящие заявки в друзья для webapp."""
+        safe_user_id = int(user_id)
+        safe_limit = max(1, min(int(limit or 50), 200))
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT fr.id,
+                       fr.requester_user_id,
+                       COALESCE(MAX(p.username), 'user') AS username,
+                       MAX(p.level) AS level,
+                       fr.created_at
+                FROM webapp_friend_requests fr
+                LEFT JOIN players p ON p.user_id = fr.requester_user_id
+                WHERE fr.addressee_user_id = ?
+                  AND fr.status = 'pending'
+                GROUP BY fr.id, fr.requester_user_id, fr.created_at
+                ORDER BY fr.created_at DESC, fr.id DESC
+                LIMIT ?
+                ''',
+                (safe_user_id, safe_limit),
+            )
+            rows = cursor.fetchall() or []
+
+        result: List[Dict[str, Any]] = []
+        for request_id, requester_user_id, username, level, created_at in rows:
+            result.append(
+                {
+                    'request_id': int(request_id or 0),
+                    'requester_user_id': int(requester_user_id or 0),
+                    'username': str(username or 'user'),
+                    'level': int(level or 0),
+                    'created_at': created_at,
+                }
+            )
+        return result
+
+    def respond_webapp_friend_request(self, user_id: int, request_id: int, action: str) -> Dict[str, Any]:
+        """Принять или отклонить заявку в друзья."""
+        safe_user_id = int(user_id)
+        safe_request_id = int(request_id)
+        normalized_action = str(action or '').strip().lower()
+        if normalized_action not in {'accept', 'decline'}:
+            return {'ok': False, 'reason': 'invalid_action'}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, requester_user_id, addressee_user_id, status
+                FROM webapp_friend_requests
+                WHERE id = ?
+                LIMIT 1
+                ''',
+                (safe_request_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {'ok': False, 'reason': 'request_not_found'}
+
+            _, requester_user_id, addressee_user_id, status = row
+            if int(addressee_user_id or 0) != safe_user_id:
+                return {'ok': False, 'reason': 'forbidden'}
+            if str(status or '') != 'pending':
+                return {'ok': False, 'reason': 'request_already_processed'}
+
+            next_status = 'accepted' if normalized_action == 'accept' else 'declined'
+            cursor.execute(
+                '''
+                UPDATE webapp_friend_requests
+                SET status = ?, processed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''',
+                (next_status, safe_request_id),
+            )
+
+            if normalized_action == 'accept':
+                requester = int(requester_user_id or 0)
+                addressee = int(addressee_user_id or 0)
+                cursor.execute(
+                    '''
+                    INSERT INTO webapp_friend_links (user_id, friend_user_id, created_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT (user_id, friend_user_id) DO NOTHING
+                    ''',
+                    (requester, addressee),
+                )
+                cursor.execute(
+                    '''
+                    INSERT INTO webapp_friend_links (user_id, friend_user_id, created_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT (user_id, friend_user_id) DO NOTHING
+                    ''',
+                    (addressee, requester),
+                )
+            conn.commit()
+
+        return {'ok': True, 'request_id': safe_request_id, 'status': next_status}
 
     def get_weather(self, location: str) -> Optional[Dict[str, Any]]:
         """Получить погоду локации"""

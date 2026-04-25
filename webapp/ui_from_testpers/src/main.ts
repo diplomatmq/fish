@@ -24,6 +24,7 @@ import { ParallaxController } from './animations/effects';
 import { loadFriends } from './modules/friendsData';
 import { loadClans } from './modules/guildsData';
 import { loadEncyclopedia } from './modules/encyclopediaData';
+import { loadTrophies, ACTIVE_TROPHY_ID } from './modules/trophiesData';
 
 // ── Entry overlay (shown during boot) ──────────────────────────────────────
 const entryOverlay = buildEntryOverlay();
@@ -68,6 +69,14 @@ const carousel = new FishCarousel(carouselMount, 2);
 // ── Trophy modal ───────────────────────────────────────────────────────────────
 const screensWrap  = document.getElementById('screens-wrap') as HTMLElement;
 const trophyModal  = new TrophyModal();
+
+async function refreshTrophies(): Promise<void> {
+  const items = await loadTrophies();
+  carousel.setFishData(items, ACTIVE_TROPHY_ID);
+  trophyModal.setItems(carousel.getItems());
+}
+
+void refreshTrophies();
 
 trophyModal.onSelect((index) => {
   carousel.goTo(index);
@@ -131,6 +140,8 @@ tabBar.onChange((_prev, next) => {
   if (next === 'friends' && !friendsInitialized) {
     friendsScreen.init();
     friendsInitialized = true;
+  } else if (next === 'friends' && friendsInitialized) {
+    friendsScreen.init();
   }
 });
 

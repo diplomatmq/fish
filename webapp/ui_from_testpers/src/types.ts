@@ -7,11 +7,13 @@ export interface FishData {
   emoji: string;
   name: string;
   latinName: string;
-  rarity: 'common' | 'rare' | 'epic' | 'legendary';
+  rarity: 'common' | 'rare' | 'legendary' | 'aquarium' | 'mythical' | 'anomaly';
   rarityLabel: string;
   rarityStars: string;
   weight: string;
   depth: string;
+  imageUrl?: string;
+  trophyId?: string;
 }
 
 export type ScreenId = 'home' | 'adventures' | 'friends' | 'guilds' | 'book';

@@ -142,7 +142,7 @@ export class GuildsScreen {
 
         ${this.selectedType === 'open' ? `
         <div class="form-group">
-          <label class="form-label">Минимальный уровень: ${this.selectedMinLevel}</label>
+          <label class="form-label" id="min-level-label">Минимальный уровень: ${this.selectedMinLevel}</label>
           <input type="range" id="min-level-slider" min="0" max="100" value="${this.selectedMinLevel}" style="width:100%; accent-color:var(--gold);">
         </div>
         ` : ''}
@@ -186,7 +186,7 @@ export class GuildsScreen {
     if (levelSlider) {
       levelSlider.addEventListener('input', () => {
         this.selectedMinLevel = parseInt(levelSlider.value);
-        const label = this.el.querySelector('.form-label:nth-of-type(4)');
+        const label = this.el.querySelector('#min-level-label');
         if (label) label.textContent = `Минимальный уровень: ${this.selectedMinLevel}`;
       });
     }

@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // TrophyModal — bottom sheet modal for choosing trophy
 // ─────────────────────────────────────────────────────────────────────────────
-import { FISH_DATA, RARITY_COLORS } from '../data';
+import { RARITY_COLORS } from '../data';
 import { tgService } from '../modules/telegram';
 import { getIcon } from './icons';
 import type { FishData } from '../types';
@@ -12,6 +12,7 @@ export class TrophyModal {
   private listEl:  HTMLElement;
   private isOpen  = false;
   private bgBlurTarget: HTMLElement | null = null;
+  private trophies: FishData[] = [];
 
   private onSelectCallback: ((index: number) => void) | null = null;
   private currentActiveIndex = 0;
@@ -26,6 +27,10 @@ export class TrophyModal {
     this.listEl  = this.overlay.querySelector('#modal-fish-list')!;
     document.body.appendChild(this.overlay);
     this.bindClose();
+  }
+
+  setTrophies(trophies: FishData[]): void {
+    this.trophies = trophies;
   }
 
   // ── Build DOM ──────────────────────────────────────────────────────────────
@@ -44,8 +49,8 @@ export class TrophyModal {
   }
 
   private buildList(): void {
-    this.listEl.innerHTML = FISH_DATA.map((f, i) => {
-      const color   = RARITY_COLORS[f.rarity];
+    this.listEl.innerHTML = this.trophies.map((f, i) => {
+      const color   = RARITY_COLORS[f.rarity] || '#ffffff';
       const isActive = i === this.currentActiveIndex;
       return `
         <div
@@ -150,5 +155,5 @@ export class TrophyModal {
     }, { passive: true });
   }
 
-  get fish(): FishData[] { return FISH_DATA; }
+  get fish(): FishData[] { return this.trophies; }
 }

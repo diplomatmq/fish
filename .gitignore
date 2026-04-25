@@ -32,3 +32,7 @@ fishbot.db
 # Node modules
 node_modules/
 **/node_modules/
+
+# Allow dist for the transferred UI
+!webapp/ui_from_testpers/dist/
+!webapp/ui_from_testpers/dist/**

@@ -24,6 +24,8 @@ import { ParallaxController } from './animations/effects';
 import { loadFriends } from './modules/friendsData';
 import { loadClans } from './modules/guildsData';
 import { loadEncyclopedia } from './modules/encyclopediaData';
+import { fetchApi } from './modules/api';
+import type { FishData } from './types';
 
 // ── Entry overlay (shown during boot) ──────────────────────────────────────
 const entryOverlay = buildEntryOverlay();
@@ -48,29 +50,87 @@ profileMount.appendChild(profilePanel.getElement());
 // ── Initial Data Loading ──────────────────────────────────────────────────────
 async function initAppData() {
   try {
-    await Promise.all([
+    const [profileData] = await Promise.all([
+      fetchApi<any>('/api/profile'),
       loadFriends(),
       loadClans(),
       loadEncyclopedia()
     ]);
     console.log('Initial data loaded');
+
+    // Load trophies
+    const trophiesResponse = await fetchApi<any>('/api/trophies');
+    if (trophiesResponse && trophiesResponse.items) {
+      const trophies: FishData[] = trophiesResponse.items
+        .filter((t: any) => t.id !== 'none')
+        .map((t: any) => ({
+          id: t.image_url ? t.image_url.split('/').pop() : 'fishdef.webp',
+          emoji: '🐟',
+          name: t.fish_name,
+          latinName: t.rarity || 'Обычная',
+          rarity: mapRarity(t.rarity),
+          rarityLabel: t.rarity || 'Обычная',
+          rarityStars: mapStars(t.rarity),
+          weight: `${t.weight} кг`,
+          depth: `${t.length} см`
+        }));
+      
+      let activeIdx = trophies.findIndex((t: any, i: number) => {
+          const apiTrophy = trophiesResponse.items.filter((x: any) => x.id !== 'none')[i];
+          return apiTrophy && apiTrophy.is_active;
+      });
+      if (activeIdx === -1) activeIdx = 0;
+
+      carousel.setTrophies(trophies, activeIdx);
+      trophyModal.setTrophies(trophies);
+    }
+
   } catch (e) {
     console.error('Failed to load initial data:', e);
   }
+}
+
+function mapRarity(r: string): any {
+  const m: any = { 'Обычная': 'common', 'Редкая': 'rare', 'Эпическая': 'epic', 'Легендарная': 'legendary' };
+  return m[r] || 'common';
+}
+function mapStars(r: string): string {
+  const m: any = { 'Обычная': '★★', 'Редкая': '★★★', 'Эпическая': '★★★★', 'Легендарная': '★★★★★' };
+  return m[r] || '★★';
 }
 
 initAppData();
 
 // ── Fish carousel ──────────────────────────────────────────────────────────────
 const carouselMount = document.getElementById('carousel-mount')!;
-const carousel = new FishCarousel(carouselMount, 2);
+const carousel = new FishCarousel(carouselMount, 0);
 
 // ── Trophy modal ───────────────────────────────────────────────────────────────
 const screensWrap  = document.getElementById('screens-wrap') as HTMLElement;
 const trophyModal  = new TrophyModal();
 
-trophyModal.onSelect((index) => {
-  carousel.goTo(index);
+trophyModal.onSelect(async (index) => {
+  const fish = trophyModal.fish[index];
+  if (fish) {
+    // We need the original API ID here, but our mapped FishData uses filename as ID.
+    // Let's refetch or store IDs. For now, we'll just update local carousel.
+    carousel.goTo(index);
+    
+    // Attempt to sync with server
+    try {
+        const trophiesResponse = await fetchApi<any>('/api/trophies');
+        const apiTrophies = trophiesResponse.items.filter((x: any) => x.id !== 'none');
+        const selectedId = apiTrophies[index]?.id;
+        if (selectedId) {
+            await fetchApi('/api/trophy/select', {
+                method: 'POST',
+                body: JSON.stringify({ trophy_id: selectedId })
+            });
+        }
+    } catch (e) {
+        console.error('Failed to sync trophy selection:', e);
+    }
+  }
 });
 
 bindTrophyButton(() => {

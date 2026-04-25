@@ -85,8 +85,11 @@ export class TabBar {
     tgService.haptic('selection');
 
     const prevId   = this.activeId;
-    const fromScreen = this.screens.get(prevId)!;
-    const toScreen   = this.screens.get(id)!;
+    const fromScreen = this.screens.get(prevId);
+    const toScreen   = this.screens.get(id);
+    if (!fromScreen || !toScreen) {
+      return;
+    }
 
     // Animate screens
     ScreenTransition.transitionTo(fromScreen, toScreen);

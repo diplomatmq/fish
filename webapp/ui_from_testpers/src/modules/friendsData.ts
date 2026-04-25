@@ -23,13 +23,23 @@ export async function loadFriends(): Promise<void> {
   try {
     const data = await fetchApi<any>('/api/friends');
     if (data && data.ok) {
-      friends = data.friends.map((f: any) => ({
+      const friendItems = Array.isArray(data.items) ? data.items : [];
+      const requestItems = Array.isArray(data.incoming_requests) ? data.incoming_requests : [];
+
+      friends = friendItems.map((f: any) => ({
         id: String(f.user_id),
         name: f.username,
-        level: f.level,
+        level: Number(f.level || 0),
         avatar: '👤',
-        online: true, // В БД пока нет статуса онлайн, можно добавить позже
-        xp: f.xp
+        online: Boolean(f.is_online),
+        xp: Number(f.xp || 0)
+      }));
+
+      friendRequests = requestItems.map((r: any) => ({
+        id: String(r.request_id || r.id),
+        name: String(r.username || 'user'),
+        level: Number(r.level || 0),
+        avatar: '👤'
       }));
     }
   } catch (e) {
@@ -37,23 +47,40 @@ export async function loadFriends(): Promise<void> {
   }
 }
 
-export function sendFriendRequest(target: string): boolean {
-  // Mock logic: adding a request would normally go to backend
-  console.log(`Friend request sent to: ${target}`);
-  return true;
-}
-
-export function acceptRequest(id: string): void {
-  const req = friendRequests.find(r => r.id === id);
-  if (req) {
-    friends.push({
-      ...req,
-      online: Math.random() > 0.5
+export async function sendFriendRequest(target: string): Promise<boolean> {
+  try {
+    const data = await fetchApi<any>('/api/friends/add', {
+      method: 'POST',
+      body: JSON.stringify({ username: target })
     });
-    friendRequests = friendRequests.filter(r => r.id !== id);
+    return Boolean(data?.ok);
+  } catch (e) {
+    console.error('Failed to send friend request:', e);
+    return false;
   }
 }
 
-export function declineRequest(id: string): void {
-  friendRequests = friendRequests.filter(r => r.id !== id);
+export async function acceptRequest(id: string): Promise<boolean> {
+  return respondToRequest(id, 'accept');
+}
+
+export async function declineRequest(id: string): Promise<boolean> {
+  return respondToRequest(id, 'decline');
+}
+
+async function respondToRequest(requestId: string, action: 'accept' | 'decline'): Promise<boolean> {
+  try {
+    const data = await fetchApi<any>('/api/friends/request/respond', {
+      method: 'POST',
+      body: JSON.stringify({ request_id: requestId, action })
+    });
+
+    if (data?.ok) {
+      await loadFriends();
+      return true;
+    }
+  } catch (e) {
+    console.error('Failed to respond friend request:', e);
+  }
+  return false;
 }

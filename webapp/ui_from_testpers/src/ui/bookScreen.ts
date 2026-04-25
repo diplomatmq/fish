@@ -1,15 +1,17 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // BookScreen — Single Page Layout with PageFlip Engine (Turn.js-like)
 // ─────────────────────────────────────────────────────────────────────────────
-import { ENCYCLOPEDIA, type EncyclopediaEntry, loadEncyclopedia } from '../modules/encyclopediaData';
+import { ENCYCLOPEDIA, ENCYCLOPEDIA_TOTAL_ALL, type EncyclopediaEntry, loadEncyclopedia } from '../modules/encyclopediaData';
 import { tgService } from '../modules/telegram';
 import { getIcon } from './icons';
 
 const RARITY_LABELS: Record<string, string> = {
   common:    '★★ Обычная',
   rare:      '★★★ Редкая',
-  epic:      '★★★★ Эпическая',
   legendary: '★★★★★ Легендарная',
+  aquarium:  '★★★★ Аквариумная',
+  mythical:  '★★★★★ Мифическая',
+  anomaly:   '★★★★★★ Аномалия',
 };
 
 export class BookScreen {
@@ -110,7 +112,7 @@ export class BookScreen {
 
           <div class="ph-fish-block">
             <div class="ph-fish-emoji" style="--glow: ${isCaught ? e.glowColor : '#555'}; filter: ${isCaught ? 'none' : 'grayscale(100%) contrast(50%) brightness(70%)'}">
-              ${getIcon(e.id)}
+              ${e.imageUrl ? `<img src="${e.imageUrl}" alt="${e.name}" class="ph-fish-image" loading="lazy">` : getIcon(e.id)}
             </div>
           </div>
           
@@ -204,7 +206,7 @@ export class BookScreen {
   // ═══════════════════════════════════════════════════════════════════════════
   private syncUI(): void {
     this.counterCur.textContent = String(this.index + 1);
-    this.counterTot.textContent = String(this.filtered.length);
+    this.counterTot.textContent = String(Math.max(this.filtered.length, ENCYCLOPEDIA_TOTAL_ALL || 0));
     this.prevBtn.disabled = this.index === 0;
     this.nextBtn.disabled = this.index === this.filtered.length - 1;
   }

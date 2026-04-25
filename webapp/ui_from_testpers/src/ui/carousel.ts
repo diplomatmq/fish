@@ -1,17 +1,30 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // FishCarousel — swipeable trophy carousel with momentum & rubber-band
 // ─────────────────────────────────────────────────────────────────────────────
-import { FISH_DATA, RARITY_COLORS } from '../data';
+import { RARITY_COLORS } from '../data';
 import { tgService } from '../modules/telegram';
 import { BubbleSpawner } from '../animations/effects';
 import { getIcon } from './icons';
 import type { FishData } from '../types';
+
+const EMPTY_TROPHY: FishData = {
+  id: 'no-trophy',
+  emoji: '🐟',
+  name: 'Нет трофеев',
+  latinName: '',
+  rarity: 'common',
+  rarityLabel: 'Обычная',
+  rarityStars: '',
+  weight: '0 кг',
+  depth: '0 см',
+};
 
 export class FishCarousel {
   private container: HTMLElement;
   private activeIndex: number;
   private cards: HTMLElement[] = [];
   private bubbleSpawner: BubbleSpawner | null = null;
+  private fishData: FishData[] = [];
 
   // Swipe state
   private startX = 0;
@@ -43,7 +56,21 @@ export class FishCarousel {
     track.className = 'carousel__track';
     this.container.appendChild(track);
 
-    FISH_DATA.forEach((fish, i) => {
+    if (this.fishData.length === 0) {
+      track.innerHTML = `
+        <div class="carousel__card is-active" style="opacity:1; transform:translateX(0) scale(1);">
+          <div class="carousel__card-inner" style="--accent:${RARITY_COLORS.common}">
+            <div class="carousel__fish-emoji">${getIcon('trophy')}</div>
+            <div class="carousel__rarity" style="color:${RARITY_COLORS.common}">ТРОФЕЕВ ПОКА НЕТ</div>
+            <div class="carousel__fish-name">Поймай рыбу и создай трофей</div>
+            <div class="carousel__fish-latin">Карточки появятся автоматически</div>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    this.fishData.forEach((fish, i) => {
       const card = document.createElement('div');
       card.className   = 'carousel__card';
       card.dataset['index'] = String(i);
@@ -51,13 +78,13 @@ export class FishCarousel {
       const accentColor = RARITY_COLORS[fish.rarity];
       card.innerHTML = `
         <div class="carousel__card-inner" style="--accent:${accentColor}">
-          <div class="carousel__fish-emoji">${getIcon(fish.id)}</div>
+          <div class="carousel__fish-emoji">${fish.imageUrl ? `<img src="${fish.imageUrl}" alt="${fish.name}" class="carousel__fish-image" loading="lazy">` : getIcon(fish.id)}</div>
           <div class="carousel__rarity" style="color:${accentColor}">${fish.rarityStars} ${fish.rarityLabel}</div>
           <div class="carousel__fish-name">${fish.name}</div>
           <div class="carousel__fish-latin">${fish.latinName}</div>
           <div class="carousel__fish-stats">
             <span>⚖️ ${fish.weight}</span>
-            <span>🌊 ${fish.depth}</span>
+            <span>📏 ${fish.depth}</span>
           </div>
         </div>
       `;
@@ -69,6 +96,10 @@ export class FishCarousel {
 
   // ── Update card positions & styles ────────────────────────────────────────
   update(): void {
+    if (this.cards.length === 0) {
+      return;
+    }
+
     this.cards.forEach((card, i) => {
       const offset = i - this.activeIndex;
       const abs    = Math.abs(offset);
@@ -115,12 +146,16 @@ export class FishCarousel {
       card.style.zIndex    = String(zIndex);
     });
 
-    this.onChangeCallback?.(FISH_DATA[this.activeIndex]);
+    const activeFish = this.fishData[this.activeIndex];
+    if (activeFish) {
+      this.onChangeCallback?.(activeFish);
+    }
   }
 
   // ── Navigate ───────────────────────────────────────────────────────────────
   next(): void {
-    if (this.activeIndex < FISH_DATA.length - 1) {
+    if (this.fishData.length === 0) return;
+    if (this.activeIndex < this.fishData.length - 1) {
       this.activeIndex++;
       this.update();
       tgService.haptic('light');
@@ -128,6 +163,7 @@ export class FishCarousel {
   }
 
   prev(): void {
+    if (this.fishData.length === 0) return;
     if (this.activeIndex > 0) {
       this.activeIndex--;
       this.update();
@@ -136,12 +172,29 @@ export class FishCarousel {
   }
 
   goTo(index: number): void {
-    this.activeIndex = Math.max(0, Math.min(index, FISH_DATA.length - 1));
+    if (this.fishData.length === 0) return;
+    this.activeIndex = Math.max(0, Math.min(index, this.fishData.length - 1));
     this.update();
   }
 
   getActiveIndex(): number { return this.activeIndex; }
-  getActiveFish():  FishData { return FISH_DATA[this.activeIndex]; }
+  getActiveFish():  FishData { return this.fishData[this.activeIndex] || EMPTY_TROPHY; }
+
+  getItems(): FishData[] {
+    return this.fishData;
+  }
+
+  setFishData(items: FishData[], preferredTrophyId?: string): void {
+    this.fishData = [...items];
+    if (preferredTrophyId) {
+      const targetIndex = this.fishData.findIndex((fish) => fish.trophyId === preferredTrophyId || fish.id === preferredTrophyId);
+      this.activeIndex = targetIndex >= 0 ? targetIndex : 0;
+    } else {
+      this.activeIndex = this.fishData.length ? Math.max(0, Math.min(this.activeIndex, this.fishData.length - 1)) : 0;
+    }
+    this.build();
+    this.update();
+  }
 
   onChange(cb: (fish: FishData) => void): void {
     this.onChangeCallback = cb;

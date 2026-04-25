@@ -157,6 +157,12 @@
     drop-shadow(0 0 16px var(--glow, #00b4d8))
     drop-shadow(0 0 32px color-mix(in srgb, var(--glow, #00b4d8) 45%, transparent));
 }
+.ph-fish-image {
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
+  display: block;
+}
 
 /* Title & Rarity */
 .ph-fish-name {

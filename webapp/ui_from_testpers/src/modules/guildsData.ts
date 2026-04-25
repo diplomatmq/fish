@@ -52,7 +52,7 @@ export async function loadClans(): Promise<void> {
     const data = await fetchApi<any>('/api/guilds');
     if (data && data.ok) {
       const myClanData = data.my_clan;
-      if (myClanData) {
+      if (myClanData && myClanData.id) {
         const guild: Guild = {
           id: String(myClanData.id),
           name: myClanData.name,

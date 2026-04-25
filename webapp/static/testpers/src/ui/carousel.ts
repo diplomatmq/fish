@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // FishCarousel — swipeable trophy carousel with momentum & rubber-band
 // ─────────────────────────────────────────────────────────────────────────────
-import { FISH_DATA, RARITY_COLORS } from '../data';
+import { RARITY_COLORS } from '../data';
 import { tgService } from '../modules/telegram';
 import { BubbleSpawner } from '../animations/effects';
 import { getIcon } from './icons';
@@ -12,6 +12,7 @@ export class FishCarousel {
   private activeIndex: number;
   private cards: HTMLElement[] = [];
   private bubbleSpawner: BubbleSpawner | null = null;
+  private trophies: FishData[] = [];
 
   // Swipe state
   private startX = 0;
@@ -19,11 +20,17 @@ export class FishCarousel {
 
   private onChangeCallback: ((fish: FishData) => void) | null = null;
 
-  constructor(container: HTMLElement, initialIndex = 2) {
+  constructor(container: HTMLElement, initialIndex = 0) {
     this.container    = container;
     this.activeIndex  = initialIndex;
     this.build();
     this.bindSwipe();
+  }
+
+  setTrophies(trophies: FishData[], activeIndex = 0): void {
+    this.trophies = trophies;
+    this.activeIndex = activeIndex;
+    this.build();
     this.update();
   }
 
@@ -43,12 +50,20 @@ export class FishCarousel {
     track.className = 'carousel__track';
     this.container.appendChild(track);
 
-    FISH_DATA.forEach((fish, i) => {
+    if (this.trophies.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'carousel__empty';
+      empty.textContent = 'У вас пока нет трофеев';
+      track.appendChild(empty);
+      return;
+    }
+
+    this.trophies.forEach((fish, i) => {
       const card = document.createElement('div');
       card.className   = 'carousel__card';
       card.dataset['index'] = String(i);
 
-      const accentColor = RARITY_COLORS[fish.rarity];
+      const accentColor = RARITY_COLORS[fish.rarity] || '#ffffff';
       card.innerHTML = `
         <div class="carousel__card-inner" style="--accent:${accentColor}">
           <div class="carousel__fish-emoji">${getIcon(fish.id)}</div>
@@ -69,6 +84,7 @@ export class FishCarousel {
 
   // ── Update card positions & styles ────────────────────────────────────────
   update(): void {
+    if (this.trophies.length === 0) return;
     this.cards.forEach((card, i) => {
       const offset = i - this.activeIndex;
       const abs    = Math.abs(offset);
@@ -115,12 +131,12 @@ export class FishCarousel {
       card.style.zIndex    = String(zIndex);
     });
 
-    this.onChangeCallback?.(FISH_DATA[this.activeIndex]);
+    this.onChangeCallback?.(this.trophies[this.activeIndex]);
   }
 
   // ── Navigate ───────────────────────────────────────────────────────────────
   next(): void {
-    if (this.activeIndex < FISH_DATA.length - 1) {
+    if (this.activeIndex < this.trophies.length - 1) {
       this.activeIndex++;
       this.update();
       tgService.haptic('light');
@@ -136,12 +152,12 @@ export class FishCarousel {
   }
 
   goTo(index: number): void {
-    this.activeIndex = Math.max(0, Math.min(index, FISH_DATA.length - 1));
+    this.activeIndex = Math.max(0, Math.min(index, this.trophies.length - 1));
     this.update();
   }
 
   getActiveIndex(): number { return this.activeIndex; }
-  getActiveFish():  FishData { return FISH_DATA[this.activeIndex]; }
+  getActiveFish():  FishData | null { return this.trophies[this.activeIndex] || null; }
 
   onChange(cb: (fish: FishData) => void): void {
     this.onChangeCallback = cb;

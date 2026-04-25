@@ -243,9 +243,24 @@ export const ICONS: Record<string, string> = {
 };
 
 export function getIcon(id: string, className = ''): string {
-  const svg = ICONS[id] || ICONS['home'];
-  if (className) {
-     return svg.replace('<svg', `<svg class="${className}"`);
+  if (id.endsWith('.webp')) {
+    return `<img src="/api/fish-image/${id}" class="${className}" style="width:100%; height:100%; object-fit:contain;" />`;
   }
-  return svg;
+  const svg = ICONS[id];
+  if (svg) {
+    if (className) {
+       return svg.replace('<svg', `<svg class="${className}"`);
+    }
+    return svg;
+  }
+  // Fallback for non-SVG icons (emojis or strings)
+  switch (id) {
+    case 'home':         return '🧭';
+    case 'adventures':   return '📦';
+    case 'friends':      return '👤';
+    case 'guilds':       return '🔱';
+    case 'book':         return '📖';
+    case 'trophy':       return '🏆';
+    default:             return '🐟';
+  }
 }

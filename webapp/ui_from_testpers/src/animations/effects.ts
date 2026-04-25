@@ -99,7 +99,17 @@ export class BubbleSpawner {
 // ScreenTransition — depth-of-water page transitions
 // ─────────────────────────────────────────────────────────────────────────────
 export class ScreenTransition {
+  private static transitionToken = 0;
+  private static pendingTimeout = 0;
+
   static transitionTo(from: HTMLElement, to: HTMLElement): void {
+    if (this.pendingTimeout) {
+      clearTimeout(this.pendingTimeout);
+      this.pendingTimeout = 0;
+    }
+
+    const token = ++this.transitionToken;
+
     // Fade out current screen
     from.style.transition = 'opacity 0.35s ease, transform 0.35s ease';
     from.style.opacity    = '0';
@@ -111,14 +121,23 @@ export class ScreenTransition {
     to.style.opacity      = '0';
     to.style.transform    = 'scale(1.06)';
     to.style.display      = 'flex';
+    to.style.pointerEvents = 'none';
 
     // After exit completes — bring in new screen
-    setTimeout(() => {
+    this.pendingTimeout = window.setTimeout(() => {
+      if (token !== this.transitionToken) {
+        return;
+      }
+
       from.style.display = 'none';
       from.style.opacity = '';
       from.style.transform = '';
+      from.style.transition = '';
 
       requestAnimationFrame(() => {
+        if (token !== this.transitionToken) {
+          return;
+        }
         to.style.transition  = 'opacity 0.38s cubic-bezier(0.25,0.46,0.45,0.94), transform 0.38s cubic-bezier(0.25,0.46,0.45,0.94)';
         to.style.opacity     = '1';
         to.style.transform   = 'scale(1)';
