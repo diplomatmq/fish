@@ -819,14 +819,38 @@ def apply_guild():
 		return jsonify({"ok": False, "error": "missing_guild_id"}), 400
 
 
+	db = _get_fish_db()
 
-	# В текущей БД нет таблицы заявок, поэтому пока просто возвращаем успех
+	if not db:
 
-	## В будущем можно создать таблицу clan_requests
+		if fish_db_import_error is not None:
 
-	return jsonify({"ok": True, "status": "applied"})
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
 
 
+
+	try:
+
+		result = db.add_webapp_clan_request(user_id, int(guild_id))
+
+	except Exception:
+
+		logger.exception("WebApp guild apply failed for user_id=%s guild_id=%s", user_id, guild_id)
+
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+
+	if not result.get("ok"):
+
+		error = str(result.get("reason") or "apply_failed")
+
+		status = 403 if error in {"already_in_clan", "not_invite_only", "forbidden"} else 400
+		return jsonify({"ok": False, "error": error}), status
+
+
+	return jsonify(result)
 
 
 
@@ -848,6 +872,10 @@ def leave_guild():
 
 	if not db:
 
+		if fish_db_import_error is not None:
+
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+
 		return jsonify({"ok": False, "error": "db_unavailable"}), 500
 
 
@@ -863,6 +891,75 @@ def leave_guild():
 		logger.exception("WebApp guild leave failed for user_id=%s", user_id)
 
 		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+
+
+@app.post("/api/guilds/request/respond")
+
+def guild_request_respond():
+
+	auth_user, auth_error = _get_verified_user_from_request()
+
+	if auth_error:
+
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+
+
+	user_id = int(auth_user["id"])
+	data = request.get_json(silent=True) or {}
+	request_id = _safe_int(data.get("request_id"))
+	action = str(data.get("action") or "").strip().lower()
+
+	if request_id is None:
+
+		return jsonify({"ok": False, "error": "request_id_required"}), 400
+
+	if action not in {"accept", "decline"}:
+
+		return jsonify({"ok": False, "error": "invalid_action"}), 400
+
+
+
+	db = _get_fish_db()
+
+	if not db:
+
+		if fish_db_import_error is not None:
+
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+
+
+	try:
+
+		result = db.respond_webapp_clan_request(user_id, request_id, action)
+
+	except Exception:
+
+		logger.exception("WebApp clan request respond failed for user_id=%s", user_id)
+
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+
+
+	if not result.get("ok"):
+
+		error = str(result.get("reason") or "request_respond_failed")
+
+		status = 403 if error == "forbidden" else 400
+
+		if error == "request_not_found":
+
+			status = 404
+
+		return jsonify({"ok": False, "error": error}), status
+
+
+
+	return jsonify(result)
 
 
 

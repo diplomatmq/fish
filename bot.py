@@ -233,6 +233,16 @@ CLAN_DONATABLE_ITEMS = {
     "удочки": "Поломанная удочка",
     "rod": "Поломанная удочка",
     "board": "Деревянная доска",
+    "коряга": "Коряга",
+    "шина": "Старая шина",
+    "банка": "Консервная банка",
+    "ботинок": "Ботинок",
+    "бутылка": "Пластиковая бутылка",
+    "крючок": "Ржавый крючок",
+    "труба": "Кусок трубы",
+    "сетка": "Рыболовная сетка",
+    "якорь": "Старый якорь",
+    "веревка": "Веревка",
 }
 
 DYNAMITE_COOLDOWN_HOURS = 8
@@ -1347,6 +1357,7 @@ class FishBot:
             [InlineKeyboardButton(self.TOUR_TYPES['longest_fish'], callback_data='tour_type_longest_fish')],
             [InlineKeyboardButton(self.TOUR_TYPES['biggest_weight'], callback_data='tour_type_biggest_weight')],
             [InlineKeyboardButton(self.TOUR_TYPES['total_weight'], callback_data='tour_type_total_weight')],
+            [InlineKeyboardButton(self.TOUR_TYPES['total_length'], callback_data='tour_type_total_length')],
             [InlineKeyboardButton(self.TOUR_TYPES['specific_fish'], callback_data='tour_type_specific_fish')],
         ]
         await update.message.reply_text("Выберите тип турнира:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1655,16 +1666,24 @@ class FishBot:
                         weight = round(float(user_row.get('best_weight') or 0), 2)
                         lines.append(f"<i>Ваше место: {user_place}. {name} — {fish} — {weight} кг</i>")
         else:
-            rows = db.get_tour_leaderboard_weight(tour['starts_at'], tour['ends_at'], limit=top_limit)
-            all_rows = db.get_tour_leaderboard_weight(tour['starts_at'], tour['ends_at'], limit=1000)
+            if t_type == 'total_length':
+                rows = db.get_tour_leaderboard_length(tour['starts_at'], tour['ends_at'], limit=top_limit)
+                all_rows = db.get_tour_leaderboard_length(tour['starts_at'], tour['ends_at'], limit=1000)
+            else:
+                rows = db.get_tour_leaderboard_weight(tour['starts_at'], tour['ends_at'], limit=top_limit)
+                all_rows = db.get_tour_leaderboard_weight(tour['starts_at'], tour['ends_at'], limit=1000)
             if not rows:
                 lines.append("Пока никто не поймал рыбу.")
             else:
                 for i, r in enumerate(rows, 1):
                     medal = medals[i - 1] if i <= 3 else f"{i}."
                     name = html.escape(r.get('username') or str(r['user_id']))
-                    weight = round(float(r['total_weight']), 2)
-                    lines.append(f"{medal} {name} — {weight} кг")
+                    if t_type == 'total_length':
+                        length = round(float(r.get('total_length') or 0), 1)
+                        lines.append(f"{medal} {name} — {length} см")
+                    else:
+                        weight = round(float(r['total_weight']), 2)
+                        lines.append(f"{medal} {name} — {weight} кг")
                 # Поиск пользователя вне топа
                 for idx, r in enumerate(all_rows, 1):
                     if r.get('user_id') == user_id:
@@ -1673,9 +1692,13 @@ class FishBot:
                         break
                 if user_row and user_place > top_limit:
                     name = html.escape(user_row.get('username') or str(user_row['user_id']))
-                    weight = round(float(user_row.get('total_weight') or 0), 2)
                     lines.append("")
-                    lines.append(f"<i>Ваше место: {user_place}. {name} — {weight} кг</i>")
+                    if t_type == 'total_length':
+                        length = round(float(user_row.get('total_length') or 0), 1)
+                        lines.append(f"<i>Ваше место: {user_place}. {name} — {length} см</i>")
+                    else:
+                        weight = round(float(user_row.get('total_weight') or 0), 2)
+                        lines.append(f"<i>Ваше место: {user_place}. {name} — {weight} кг</i>")
 
         await update.message.reply_text("\n".join(lines))
 
@@ -2547,6 +2570,7 @@ class FishBot:
             'longest_fish': 'Самая длинная рыба',
             'biggest_weight': 'Самая большая рыба (вес)',
             'total_weight': 'Общий вес улова',
+            'total_length': 'Суммарная длина улова',
             'specific_fish': 'Улов определённой рыбы',
         }
         self.fight_sessions: Dict[str, Dict[str, Any]] = {}

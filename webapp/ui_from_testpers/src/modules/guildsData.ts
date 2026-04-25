@@ -9,6 +9,7 @@ export interface GuildMember {
 }
 
 export interface GuildRequest {
+  requestId: string;
   userId: string;
   name: string;
   level: number;
@@ -53,6 +54,7 @@ export async function loadClans(): Promise<void> {
     if (data && data.ok) {
       const myClanData = data.my_clan;
       if (myClanData && myClanData.id) {
+        const requests = Array.isArray(myClanData.requests) ? myClanData.requests : [];
         const guild: Guild = {
           id: String(myClanData.id),
           name: myClanData.name,
@@ -61,7 +63,13 @@ export async function loadClans(): Promise<void> {
           type: myClanData.access_type || 'open',
           level: myClanData.level || 1,
           members: [], // В снимке нет списка участников, его можно догрузить отдельно если нужно
-          requests: [],
+          requests: requests.map((request: any) => ({
+            requestId: String(request.request_id ?? request.id ?? ''),
+            userId: String(request.user_id ?? request.requester_user_id ?? ''),
+            name: String(request.username || 'user'),
+            level: Number(request.level || 0),
+            userAvatar: String(request.user_avatar || '👤')
+          })),
           upgradeProgress: [],
           capacity: 20,
           minLevel: myClanData.min_level || 0
@@ -149,6 +157,27 @@ export async function joinGuild(guildId: string): Promise<boolean> {
     }
   } catch (e) {
     console.error('Failed to join guild:', e);
+  }
+  return false;
+}
+
+export async function respondClanRequest(requestId: string, action: 'accept' | 'decline'): Promise<boolean> {
+  try {
+    const data = await fetchApi<any>('/api/guilds/request/respond', {
+      method: 'POST',
+      body: JSON.stringify({ request_id: requestId, action })
+    });
+
+    if (data && data.ok) {
+      await loadClans();
+      return true;
+    }
+
+    if (data && !data.ok) {
+      alert(`Ошибка обработки заявки: ${data.error || 'неизвестная ошибка'}`);
+    }
+  } catch (e) {
+    console.error('Failed to respond to clan request:', e);
   }
   return false;
 }

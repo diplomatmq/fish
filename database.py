@@ -439,10 +439,10 @@ CLAN_MEMBER_LIMITS = {
 }
 
 CLAN_UPGRADE_REQUIREMENTS = {
-    2: {"Деревянная доска": 5, "Поломанная удочка": 10},
-    3: {"Деревянная доска": 15, "Поломанная удочка": 25},
-    4: {"Деревянная доска": 30, "Поломанная удочка": 50},
-    5: {"Деревянная доска": 50, "Поломанная удочка": 80},
+    2: {"Коряга": 8, "Консервная банка": 12},
+    3: {"Ботинок": 12, "Пластиковая бутылка": 20, "Веревка": 10},
+    4: {"Поломанная удочка": 20, "Рыболовная сетка": 16, "Ржавый крючок": 24},
+    5: {"Старая шина": 16, "Кусок трубы": 12, "Старый якорь": 8, "Деревянная доска": 20},
 }
 
 class Database:
@@ -1747,6 +1747,26 @@ class Database:
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_webapp_friend_requests_requester
                 ON webapp_friend_requests (requester_user_id, status, created_at DESC)
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS webapp_clan_requests (
+                    id SERIAL PRIMARY KEY,
+                    clan_id BIGINT NOT NULL,
+                    requester_user_id BIGINT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    processed_at TIMESTAMP,
+                    UNIQUE(clan_id, requester_user_id)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_webapp_clan_requests_clan
+                ON webapp_clan_requests (clan_id, status, created_at DESC)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_webapp_clan_requests_requester
+                ON webapp_clan_requests (requester_user_id, status, created_at DESC)
             ''')
 
             cursor.execute('''
@@ -8569,6 +8589,31 @@ class Database:
             cols = [d[0] for d in cursor.description]
             return [dict(zip(cols, r)) for r in rows]
 
+    def get_tour_leaderboard_length(self, starts_at: datetime, ends_at: datetime, limit: int = 10) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    COALESCE(MAX(p.username), 'Неизвестно') AS username,
+                    cf.user_id,
+                    COUNT(cf.id) AS total_fish,
+                    COALESCE(SUM(cf.length), 0) AS total_length
+                FROM caught_fish cf
+                LEFT JOIN players p ON p.user_id = cf.user_id
+                WHERE cf.caught_at >= ?
+                  AND cf.caught_at <= ?
+                  AND COALESCE(cf.sold, 0) = 0
+                GROUP BY cf.user_id
+                ORDER BY total_length DESC, total_fish DESC
+                LIMIT ?
+                ''',
+                (starts_at, ends_at, max(1, int(limit or 10))),
+            )
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, r)) for r in rows]
+
     def get_location_leaderboard_length(self, location_name: str, starts_at: datetime, ends_at: datetime, limit: int = 10) -> List[Dict[str, Any]]:
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -9856,6 +9901,15 @@ class Database:
             except Exception:
                 pass
 
+        requests_by_clan: Dict[int, List[Dict[str, Any]]] = {}
+        if my_clan and str(my_clan.get('role') or '') == 'leader':
+            try:
+                my_clan_id = int(my_clan.get('id') or 0)
+                if my_clan_id > 0:
+                    requests_by_clan[my_clan_id] = self.get_webapp_clan_requests(my_clan_id, limit=limit)
+            except Exception:
+                logger.exception("Failed to load clan requests for user_id=%s", user_id)
+
         profiles_by_clan: Dict[int, Dict[str, Any]] = {}
         if clan_ids:
             placeholders = ','.join('?' for _ in clan_ids)
@@ -9890,7 +9944,10 @@ class Database:
                 'access_type': 'open',
                 'description': '',
             }
-            return {**clan, **profile}
+            merged = {**clan, **profile}
+            if cid in requests_by_clan:
+                merged['requests'] = requests_by_clan.get(cid, [])
+            return merged
 
         return {
             'my_clan': _merge_profile(my_clan),
@@ -9946,6 +10003,156 @@ class Database:
             'access_type': safe_access,
             'description': safe_desc,
         }
+
+    def add_webapp_clan_request(self, user_id: int, clan_id: int) -> Dict[str, Any]:
+        """Создать или переоткрыть заявку на вступление в артель."""
+        safe_user_id = int(user_id)
+        safe_clan_id = int(clan_id)
+
+        if self.get_clan_by_user(safe_user_id):
+            return {'ok': False, 'reason': 'already_in_clan'}
+
+        clan = self.get_clan_by_id(safe_clan_id)
+        if not clan:
+            return {'ok': False, 'reason': 'clan_not_found'}
+
+        members_count = int(clan.get('members_count') or 0)
+        max_members = int(clan.get('max_members') or self.get_clan_member_limit(int(clan.get('level') or 1)))
+        if members_count >= max_members:
+            return {'ok': False, 'reason': 'clan_full'}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT min_level, access_type FROM webapp_clan_profiles WHERE clan_id = ?',
+                (safe_clan_id,),
+            )
+            profile_row = cursor.fetchone()
+            if not profile_row:
+                return {'ok': False, 'reason': 'clan_not_found'}
+
+            access_type = str(profile_row[1] or 'open')
+            if access_type != 'invite':
+                return {'ok': False, 'reason': 'not_invite_only'}
+
+            min_level = int(profile_row[0] or 0)
+            cursor.execute('SELECT level FROM players WHERE user_id = ? LIMIT 1', (safe_user_id,))
+            user_row = cursor.fetchone()
+            user_level = int(user_row[0] or 0) if user_row else 0
+            if user_level < min_level:
+                return {'ok': False, 'reason': 'level_too_low', 'required': min_level}
+
+            cursor.execute(
+                '''
+                INSERT INTO webapp_clan_requests (clan_id, requester_user_id, status, created_at, processed_at)
+                VALUES (?, ?, 'pending', CURRENT_TIMESTAMP, NULL)
+                ON CONFLICT (clan_id, requester_user_id)
+                DO UPDATE SET
+                    status = 'pending',
+                    created_at = CURRENT_TIMESTAMP,
+                    processed_at = NULL
+                ''',
+                (safe_clan_id, safe_user_id),
+            )
+            request_id = int(cursor.lastrowid or 0)
+            conn.commit()
+
+        return {
+            'ok': True,
+            'request_id': request_id,
+            'clan_id': safe_clan_id,
+            'status': 'pending',
+        }
+
+    def get_webapp_clan_requests(self, clan_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+        """Получить входящие заявки в конкретную артель."""
+        safe_clan_id = int(clan_id)
+        safe_limit = max(1, min(int(limit or 50), 200))
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    r.id,
+                    r.requester_user_id,
+                    COALESCE(MAX(p.username), 'user') AS username,
+                    MAX(p.level) AS level,
+                    r.created_at
+                FROM webapp_clan_requests r
+                LEFT JOIN players p ON p.user_id = r.requester_user_id
+                WHERE r.clan_id = ?
+                  AND r.status = 'pending'
+                GROUP BY r.id, r.requester_user_id, r.created_at
+                ORDER BY r.created_at DESC, r.id DESC
+                LIMIT ?
+                ''',
+                (safe_clan_id, safe_limit),
+            )
+            rows = cursor.fetchall() or []
+
+        result: List[Dict[str, Any]] = []
+        for request_id, requester_user_id, username, level, created_at in rows:
+            result.append(
+                {
+                    'request_id': int(request_id or 0),
+                    'user_id': int(requester_user_id or 0),
+                    'username': str(username or 'user'),
+                    'level': int(level or 0),
+                    'user_avatar': '👤',
+                    'created_at': created_at,
+                }
+            )
+        return result
+
+    def respond_webapp_clan_request(self, user_id: int, request_id: int, action: str) -> Dict[str, Any]:
+        """Принять или отклонить заявку в артель."""
+        safe_user_id = int(user_id)
+        safe_request_id = int(request_id)
+        normalized_action = str(action or '').strip().lower()
+        if normalized_action not in {'accept', 'decline'}:
+            return {'ok': False, 'reason': 'invalid_action'}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT r.id, r.clan_id, r.requester_user_id, r.status, c.owner_user_id
+                FROM webapp_clan_requests r
+                JOIN clans c ON c.id = r.clan_id
+                WHERE r.id = ?
+                LIMIT 1
+                ''',
+                (safe_request_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {'ok': False, 'reason': 'request_not_found'}
+
+            _, clan_id, requester_user_id, status, owner_user_id = row
+            if int(owner_user_id or 0) != safe_user_id:
+                return {'ok': False, 'reason': 'forbidden'}
+            if str(status or '') != 'pending':
+                return {'ok': False, 'reason': 'request_already_processed'}
+
+            next_status = 'accepted' if normalized_action == 'accept' else 'declined'
+
+            if normalized_action == 'accept':
+                join_result = self.join_clan(int(requester_user_id or 0), int(clan_id or 0))
+                if not join_result.get('ok'):
+                    return join_result
+
+            cursor.execute(
+                '''
+                UPDATE webapp_clan_requests
+                SET status = ?, processed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''',
+                (next_status, safe_request_id),
+            )
+            conn.commit()
+
+        return {'ok': True, 'request_id': safe_request_id, 'status': next_status}
 
     def get_webapp_friends(self, user_id: int, limit: int = 50) -> List[Dict[str, Any]]:
         """Получить список друзей пользователя для webapp."""

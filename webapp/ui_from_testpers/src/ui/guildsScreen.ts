@@ -1,4 +1,4 @@
-import { guilds, createGuild, joinGuild, leaveGuild, currentUserGuildId, GUILD_AVATARS, GUILD_COLORS, Guild, loadClans } from '../modules/guildsData';
+import { guilds, createGuild, joinGuild, leaveGuild, currentUserGuildId, currentUserIsOwner, GUILD_AVATARS, GUILD_COLORS, Guild, loadClans, respondClanRequest } from '../modules/guildsData';
 import { tgService } from '../modules/telegram';
 import { USER_PROFILE } from '../data';
 import { getIcon } from './icons';
@@ -222,7 +222,7 @@ export class GuildsScreen {
   // ── MANAGE VIEW ──
   private renderManage(): void {
     const guild = guilds.find(g => g.id === currentUserGuildId)!;
-    const isOwner = guild.members.find(m => m.userId === 'current-user')?.role === 'owner';
+    const isOwner = currentUserIsOwner;
 
     this.el.innerHTML = `
       <h1 class="page-title">${guild.name.toUpperCase()}</h1>
@@ -278,8 +278,8 @@ export class GuildsScreen {
                   <div class="req-lvl" style="font-size:9px;">Ур. ${r.level}</div>
                 </div>
                 <div class="req-btns">
-                  <button class="req-btn req-btn--no" data-id="${r.userId}" style="width:28px; height:28px; font-size:12px;">✕</button>
-                  <button class="req-btn req-btn--yes" data-id="${r.userId}" style="width:28px; height:28px; font-size:12px;">✓</button>
+                  <button class="req-btn req-btn--no" data-id="${r.requestId}" style="width:28px; height:28px; font-size:12px;">✕</button>
+                  <button class="req-btn req-btn--yes" data-id="${r.requestId}" style="width:28px; height:28px; font-size:12px;">✓</button>
                 </div>
               </div>
             `).join('')}
@@ -311,24 +311,26 @@ export class GuildsScreen {
     });
 
     this.el.querySelectorAll('.req-btn--yes').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const uid = btn.getAttribute('data-id');
-        const reqIndex = guild.requests.findIndex(r => r.userId === uid);
-        if (reqIndex !== -1) {
-          const r = guild.requests.splice(reqIndex, 1)[0];
-          guild.members.push({ userId: r.userId, name: r.name, level: r.level, role: 'member' });
-          tgService.haptic('heavy');
-          this.render();
+      btn.addEventListener('click', async () => {
+        const requestId = btn.getAttribute('data-id');
+        if (!requestId) return;
+        const success = await respondClanRequest(requestId, 'accept');
+        tgService.haptic(success ? 'heavy' : 'error');
+        if (success) {
+          await this.init();
         }
       });
     });
 
     this.el.querySelectorAll('.req-btn--no').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const uid = btn.getAttribute('data-id');
-        guild.requests = guild.requests.filter(r => r.userId !== uid);
-        tgService.haptic('medium');
-        this.render();
+      btn.addEventListener('click', async () => {
+        const requestId = btn.getAttribute('data-id');
+        if (!requestId) return;
+        const success = await respondClanRequest(requestId, 'decline');
+        tgService.haptic(success ? 'medium' : 'error');
+        if (success) {
+          await this.init();
+        }
       });
     });
   }
