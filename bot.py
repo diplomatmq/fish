@@ -1,27 +1,23 @@
 # -*- coding: utf-8 -*-
 import logging
 import html
-import requests
 import random
 import asyncio
+import functools
+import time
 import re
 import shlex
 import uuid
+from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode, urlparse, urlunparse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, WebAppInfo
-# -*- coding: utf-8 -*-
-import logging
-import html
-import requests
-import random
-import asyncio
-import re
-import shlex
-from pathlib import Path
-from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, WebAppInfo
+import aiofiles
+import aiohttp
+import aiosqlite
+import asyncpg
+import redis.asyncio as aioredis
 # --- Button style helpers for Telegram update ---
 def get_button_style(text: str) -> str:
     """Return 'primary' for yes/confirm, 'destructive' for no/cancel, else None."""
@@ -34,7 +30,6 @@ def get_button_style(text: str) -> str:
 from telegram.error import BadRequest, Forbidden, RetryAfter, TimedOut, NetworkError, Conflict, ChatMigrated
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, PreCheckoutQueryHandler, TypeHandler, filters, ContextTypes, Defaults, ExtBot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.date import DateTrigger
 import sys
 import os
@@ -55,6 +50,121 @@ from database import db, DB_PATH, BAMBOO_ROD, TEMP_ROD_RANGES
 import httpx
 from typing import Any, Optional, Dict, List
 
+HTTP_SESSION: Optional[aiohttp.ClientSession] = None
+ASYNC_PG_POOL: Optional[asyncpg.Pool] = None
+ASYNC_SQLITE_CONN: Optional[aiosqlite.Connection] = None
+ASYNC_REDIS: Optional[aioredis.Redis] = None
+_SEND_SEMAPHORE: Optional[asyncio.Semaphore] = None
+SLOW_OPERATION_SECONDS = float(os.getenv("SLOW_OPERATION_SECONDS", "2.0"))
+
+
+def get_send_semaphore() -> asyncio.Semaphore:
+    global _SEND_SEMAPHORE
+    if _SEND_SEMAPHORE is None:
+        _SEND_SEMAPHORE = asyncio.Semaphore(int(os.getenv("TG_SEND_SEMAPHORE_LIMIT", "50")))
+    return _SEND_SEMAPHORE
+
+
+async def get_http_session() -> aiohttp.ClientSession:
+    global HTTP_SESSION
+    if HTTP_SESSION is None or HTTP_SESSION.closed:
+        timeout = aiohttp.ClientTimeout(total=90, connect=30, sock_read=60, sock_connect=30)
+        connector = aiohttp.TCPConnector(
+            limit=int(os.getenv("AIOHTTP_LIMIT", "256")),
+            limit_per_host=int(os.getenv("AIOHTTP_LIMIT_PER_HOST", "128")),
+            ttl_dns_cache=300,
+            enable_cleanup_closed=True,
+        )
+        HTTP_SESSION = aiohttp.ClientSession(timeout=timeout, connector=connector)
+    return HTTP_SESSION
+
+
+async def close_global_clients() -> None:
+    global HTTP_SESSION, ASYNC_PG_POOL, ASYNC_SQLITE_CONN, ASYNC_REDIS
+    if HTTP_SESSION and not HTTP_SESSION.closed:
+        await HTTP_SESSION.close()
+    HTTP_SESSION = None
+    if ASYNC_REDIS is not None:
+        await ASYNC_REDIS.aclose()
+    ASYNC_REDIS = None
+    if ASYNC_PG_POOL is not None:
+        await ASYNC_PG_POOL.close()
+    ASYNC_PG_POOL = None
+    if ASYNC_SQLITE_CONN is not None:
+        await ASYNC_SQLITE_CONN.close()
+    ASYNC_SQLITE_CONN = None
+
+
+async def init_async_storage() -> None:
+    """Optional async DB clients for new code paths: PostgreSQL, SQLite and Redis."""
+    global ASYNC_PG_POOL, ASYNC_SQLITE_CONN, ASYNC_REDIS
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if database_url.startswith(("postgres://", "postgresql://")) and ASYNC_PG_POOL is None:
+        ASYNC_PG_POOL = await asyncpg.create_pool(
+            dsn=database_url,
+            min_size=int(os.getenv("ASYNCPG_MIN_SIZE", "1")),
+            max_size=int(os.getenv("ASYNCPG_MAX_SIZE", "20")),
+            command_timeout=float(os.getenv("ASYNCPG_COMMAND_TIMEOUT", "60")),
+        )
+    if os.getenv("ENABLE_ASYNC_SQLITE", "0") == "1" and ASYNC_SQLITE_CONN is None:
+        ASYNC_SQLITE_CONN = await aiosqlite.connect(os.getenv("FISHBOT_DB_PATH", DB_PATH))
+        ASYNC_SQLITE_CONN.row_factory = aiosqlite.Row
+    redis_url = os.getenv("REDIS_URL", "").strip()
+    if redis_url and ASYNC_REDIS is None:
+        ASYNC_REDIS = aioredis.from_url(
+            redis_url,
+            encoding="utf-8",
+            decode_responses=True,
+            max_connections=int(os.getenv("REDIS_MAX_CONNECTIONS", "100")),
+        )
+        await ASYNC_REDIS.ping()
+
+
+async def async_file_bytes(path: Path | str) -> BytesIO:
+    source = Path(path)
+    async with aiofiles.open(source, "rb") as file_obj:
+        data = await file_obj.read()
+    bio = BytesIO(data)
+    bio.name = source.name
+    bio.seek(0)
+    return bio
+
+
+async def gzip_copy_async(source: Path | str, destination: Path | str) -> None:
+    import gzip
+
+    async with aiofiles.open(source, "rb") as f_in:
+        data = await f_in.read()
+    compressed = await asyncio.to_thread(gzip.compress, data)
+    async with aiofiles.open(destination, "wb") as f_out:
+        await f_out.write(compressed)
+
+
+def slow_operation(name: Optional[str] = None):
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            started = time.perf_counter()
+            try:
+                return await func(*args, **kwargs)
+            finally:
+                elapsed = time.perf_counter() - started
+                if elapsed >= SLOW_OPERATION_SECONDS:
+                    logger.warning("Slow operation %.3fs: %s", elapsed, name or getattr(func, "__qualname__", repr(func)))
+        return wrapper
+    return decorator
+
+
+def trace_application_handlers(application: Application) -> None:
+    for handlers in application.handlers.values():
+        for handler in handlers:
+            callback = getattr(handler, "callback", None)
+            if callback and asyncio.iscoroutinefunction(callback) and not getattr(callback, "_slow_wrapped", False):
+                wrapped = slow_operation(getattr(callback, "__qualname__", repr(callback)))(callback)
+                setattr(wrapped, "_slow_wrapped", True)
+                handler.callback = wrapped
+
+
 class TelegramBotAPI:
     def __init__(self, bot_token: str) -> None:
         self.bot_token = bot_token
@@ -65,28 +175,23 @@ class TelegramBotAPI:
         logger = logging.getLogger(__name__)
         logger.info(f"[INVOICE] CALL create_invoice_link with kwargs: {kwargs}")
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.base_url}/createInvoiceLink",
-                    json=kwargs,
-                    timeout=10
-                )
-            logger.info(f"[INVOICE] Telegram API status: {response.status_code}")
-            logger.info(f"[INVOICE] Telegram API response: {response.text}")
-            if response.status_code == 200:
-                try:
-                    result = response.json()
-                except Exception as e:
-                    logger.error(f"[INVOICE] Failed to parse JSON: {e}, text: {response.text}")
+            session = await get_http_session()
+            async with session.post(f"{self.base_url}/createInvoiceLink", json=kwargs) as response:
+                text = await response.text()
+                logger.info(f"[INVOICE] Telegram API status: {response.status}")
+                logger.info(f"[INVOICE] Telegram API response: {text}")
+                if response.status == 200:
+                    try:
+                        result = await response.json()
+                    except Exception as e:
+                        logger.error(f"[INVOICE] Failed to parse JSON: {e}, text: {text}")
+                        return None
+                    if result.get("ok"):
+                        logger.info(f"[INVOICE] Got invoice_url: {result.get('result')}")
+                        return result.get("result")
+                    logger.error(f"[INVOICE] Telegram API error: {result.get('description')}, full response: {text}")
                     return None
-                if result.get("ok"):
-                    logger.info(f"[INVOICE] Got invoice_url: {result.get('result')}")
-                    return result.get("result")
-                else:
-                    logger.error(f"[INVOICE] Telegram API error: {result.get('description')}, full response: {response.text}")
-                    return None
-            else:
-                logger.error(f"[INVOICE] HTTP error: {response.status_code}, text: {response.text}")
+                logger.error(f"[INVOICE] HTTP error: {response.status}, text: {text}")
                 return None
         except Exception as e:
             logger.error(f"[INVOICE] Exception in create_invoice_link: {e}")
@@ -3532,7 +3637,8 @@ class FishBot:
             return None
 
         try:
-            with open(image_path, 'rb') as f:
+            if True:
+                f = await async_file_bytes(image_path)
                 # Отправляем именно как документ, как в обычном /fish
                 return await self._safe_send_document(
                     chat_id=chat_id,
@@ -3625,7 +3731,8 @@ class FishBot:
     async def _safe_send_message(self, **kwargs):
         for attempt in range(3):
             try:
-                return await self.application.bot.send_message(**kwargs)
+                async with get_send_semaphore():
+                    return await self.application.bot.send_message(**kwargs)
             except (BadRequest, Forbidden) as e:
                 exc_str = str(e)
                 exc_lower = exc_str.lower()
@@ -3645,7 +3752,8 @@ class FishBot:
                         kwargs.get('chat_id'),
                     )
                     try:
-                        return await self.application.bot.send_message(**retry_kwargs)
+                        async with get_send_semaphore():
+                            return await self.application.bot.send_message(**retry_kwargs)
                     except Exception as retry_exc:
                         logger.warning(
                             "_safe_send_message: fallback without reply_to_message_id failed (chat_id=%s): %s",
@@ -3668,6 +3776,9 @@ class FishBot:
 
     async def _safe_send_document(self, **kwargs):
         document = kwargs.get('document')
+        if isinstance(document, (str, Path)):
+            kwargs['document'] = await async_file_bytes(document)
+            document = kwargs.get('document')
         if document:
             try:
                 if hasattr(document, 'read'):
@@ -3693,7 +3804,8 @@ class FishBot:
                         document.seek(0)
                     except Exception:
                         pass
-                return await self.application.bot.send_document(**kwargs)
+                async with get_send_semaphore():
+                    return await self.application.bot.send_document(**kwargs)
             except (BadRequest, Forbidden) as e:
                 exc_str = str(e)
                 exc_lower = exc_str.lower()
@@ -3715,7 +3827,8 @@ class FishBot:
                         kwargs.get('chat_id'),
                     )
                     try:
-                        return await self.application.bot.send_document(**retry_kwargs)
+                        async with get_send_semaphore():
+                            return await self.application.bot.send_document(**retry_kwargs)
                     except Exception as retry_exc:
                         logger.warning(
                             "_safe_send_document: fallback without reply_to_message_id failed (chat_id=%s): %s",
@@ -3739,7 +3852,8 @@ class FishBot:
     async def _safe_send_sticker(self, **kwargs):
         for attempt in range(3):
             try:
-                return await self.application.bot.send_sticker(**kwargs)
+                async with get_send_semaphore():
+                    return await self.application.bot.send_sticker(**kwargs)
             except (BadRequest, Forbidden) as e:
                 exc_str = str(e)
                 if any(fragment in exc_str for fragment in ("Not enough rights", "Chat not found", "Forbidden")):
@@ -4794,7 +4908,8 @@ class FishBot:
                             trash_image = TRASH_STICKERS[trash_name]
                             image_path = Path(__file__).parent / trash_image
                             if image_path.exists():
-                                with open(image_path, 'rb') as f:
+                                if True:
+                                    f = await async_file_bytes(image_path)
                                     sticker_message = await self._safe_send_document(
                                         chat_id=update.effective_chat.id,
                                         document=f,
@@ -4867,7 +4982,8 @@ class FishBot:
                             if inspector_image:
                                 image_path = Path(__file__).parent / inspector_image
                                 if image_path.exists():
-                                    with open(image_path, 'rb') as f:
+                                    if True:
+                                        f = await async_file_bytes(image_path)
                                         await self._safe_send_document(
                                             chat_id=update.effective_chat.id,
                                             document=f,
@@ -10687,7 +10803,8 @@ class FishBot:
             sticker_path = Path(__file__).parent / "fishdef.webp"
             if sticker_path.exists():
                 try:
-                    with open(sticker_path, 'rb') as f:
+                    if True:
+                        f = await async_file_bytes(sticker_path)
                         await self._safe_send_document(
                             chat_id=chat_id,
                             document=f,
@@ -11454,7 +11571,8 @@ class FishBot:
                         if image_path.exists():
                             reply_to_id = reply_anchor_id
                             try:
-                                with open(image_path, 'rb') as f:
+                                if True:
+                                    f = await async_file_bytes(image_path)
                                     sticker_message = await self._safe_send_document(
                                         chat_id=update.effective_chat.id,
                                         document=f,
@@ -11741,7 +11859,8 @@ class FishBot:
                         if inspector_image:
                             image_path = Path(__file__).parent / inspector_image
                             if image_path.exists():
-                                with open(image_path, 'rb') as f:
+                                if True:
+                                    f = await async_file_bytes(image_path)
                                     await self._safe_send_document(
                                         chat_id=update.effective_chat.id,
                                         document=f,
@@ -12783,14 +12902,16 @@ class FishBot:
         }
 
         try:
-            response = await asyncio.to_thread(requests.post, url, data=payload, timeout=15)
-            data = response.json() if response is not None else {}
-            if response is not None and response.status_code == 200 and data.get("ok"):
+            session = await get_http_session()
+            async with session.post(url, data=payload) as response:
+                data = await response.json(content_type=None)
+                status = response.status
+            if status == 200 and data.get("ok"):
                 db.update_star_refund_status(telegram_payment_charge_id, "ref")
                 logger.info("Stars refund successful for user=%s, charge_id=%s", user_id, telegram_payment_charge_id)
                 return True
 
-            logger.error("Stars refund failed: status=%s, response=%s", response.status_code if response else None, data)
+            logger.error("Stars refund failed: status=%s, response=%s", status, data)
             return False
         except Exception as e:
             logger.error("Stars refund exception: %s", e)
@@ -12983,11 +13104,11 @@ class FishBot:
         logger.error(f"Update {update} caused error {error}")
         
         # Проверяем тип ошибки
-        if isinstance(error, requests.exceptions.ConnectionError):
+        if isinstance(error, (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError)):
             logger.error("Проблема с подключением к Telegram API. Проверьте интернет-соединение.")
-        elif isinstance(error, requests.exceptions.Timeout):
+        elif isinstance(error, (asyncio.TimeoutError, TimedOut)):
             logger.error("Таймаут подключения к Telegram API. Попробуйте позже.")
-        elif isinstance(error, requests.exceptions.HTTPError):
+        elif isinstance(error, aiohttp.ClientResponseError):
             logger.error(f"HTTP ошибка: {error}")
         else:
             logger.error(f"Неизвестная ошибка: {type(error).__name__}: {error}")
@@ -13061,6 +13182,39 @@ def _acquire_single_instance_lock() -> bool:
         logger.error('Another local bot process already running (lock: %s). Exiting this process.', lock_path)
         return False
 
+
+async def check_telegram_api() -> Optional[Dict[str, Any]]:
+    session = await get_http_session()
+    async with session.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe") as response:
+        if response.status != 200:
+            text = await response.text()
+            raise RuntimeError(f"Telegram API status={response.status}, response={text}")
+        payload = await response.json(content_type=None)
+    if not payload.get("ok"):
+        raise RuntimeError(f"Telegram API error: {payload}")
+    return payload.get("result")
+
+
+async def check_telegram_api_once() -> Optional[Dict[str, Any]]:
+    try:
+        return await check_telegram_api()
+    finally:
+        await close_global_clients()
+
+
+def get_public_base_url() -> str:
+    raw = (
+        os.getenv("WEBHOOK_URL")
+        or os.getenv("WEBAPP_URL")
+        or os.getenv("RAILWAY_PUBLIC_DOMAIN")
+        or os.getenv("APP_DOMAIN")
+        or ""
+    ).strip().rstrip("/")
+    if raw and not re.match(r"^https?://", raw):
+        raw = f"https://{raw.lstrip('/')}"
+    return raw
+
+
 def main():
     """Основная функция"""
     # Парсинг аргументов командной строки
@@ -13086,17 +13240,9 @@ def main():
     if args.check_only:
         print("🔍 Проверка соединения с Telegram API...")
         try:
-            import requests
-            response = requests.get(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/getMe",
-                timeout=60
-            )
-            if response.status_code == 200:
-                bot_info = response.json()
+            bot_info = {"result": asyncio.run(check_telegram_api_once())}
+            if bot_info.get("result"):
                 print(f"✅ Соединение успешно! Бот: @{bot_info['result']['username']}")
-                return
-            else:
-                print(f"❌ Ошибка API: {response.status_code}")
                 return
         except Exception as e:
             print(f"❌ Ошибка соединения: {e}")
@@ -13110,19 +13256,10 @@ def main():
         # Проверяем подключение к Telegram API
         print("🔍 Проверка подключения к Telegram API...")
         try:
-            import requests
-            response = requests.get(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/getMe",
-                timeout=60
-            )
-            if response.status_code == 200:
-                bot_info = response.json()
+            bot_info = {"result": asyncio.run(check_telegram_api_once())}
+            if bot_info.get("result"):
                 print(f"✅ Подключение успешно! Бот: @{bot_info['result']['username']}")
-            else:
-                print(f"❌ Ошибка подключения: {response.status_code}")
-                print(f"Ответ: {response.text}")
-                return
-        except requests.exceptions.RequestException as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             print(f"❌ Ошибка подключения к Telegram API: {e}")
             print("Проверьте интернет-соединение или используйте прокси:")
             print("python bot.py --proxy socks5://127.0.0.1:1080")
@@ -13146,32 +13283,38 @@ def main():
     # Передаём их в HTTPXRequest, т.к. при использовании .bot() в builder'е
     # нельзя задавать таймауты через builder — они должны быть на уровне Request.
     from telegram.request import HTTPXRequest
-    _read_timeout = float(os.getenv('TG_READ_TIMEOUT', '30'))
-    _write_timeout = float(os.getenv('TG_WRITE_TIMEOUT', '30'))
+    _read_timeout = float(os.getenv('TG_READ_TIMEOUT', '60'))
+    _write_timeout = float(os.getenv('TG_WRITE_TIMEOUT', '60'))
     _connect_timeout = float(os.getenv('TG_CONNECT_TIMEOUT', '30'))
-    _pool_timeout = float(os.getenv('TG_POOL_TIMEOUT', '30'))
+    _pool_timeout = float(os.getenv('TG_POOL_TIMEOUT', '60'))
     _request = HTTPXRequest(
         read_timeout=_read_timeout,
         write_timeout=_write_timeout,
         connect_timeout=_connect_timeout,
         pool_timeout=_pool_timeout,
-        connection_pool_size=128,
+        connection_pool_size=int(os.getenv('TG_CONNECTION_POOL_SIZE', '256')),
     )
     emoji_bot = EmojiBot(token=BOT_TOKEN, defaults=defaults, request=_request)
 
     async def _post_init(application: Application):
         try:
+            await get_http_session()
+            await init_async_storage()
             # Ensure DB table exists synchronously, then schedule the async worker
             notifications.init_notifications_table()
             application.create_task(notifications.start_worker(application))
         except Exception as e:
             logger.exception("post_init: failed to start notifications worker: %s", e)
 
+    async def _post_shutdown(application: Application):
+        await close_global_clients()
+
     application = (
         Application.builder()
         .bot(emoji_bot)
-        .concurrent_updates(max(1, int(os.getenv('TG_CONCURRENT_UPDATES', '28'))))
+        .concurrent_updates(max(1, int(os.getenv('TG_CONCURRENT_UPDATES', '64'))))
         .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
         .build()
     )
 
@@ -13180,6 +13323,21 @@ def main():
     
     # Создаем asyncio scheduler
     bot_instance.scheduler = AsyncIOScheduler()
+    async def warm_up_bot():
+        try:
+            me = await application.bot.get_me()
+            logger.info("Warm-up ok: @%s", getattr(me, "username", None))
+        except Exception:
+            logger.exception("Warm-up failed")
+
+    bot_instance.scheduler.add_job(
+        warm_up_bot,
+        "cron",
+        minute=f"*/{int(os.getenv('WARMUP_INTERVAL_MINUTES', '5'))}",
+        id="telegram_warm_up",
+        replace_existing=True,
+        max_instances=1,
+    )
     # Scheduler будет запущен после запуска приложения
     print("✅ Application создана успешно")
 
@@ -13198,8 +13356,8 @@ def main():
             lines.append(f"Path: {path}")
             lines.append(f"Size: {st.st_size} bytes")
             lines.append(f"Mtime: {datetime.fromtimestamp(st.st_mtime)}")
-            with open(path, 'rb') as f:
-                header = f.read(16)
+            async with aiofiles.open(path, 'rb') as f:
+                header = await f.read(16)
             try:
                 header_text = header.decode('ascii', errors='replace')
             except Exception:
@@ -13316,14 +13474,13 @@ def main():
                 return
 
             gz_path = candidate.with_suffix(candidate.suffix + '.gz')
-            # create gzipped copy
-            with open(candidate, 'rb') as f_in, gzip.open(gz_path, 'wb') as f_out:
-                shutil.copyfileobj(f_in, f_out)
+            # create gzipped copy without blocking the event loop
+            await gzip_copy_async(candidate, gz_path)
 
             # send in private chat
             try:
-                with open(gz_path, 'rb') as f:
-                    await context.bot.send_document(chat_id=user_id, document=f)
+                async with get_send_semaphore():
+                    await context.bot.send_document(chat_id=user_id, document=await async_file_bytes(gz_path))
                 await update.message.reply_text(f"Отправил {gz_path.name} в личку.")
             except Exception as e:
                 await update.message.reply_text(f"Ошибка при отправке: {e}")
@@ -13888,6 +14045,7 @@ def main():
     
     # Обработчик ошибок
     application.add_error_handler(bot_instance.error_handler)
+    trace_application_handlers(application)
     
     print("🎣 Бот для рыбалки запущен!")
     
@@ -13895,7 +14053,17 @@ def main():
     # drop_pending_updates=True — при перезапуске все сообщения, отправленные
     # пока бот был выключен, будут проигнорированы (старые рыбалки не сработают).
     try:
-        application.run_polling(
+        webhook_url = get_public_base_url()
+        webhook_path = os.getenv("WEBHOOK_PATH", BOT_TOKEN)
+        listen = os.getenv("WEBHOOK_LISTEN", "0.0.0.0")
+        port = int(os.getenv("WEBHOOK_PORT", os.getenv("PORT", "8080")))
+        if not webhook_url:
+            raise RuntimeError("WEBHOOK_URL is required for webhook mode")
+        application.run_webhook(
+            listen=listen,
+            port=port,
+            url_path=webhook_path,
+            webhook_url=f"{webhook_url}/{webhook_path}",
             drop_pending_updates=True,
             allowed_updates=[
                 "message",
@@ -13904,7 +14072,7 @@ def main():
                 "chosen_inline_result",
             ],
         )
-        print("✅ Polling запущен успешно")
+        print("✅ Webhook запущен успешно")
     except Exception as e:
         print(f"❌ Ошибка запуска бота: {e}")
         raise

@@ -26,7 +26,7 @@ from urllib.parse import parse_qsl
 
 
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, render_template, request, send_from_directory
 
 
 
@@ -499,6 +499,14 @@ def transferred_background():
 def health():
 
 	return jsonify({"ok": True})
+
+
+
+@app.get("/ping")
+
+def ping():
+
+	return jsonify({"ok": True, "service": "fishbot-webapp", "ts": int(time.time())})
 
 
 

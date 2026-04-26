@@ -18,6 +18,13 @@ def start_webapp_process() -> subprocess.Popen:
     return subprocess.Popen(cmd, env=env)
 
 def main():
+    if os.getenv("BOT_USE_WEBHOOK", "1") != "0":
+        raise RuntimeError(
+            "SERVICE_MODE=all cannot run bot webhook and WebApp on one Railway public port. "
+            "Create two Railway services from the same repo: one with SERVICE_MODE=bot for the Telegram webhook, "
+            "and one with SERVICE_MODE=webapp for the Mini App. "
+            "The bot uses WEBAPP_URL/APP_DOMAIN as WEBHOOK_URL fallback automatically."
+        )
     logger.info("🚀 Starting FishBot Unified Launcher (Bot + WebApp)...")
 
     # Keep WebApp and Bot isolated so web traffic does not starve bot polling.

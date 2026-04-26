@@ -38,9 +38,11 @@ if [ "$SERVICE_MODE_VALUE" = "webapp" ]; then
 
   export APP_PORT="${PORT:-${APP_PORT:-8008}}"
 
-  echo "Starting webapp mode on ${APP_HOST}:${APP_PORT}"
+  export GUNICORN_WORKERS="${GUNICORN_WORKERS:-4}"
 
-  exec python -u webapp/app.py
+  echo "Starting webapp mode on ${APP_HOST}:${APP_PORT} with gunicorn workers=${GUNICORN_WORKERS}"
+
+  exec gunicorn -w "${GUNICORN_WORKERS}" -b "${APP_HOST}:${APP_PORT}" "webapp.app:app" --timeout "${GUNICORN_TIMEOUT:-120}"
 
 fi
 
