@@ -1523,6 +1523,29 @@ class Database:
             ''')
             conn.commit()
 
+    def has_active_effect(self, user_id: int, effect_type: str) -> bool:
+        """Проверить, есть ли у пользователя неистекший эффект."""
+        self._ensure_user_effects_table()
+        now = datetime.utcnow()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT 1
+                FROM user_effects
+                WHERE user_id = ?
+                  AND LOWER(TRIM(effect_type)) = LOWER(TRIM(?))
+                  AND expires_at > ?
+                LIMIT 1
+                ''',
+                (int(user_id), str(effect_type or ''), now),
+            )
+            return cursor.fetchone() is not None
+
+    def is_user_seasick(self, user_id: int) -> bool:
+        """Проверить, есть ли у пользователя морская болезнь."""
+        return self.has_active_effect(user_id, 'seasick')
+
     def _ensure_antibot_captcha_table(self):
         """Создать таблицу анти-абуза для капчи Mini App, если её нет."""
         with self._connect() as conn:
@@ -7804,7 +7827,68 @@ class Database:
                 (int(event_id), int(creator_user_id)),
             )
             conn.commit()
-            return True
+
+    def get_boat_members_count(self, boat_id: int) -> int:
+        """Количество участников лодки."""
+        self._ensure_boat_tables()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM boat_members WHERE boat_id = ?', (int(boat_id),))
+            row = cursor.fetchone()
+            return int(row[0] or 0) if row else 0
+
+    def get_user_boat(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Получить лодку пользователя, если она есть."""
+        self._ensure_boat_tables()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT b.*
+                FROM boats b
+                JOIN boat_members bm ON bm.boat_id = b.id
+                WHERE bm.user_id = ?
+                ORDER BY b.is_active DESC, b.id DESC
+                LIMIT 1
+                ''',
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            columns = [description[0] for description in cursor.description]
+            boat = dict(zip(columns, row))
+            boat['members_count'] = self.get_boat_members_count(int(boat.get('id') or 0))
+            return boat
+
+    def get_active_boat_by_user(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Получить активную лодку пользователя, если он сейчас в плавании."""
+        self._ensure_boat_tables()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT b.*
+                FROM boats b
+                JOIN boat_members bm ON bm.boat_id = b.id
+                WHERE bm.user_id = ?
+                  AND b.is_active = 1
+                ORDER BY b.id DESC
+                LIMIT 1
+                ''',
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            columns = [description[0] for description in cursor.description]
+            boat = dict(zip(columns, row))
+            boat['members_count'] = self.get_boat_members_count(int(boat.get('id') or 0))
+            return boat
+
+    def is_user_on_boat_trip(self, user_id: int) -> bool:
+        """Проверить, находится ли пользователь в активном плавании."""
+        return self.get_active_boat_by_user(user_id) is not None
 
     def mark_raf_event_paid(self, event_id: int, creator_user_id: int, payment_charge_id: str) -> bool:
         with self._connect() as conn:
