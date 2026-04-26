@@ -4248,7 +4248,7 @@ class Database:
                 FROM players
                 WHERE user_id = ?
                   AND last_boat_return_time IS NOT NULL
-                ORDER BY id DESC
+                ORDER BY last_boat_return_time DESC
                 LIMIT 1
                 ''',
                 (int(user_id),),
