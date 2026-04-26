@@ -21,11 +21,14 @@ class PostgresConnWrapper:
     """A thin wrapper exposing a sqlite-like connection API for psycopg2.
     It provides execute(), cursor(), commit(), and context-manager support.
     """
-    def __init__(self, dsn: str):
+    def __init__(self, dsn_or_conn):
         if not psycopg2:
             raise RuntimeError('psycopg2 is required for Postgres support')
-        # accept full DATABASE_URL or components
-        self._conn = psycopg2.connect(dsn)
+        # accept full DATABASE_URL or components, or an existing raw connection
+        if isinstance(dsn_or_conn, str):
+            self._conn = psycopg2.connect(dsn_or_conn)
+        else:
+            self._conn = dsn_or_conn
 
     def _translate_sql(self, sql: str) -> str:
         s = sql
@@ -262,17 +265,17 @@ class PostgresConnWrapper:
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        if exc_type:
-            try:
+        try:
+            if exc_type:
                 self._conn.rollback()
-            except Exception:
-                pass
-        else:
-            try:
+            else:
                 self._conn.commit()
-            except Exception:
-                pass
-        # do not close connection here to allow reuse by app lifecycle
+        except Exception:
+            pass
+        try:
+            self._conn.close()
+        except Exception:
+            pass
         return False
 
 
@@ -2408,7 +2411,7 @@ class Database:
             return {'ok': False, 'reason': 'not_in_clan'}
 
         clan_id = int(clan['id'])
-        is_leader = str(clan.get('role') or '') == 'leader'
+        is_leader = str(clan.get('role') or 'member') == 'leader'
         
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -2445,7 +2448,7 @@ class Database:
         clan = self.get_clan_by_user(user_id)
         if not clan:
             return {'ok': False, 'reason': 'not_in_clan'}
-        if str(clan.get('role') or '') != 'leader':
+        if str(clan.get('role') or 'member') != 'leader':
             return {'ok': False, 'reason': 'leader_only'}
 
         clan_id = int(clan['id'])
@@ -2631,9 +2634,8 @@ class Database:
         if active_token and active_expires_at and active_expires_at <= now:
             if not first_link_at:
                 first_link_at = active_created_at or now
-
-            penalty_candidate = first_link_at + timedelta(hours=penalty_hours)
-            penalty_until = penalty_candidate if penalty_candidate > now else None
+            link_count = 0
+            penalty_until = None
             active_token = None
             active_expires_at = None
             active_created_at = None
@@ -2669,6 +2671,7 @@ class Database:
                             active_difficulty = ?,
                             active_created_at = ?,
                             active_expires_at = ?,
+                            solved_at = NULL,
                             updated_at = ?
                         WHERE user_id = ?
                         ''',
@@ -3127,7 +3130,7 @@ class Database:
                     finished_at = ?,
                     free_attempt_refunded = ?,
                     updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND status = 'pending'
                 ''',
                 (now_iso, refunded_flag, now_iso, int(duel_id)),
             )
@@ -3244,7 +3247,7 @@ class Database:
                     finished_at = ?,
                     free_attempt_refunded = ?,
                     updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND status = 'active'
                 ''',
                 (now_iso, refunded_flag, now_iso, int(duel_id)),
             )
@@ -3916,595 +3919,6 @@ class Database:
             conn.commit()
             return moved
 
-    def apply_timed_effect(self, user_id: int, effect_type: str, duration_minutes: int, replace_existing: bool = False):
-        """Добавить таймерный эффект пользователю."""
-        self._ensure_user_effects_table()
-        from datetime import datetime, timedelta, timezone
-
-        normalized_type = str(effect_type or '').strip()
-        if not normalized_type:
-            return
-
-        try:
-            minutes = max(1, int(duration_minutes))
-        except Exception:
-            minutes = 1
-
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            if replace_existing:
-                cursor.execute(
-                    'DELETE FROM user_effects WHERE user_id = ? AND effect_type = ?',
-                    (user_id, normalized_type),
-                )
-            cursor.execute(
-                '''
-                INSERT INTO user_effects (user_id, effect_type, expires_at)
-                VALUES (?, ?, ?)
-                ''',
-                (user_id, normalized_type, expires_at.isoformat()),
-            )
-            conn.commit()
-
-    def clear_timed_effect(self, user_id: int, effect_type: str):
-        """Удалить активные и неактивные записи эффекта пользователя."""
-        self._ensure_user_effects_table()
-        normalized_type = str(effect_type or '').strip()
-        if not normalized_type:
-            return
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                'DELETE FROM user_effects WHERE user_id = ? AND effect_type = ?',
-                (user_id, normalized_type),
-            )
-            conn.commit()
-
-    def has_active_effect(self, user_id: int, effect_type: str) -> bool:
-        """Проверить, активен ли указанный эффект у пользователя."""
-        self._ensure_user_effects_table()
-        from datetime import datetime, timezone
-
-        normalized_type = str(effect_type or '').strip()
-        if not normalized_type:
-            return False
-
-        now_iso = datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT 1
-                FROM user_effects
-                WHERE user_id = ? AND effect_type = ? AND expires_at > ?
-                LIMIT 1
-                ''',
-                (user_id, normalized_type, now_iso),
-            )
-            return cursor.fetchone() is not None
-
-    def count_active_effects(self, user_id: int, effect_type: str) -> int:
-        """Количество активных записей эффекта у пользователя."""
-        self._ensure_user_effects_table()
-        from datetime import datetime, timezone
-
-        normalized_type = str(effect_type or '').strip()
-        if not normalized_type:
-            return 0
-
-        now_iso = datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT COUNT(*)
-                FROM user_effects
-                WHERE user_id = ? AND effect_type = ? AND expires_at > ?
-                ''',
-                (user_id, normalized_type, now_iso),
-            )
-            row = cursor.fetchone()
-            return int((row[0] if row else 0) or 0)
-
-    def get_effect_remaining_seconds(self, user_id: int, effect_type: str) -> int:
-        """Оставшееся время эффекта (сек). Возвращает 0, если эффект не активен."""
-        self._ensure_user_effects_table()
-        from datetime import datetime, timezone
-
-        normalized_type = str(effect_type or '').strip()
-        if not normalized_type:
-            return 0
-
-        now = datetime.now(timezone.utc)
-        now_iso = now.isoformat()
-
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT expires_at
-                FROM user_effects
-                WHERE user_id = ? AND effect_type = ? AND expires_at > ?
-                ORDER BY expires_at DESC
-                LIMIT 1
-                ''',
-                (user_id, normalized_type, now_iso),
-            )
-            row = cursor.fetchone()
-            if not row or not row[0]:
-                return 0
-
-            try:
-                expires_at = datetime.fromisoformat(str(row[0]))
-            except Exception:
-                return 0
-
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-            else:
-                expires_at = expires_at.astimezone(timezone.utc)
-
-            if expires_at <= now:
-                return 0
-
-            return max(0, int((expires_at - now).total_seconds()))
-
-    def get_active_beer_bonus_percent(self, user_id: int) -> float:
-        """Суммарный активный бонус от пивных баффов (в процентах)."""
-        self._ensure_user_effects_table()
-        from datetime import datetime, timezone
-
-        effect_bonus = {
-            'beer_courage': 5.0,
-            'beer_lucky_wave': 3.0,
-            'beer_foamy_focus': 7.0,
-        }
-
-        now_iso = datetime.now(timezone.utc).isoformat()
-        placeholders = ', '.join(['?'] * len(effect_bonus))
-        params: List[Union[int, str]] = [user_id, now_iso] + list(effect_bonus.keys())
-
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                f'''
-                SELECT effect_type, COUNT(*)
-                FROM user_effects
-                WHERE user_id = ? AND expires_at > ? AND effect_type IN ({placeholders})
-                GROUP BY effect_type
-                ''',
-                params,
-            )
-            rows = cursor.fetchall()
-
-        total_bonus = 0.0
-        for effect_type, count_val in rows:
-            bonus = float(effect_bonus.get(str(effect_type), 0.0) or 0.0)
-            count_num = int(count_val or 0)
-            total_bonus += bonus * max(0, count_num)
-
-        return min(25.0, max(0.0, total_bonus))
-
-    def apply_storm_event(self, user_id: int):
-        """Применить шторм: увеличить КД бесплатной лодки до 18ч или уменьшить прочность платной."""
-        from datetime import datetime, timedelta, timezone
-        boat = self.get_user_boat(user_id)
-        if boat['type'] == 'free':
-            cooldown_until = datetime.now(timezone.utc) + timedelta(hours=18)
-            with self._connect() as conn:
-                cursor = conn.cursor()
-                cursor.execute("UPDATE boats SET cooldown_until = ? WHERE id = ?", (cooldown_until.isoformat(), boat['id']))
-                conn.commit()
-        else:
-            import random
-            loss = random.randint(2, 10)
-            durability = max(0, int(boat.get('durability', 0)) - loss)
-            with self._connect() as conn:
-                cursor = conn.cursor()
-                cursor.execute("UPDATE boats SET durability = ? WHERE id = ?", (durability, boat['id']))
-                conn.commit()
-
-    def apply_seasick_event(self, user_id: int):
-        """Применить морскую болезнь: игрок не может ловить 1 час."""
-        self.apply_timed_effect(user_id, 'seasick', duration_minutes=60, replace_existing=True)
-
-    def is_user_seasick(self, user_id: int) -> bool:
-        """Проверить морскую болезнь (эффект работает только во время плавания)."""
-        if not self.is_user_on_boat_trip(user_id):
-            return False
-        return self.has_active_effect(user_id, 'seasick')
-    def check_boat_weight_warning(self, user_id: int, threshold: float = 50.0) -> float:
-        """Проверить, осталось ли мало веса в лодке. Возвращает остаток (кг), если меньше threshold, иначе None."""
-        boat = self.get_user_boat(user_id)
-        max_weight = float(boat.get('max_weight', 0))
-        current_weight = float(boat.get('current_weight', 0))
-        left = max_weight - current_weight
-        if left < threshold:
-            return left
-        return None
-
-    def check_boat_crash(self, user_id: int) -> bool:
-        """Проверить, произошло ли крушение лодки (превышение веса). Если да — сбросить плавание, убрать улов и пометить лодку как сломанную."""
-        # Пытаемся найти именно активную лодку в плавании
-        boat = self.get_active_boat_by_user(user_id)
-        if not boat:
-            # Если активной нет, проверяем просто лодку пользователя на всякий случай
-            boat = self.get_user_boat(user_id)
-        
-        if not boat:
-            return False
-        max_weight = float(boat.get('max_weight', 0))
-        current_weight = float(boat.get('current_weight', 0))
-        if current_weight > max_weight:
-            with self._connect() as conn:
-                cursor = conn.cursor()
-                from datetime import datetime, timedelta, timezone
-                cd_until = datetime.now(timezone.utc) + timedelta(hours=12)
-                # Сбрасываем плавание, вес, убираем прочность/активность и ставим КД
-                cursor.execute("""
-                    UPDATE boats 
-                    SET is_active = 0, current_weight = 0, durability = 0, cooldown_until = ? 
-                    WHERE id = ?
-                """, (cd_until.isoformat(), boat['id']))
-                # Очищаем улов, чтобы он не сохранился до следующего плавания
-                cursor.execute("DELETE FROM boat_catch WHERE boat_id = ?", (boat['id'],))
-                conn.commit()
-            return True
-        return False
-
-    def sink_active_boat_by_storm(self, user_id: int, cooldown_hours: int = 18) -> Dict[str, Any]:
-        """Шторм на активной лодке: завершить плавание, удалить boat_catch и поставить КД."""
-        self._ensure_boat_tables()
-        self._ensure_boat_catch_table()
-
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT b.id, b.user_id
-                FROM boats b
-                JOIN boat_members bm ON bm.boat_id = b.id
-                WHERE bm.user_id = ? AND b.is_active = 1
-                LIMIT 1
-                ''',
-                (user_id,),
-            )
-            row = cursor.fetchone()
-            if not row:
-                return {"applied": False, "reason": "no_active_boat"}
-
-            boat_id = int(row[0])
-            owner_id = int(row[1]) if row[1] is not None else int(user_id)
-
-            cursor.execute(
-                'SELECT COUNT(*), COALESCE(SUM(weight), 0) FROM boat_catch WHERE boat_id = ?',
-                (boat_id,),
-            )
-            catch_stats = cursor.fetchone() or (0, 0)
-            lost_count = int(catch_stats[0] or 0)
-            lost_weight = float(catch_stats[1] or 0)
-
-            from datetime import datetime, timedelta, timezone
-            now_utc = datetime.now(timezone.utc)
-            cooldown_until = now_utc + timedelta(hours=cooldown_hours)
-            return_time = now_utc.isoformat()
-
-            cursor.execute('DELETE FROM boat_catch WHERE boat_id = ?', (boat_id,))
-            cursor.execute('DELETE FROM boat_members WHERE boat_id = ? AND is_owner = 0', (boat_id,))
-            cursor.execute(
-                '''
-                UPDATE boats
-                SET is_active = 0, current_weight = 0, cooldown_until = ?
-                WHERE id = ?
-                ''',
-                (cooldown_until.isoformat(), boat_id),
-            )
-
-            cursor.execute(
-                'UPDATE players SET last_boat_return_time = ? WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1)',
-                (return_time, owner_id),
-            )
-            if getattr(cursor, 'rowcount', 0) == 0:
-                cursor.execute(
-                    'UPDATE players SET last_boat_return_time = ? WHERE user_id = ?',
-                    (return_time, owner_id),
-                )
-
-            conn.commit()
-
-            logger.warning(
-                '[boat] STORM SINK: boat_id=%s triggered_by=%s owner_id=%s lost_count=%s lost_weight=%.2f cooldown_until=%s',
-                boat_id,
-                user_id,
-                owner_id,
-                lost_count,
-                lost_weight,
-                cooldown_until.isoformat(),
-            )
-
-            return {
-                "applied": True,
-                "boat_id": boat_id,
-                "owner_id": owner_id,
-                "lost_count": lost_count,
-                "lost_weight": lost_weight,
-                "cooldown_until": cooldown_until.isoformat(),
-            }
-
-    def reset_boat_trip(self, user_id: int):
-        """Принудительно завершить плавание (например, при крушении)."""
-        boat = self.get_user_boat(user_id)
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE boats SET is_active = 0 WHERE id = ?", (boat['id'],))
-            conn.commit()
-    def _ensure_boat_catch_table(self):
-        """Создать таблицу boat_catch, если её нет."""
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS boat_catch (
-                    id SERIAL PRIMARY KEY,
-                    boat_id INTEGER NOT NULL,
-                    fish_id INTEGER NOT NULL,
-                    user_id BIGINT DEFAULT 0,
-                    item_name TEXT DEFAULT '',
-                    weight REAL NOT NULL,
-                    chat_id BIGINT DEFAULT 0,
-                    location TEXT DEFAULT 'Море',
-                    caught_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            # Для существующей таблицы добавляем колонки, если их нет
-            try:
-                cursor.execute("ALTER TABLE boat_catch ADD COLUMN IF NOT EXISTS chat_id BIGINT DEFAULT 0")
-            except Exception:
-                try:
-                    cursor.execute("ALTER TABLE boat_catch ADD COLUMN chat_id BIGINT DEFAULT 0")
-                except:
-                    pass
-            try:
-                cursor.execute("ALTER TABLE boat_catch ADD COLUMN IF NOT EXISTS location TEXT DEFAULT 'Море'")
-            except Exception:
-                try:
-                    cursor.execute("ALTER TABLE boat_catch ADD COLUMN location TEXT DEFAULT 'Море'")
-                except:
-                    pass
-            try:
-                cursor.execute("ALTER TABLE boat_catch ADD COLUMN IF NOT EXISTS caught_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-            except Exception:
-                try:
-                    cursor.execute("ALTER TABLE boat_catch ADD COLUMN caught_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-                except:
-                    pass
-            try:
-                cursor.execute("ALTER TABLE boat_catch ADD COLUMN IF NOT EXISTS item_name TEXT DEFAULT ''")
-            except Exception:
-                try:
-                    cursor.execute("ALTER TABLE boat_catch ADD COLUMN item_name TEXT DEFAULT ''")
-                except:
-                    pass
-            try:
-                cursor.execute("ALTER TABLE boat_catch ADD COLUMN IF NOT EXISTS user_id BIGINT DEFAULT 0")
-            except Exception:
-                try:
-                    cursor.execute("ALTER TABLE boat_catch ADD COLUMN user_id BIGINT DEFAULT 0")
-                except:
-                    pass
-            conn.commit()
-
-    def is_user_on_boat_trip(self, user_id: int) -> bool:
-        """Проверить, находится ли пользователь сейчас в плавании на лодке."""
-        self._ensure_boat_tables()
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT b.is_active FROM boats b
-                JOIN boat_members bm ON bm.boat_id = b.id
-                WHERE bm.user_id = ? AND b.is_active = 1
-                LIMIT 1
-            ''', (user_id,))
-            row = cursor.fetchone()
-            return bool(row and row[0])
-
-    def add_fish_to_boat(self, user_id: int, fish_id: int, weight: float, chat_id: Any = 0, location: str = "Море") -> bool:
-        """Добавить пойманную рыбу в лодку пользователя (если он в плавании)."""
-        self._ensure_boat_tables()
-        self._ensure_boat_catch_table()
-        
-        # Гарантируем, что chat_id - это число (BIGINT)
-        try:
-            chat_id_to_store = int(chat_id) if chat_id else 0
-        except (TypeError, ValueError):
-            chat_id_to_store = 0
-
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            # Найти активную лодку пользователя
-            cursor.execute('''
-                SELECT b.id FROM boats b
-                JOIN boat_members bm ON bm.boat_id = b.id
-                WHERE bm.user_id = ? AND b.is_active = 1
-                LIMIT 1
-            ''', (user_id,))
-            row = cursor.fetchone()
-            if not row:
-                return False
-            boat_id = row[0]
-
-            fish_name = ""
-            try:
-                cursor.execute('SELECT name FROM fish WHERE id = ? LIMIT 1', (fish_id,))
-                fish_row = cursor.fetchone()
-                if fish_row and fish_row[0]:
-                    fish_name = str(fish_row[0])
-            except Exception:
-                fish_name = ""
-
-            cursor.execute('''
-                INSERT INTO boat_catch (boat_id, fish_id, user_id, item_name, weight, chat_id, location, caught_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (boat_id, fish_id, int(user_id), fish_name, weight, chat_id_to_store, location, datetime.now()))
-            # Обновить текущий вес лодки
-            cursor.execute('''
-                UPDATE boats SET current_weight = current_weight + ? WHERE id = ?
-            ''', (weight, boat_id))
-            conn.commit()
-            logger.info(
-                "[boat] add_fish_to_boat saved: boat_id=%s user_id=%s fish_id=%s item_name=%s weight=%s chat_id=%s location=%s",
-                boat_id, user_id, fish_id, fish_name, weight, chat_id_to_store, location,
-            )
-            return True
-
-    def get_active_boat_by_user(self, user_id: int):
-        self._ensure_boat_tables()
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT b.* FROM boats b
-                JOIN boat_members bm ON bm.boat_id = b.id
-                WHERE bm.user_id = ? AND b.is_active = 1
-                LIMIT 1
-            ''', (user_id,))
-            row = cursor.fetchone()
-            if row:
-                columns = [desc[0] for desc in cursor.description]
-                return dict(zip(columns, row))
-            return None
-
-    def add_boat_catch(self, boat_id: int, item_name: str, weight: float, chat_id: Any = 0, location: str = "Море", user_id: int = 0) -> bool:
-        self._ensure_boat_catch_table()
-        # Гарантируем, что chat_id - это число (BIGINT)
-        try:
-            chat_id_to_store = int(chat_id) if chat_id else 0
-        except (TypeError, ValueError):
-            chat_id_to_store = 0
-
-        item_name_to_store = str(item_name).strip() if item_name else ""
-
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT id FROM fish WHERE name = ? LIMIT 1', (item_name_to_store,))
-            row = cursor.fetchone()
-            item_id = row[0] if row else 0
-            cursor.execute('''
-                INSERT INTO boat_catch (boat_id, fish_id, user_id, item_name, weight, chat_id, location, caught_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (boat_id, item_id, int(user_id or 0), item_name_to_store, weight, chat_id_to_store, location, datetime.now()))
-            cursor.execute('UPDATE boats SET current_weight = current_weight + ? WHERE id = ?', (weight, boat_id))
-            conn.commit()
-            logger.info(
-                "[boat] add_boat_catch saved: boat_id=%s user_id=%s item_name=%s fish_id=%s weight=%s chat_id=%s location=%s",
-                boat_id, int(user_id or 0), item_name_to_store, item_id, weight, chat_id_to_store, location,
-            )
-            return True
-
-    def get_user_boat(self, user_id: int) -> dict:
-        """Получить лодку пользователя (только бесплатную, если нет — создать)."""
-        self._ensure_boat_tables()
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            # Пытаемся получить платную лодку в первую очередь
-            cursor.execute('''
-                SELECT * FROM boats 
-                WHERE user_id = ? 
-                ORDER BY (CASE WHEN type = 'paid' THEN 0 ELSE 1 END), id DESC 
-                LIMIT 1
-            ''', (user_id,))
-            row = cursor.fetchone()
-            if row:
-                columns = [desc[0] for desc in cursor.description]
-                return dict(zip(columns, row))
-            # Если нет — создать бесплатную лодку
-            cursor.execute('''
-                INSERT INTO boats (user_id, type, name, capacity, max_weight, durability, max_durability, is_active)
-                VALUES (?, 'free', 'Бесплатная лодка', 1, 500.0, 0, 0, 0)
-            ''', (user_id,))
-            cursor.execute("SELECT id FROM boats WHERE user_id = ? AND type = 'free'", (user_id,))
-            boat_id = cursor.fetchone()[0]
-            cursor.execute('''
-                INSERT INTO boat_members (boat_id, user_id, is_owner)
-                VALUES (?, ?, 1)
-            ''', (boat_id, user_id))
-            conn.commit()
-            cursor.execute("SELECT * FROM boats WHERE id = ?", (boat_id,))
-            row = cursor.fetchone()
-            columns = [desc[0] for desc in cursor.description]
-            return dict(zip(columns, row))
-
-    def get_boat_members_count(self, boat_id: int) -> int:
-        """Получить количество участников в лодке."""
-        self._ensure_boat_tables()
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM boat_members WHERE boat_id = ?", (boat_id,))
-            result = cursor.fetchone()
-            return result[0] if result else 0
-
-    def can_start_boat_trip(self, user_id: int) -> (bool, float):
-        """Можно ли выплыть: True/False и сколько осталось секунд КД."""
-        boat = self.get_user_boat(user_id)
-        cooldown_until = boat.get('cooldown_until')
-        from datetime import datetime, timezone, timedelta
-
-        def _parse_dt(raw_value):
-            if not raw_value:
-                return None
-            try:
-                dt_val = datetime.fromisoformat(str(raw_value))
-                if dt_val.tzinfo is None:
-                    dt_val = dt_val.replace(tzinfo=timezone.utc)
-                return dt_val
-            except Exception:
-                return None
-
-        now = datetime.now(timezone.utc)
-        cooldown_candidates: List[float] = []
-
-        # Старый КД по лодке (сохраняем для обратной совместимости)
-        dt_boat = _parse_dt(cooldown_until)
-        if dt_boat:
-            delta_boat = (dt_boat - now).total_seconds()
-            if delta_boat > 0:
-                cooldown_candidates.append(delta_boat)
-
-        # Новый КД: 12 часов с момента последнего возврата, хранится в players
-        player = self.get_player(user_id, 0)
-        last_return_raw = player.get('last_boat_return_time') if player else None
-        dt_last_return = _parse_dt(last_return_raw)
-        if dt_last_return:
-            allowed_at = dt_last_return + timedelta(hours=12)
-            delta_player = (allowed_at - now).total_seconds()
-            if delta_player > 0:
-                cooldown_candidates.append(delta_player)
-
-        if cooldown_candidates:
-            return False, max(cooldown_candidates)
-
-        return True, 0
-
-    def has_boat_cooldown(self, user_id: int) -> bool:
-        """Проверка, есть ли активный кулдаун на лодке пользователя."""
-        can_start, seconds_left = self.can_start_boat_trip(user_id)
-        return not can_start
-
-    def start_boat_trip(self, user_id: int) -> bool:
-        """Старт плавания: проверяет КД и активирует лодку (КД ставится только при возвращении)."""
-        can_start, seconds_left = self.can_start_boat_trip(user_id)
-        if not can_start:
-            return False
-            
-        boat = self.get_user_boat(user_id)
-        if not boat:
-            return False
-        boat_id = boat['id']
-            
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE boats SET is_active = 1 WHERE id = ?", (boat_id,))
-            conn.commit()
-        return True
     def _ensure_boat_tables(self):
         """Создать таблицы для лодок и участников лодки, если их еще нет."""
         with self._connect() as conn:
@@ -4536,30 +3950,74 @@ class Database:
                 )
             ''')
             conn.commit()
+
     def __init__(self):
-        self._cached_conn: Optional['PostgresConnWrapper'] = None
-        self.init_db()
+        self._pool = None
+        self._db_url = None
+
+    def _get_db_url(self):
+        if self._db_url:
+            return self._db_url
+        
+        url = os.getenv('DATABASE_URL')
+        if not url:
+            # Fallback to individual env vars
+            host = os.getenv('DB_HOST', 'localhost')
+            port = os.getenv('DB_PORT', '5432')
+            name = os.getenv('DB_NAME', 'fishbot')
+            user = os.getenv('DB_USER', 'postgres')
+            pw = os.getenv('DB_PASSWORD', 'password')
+            url = f"postgresql://{user}:{pw}@{host}:{port}/{name}"
+        
+        self._db_url = url
+        return url
 
     def _connect(self):
-        # Postgres-only: require DATABASE_URL in environment
-        db_url = os.getenv('DATABASE_URL')
-        if not db_url:
-            raise RuntimeError('DATABASE_URL must be set to use Postgres')
-        # Reuse the cached connection instead of creating a new one on every call
-        if self._cached_conn is not None:
+        if self._pool is None:
+            import psycopg2.pool
             try:
-                cur = self._cached_conn._conn.cursor()
-                cur.execute('SELECT 1')
-                cur.close()
-                return self._cached_conn
-            except Exception:
-                try:
-                    self._cached_conn._conn.close()
-                except Exception:
-                    pass
-                self._cached_conn = None
-        self._cached_conn = PostgresConnWrapper(db_url)
-        return self._cached_conn
+                self._pool = psycopg2.pool.ThreadedConnectionPool(
+                    1, 20, 
+                    dsn=self._get_db_url(),
+                    connect_timeout=5,
+                    options='-c statement_timeout=30000'
+                )
+                logger.info("Database connection pool initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize connection pool: {e}")
+                # Fallback to direct connection if pool fails
+                raw_conn = psycopg2.connect(self._get_db_url(), connect_timeout=5)
+                return PostgresConnWrapper(raw_conn)
+
+        try:
+            raw_conn = self._pool.getconn()
+            # Wrap the connection to return it to the pool on __exit__
+            class PooledConnectionWrapper(PostgresConnWrapper):
+                def __init__(self, conn, pool):
+                    super().__init__(conn)
+                    self._pool_ref = pool
+                
+                def close(self):
+                    # Instead of closing the raw connection, return it to the pool
+                    if self._pool_ref and self._conn:
+                        try:
+                            self._pool_ref.putconn(self._conn)
+                        except Exception:
+                            pass
+                        self._conn = None
+                        self._pool_ref = None
+
+                def __exit__(self, exc_type, exc, tb):
+                    # Commit/rollback and then return to pool
+                    super().__exit__(exc_type, exc, tb)
+                    self.close()
+
+            return PooledConnectionWrapper(raw_conn, self._pool)
+        except Exception as e:
+            logger.error(f"Error getting connection from pool: {e}")
+            import psycopg2
+            raw_conn = psycopg2.connect(self._get_db_url(), connect_timeout=5)
+            return PostgresConnWrapper(raw_conn)
 
     def _get_temp_rod_uses(self, rod_name: str) -> Optional[int]:
         rod_range = TEMP_ROD_RANGES.get(rod_name)

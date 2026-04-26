@@ -405,6 +405,16 @@ def format_percent_value(value: float) -> str:
     return formatted if formatted else "0"
 
 
+# Thread pool for blocking DB / game logic so the asyncio event loop stays responsive
+from concurrent.futures import ThreadPoolExecutor
+_db_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="db_worker")
+
+async def _run_sync(func, *args, **kwargs):
+    """Run a sync function in a background thread and await the result."""
+    import functools
+    return await asyncio.to_thread(functools.partial(func, *args, **kwargs))
+
+
 class EmojiBot(ExtBot):
     API_CALL_TIMEOUT = float(os.getenv('TG_API_CALL_TIMEOUT', '20'))
     API_CALL_RETRIES = int(os.getenv('TG_API_CALL_RETRIES', '1'))
@@ -4186,12 +4196,12 @@ class FishBot:
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         current_username = update.effective_user.username or update.effective_user.first_name or str(user_id)
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         
         if not player:
             # Автоматически создаём профиль в этом чате при первом использовании /fish
             try:
-                player = db.create_player(user_id, current_username, chat_id)
+                player = await _run_sync(db.create_player, user_id, current_username, chat_id)
                 await update.message.reply_text("✅ Профиль создан автоматически для этого чата. Продолжаем рыбалку...")
             except Exception as e:
                 logger.error(f"Error creating player from fish command: {e}")
@@ -4201,7 +4211,7 @@ class FishBot:
                     logger.error(f"Error replying to fish command: {e}")
                 return
 
-        self._sync_player_username_if_changed(user_id, chat_id, player, current_username)
+        await _run_sync(self._sync_player_username_if_changed, user_id, chat_id, player, current_username)
 
         if self._is_user_beer_drunk(user_id):
             await update.message.reply_text(self._generate_drunk_gibberish())
@@ -4220,7 +4230,7 @@ class FishBot:
             return
         
         # Проверяем кулдаун
-        can_fish, message = game.can_fish(user_id, chat_id)
+        can_fish, message = await _run_sync(game.can_fish, user_id, chat_id)
         if not can_fish:
             # Если удочка сломалась — предлагаем ремонт за 20 ⭐ (НЕ платный заброс)
             if "сломалась" in message:
@@ -4335,7 +4345,7 @@ class FishBot:
                 except Exception as e:
                     logger.error(f"Error sending population warning: {e}")
             
-            result = game.fish(user_id, chat_id, player['current_location'])
+            result = await _run_sync(game.fish, user_id, chat_id, player['current_location'])
 
             storm_result = self._maybe_trigger_boat_storm(user_id, result=result)
             if storm_result and storm_result.get('applied'):
@@ -4900,7 +4910,7 @@ class FishBot:
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
 
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             if update.message:
                 await update.message.reply_text("Сначала создайте профиль командой /start")
@@ -4909,17 +4919,17 @@ class FishBot:
             return
 
         rod_name = player['current_rod']
-        player_rod = db.get_player_rod(user_id, rod_name, chat_id)
+        player_rod = await _run_sync(db.get_player_rod, user_id, rod_name, chat_id)
         if not player_rod:
             if rod_name in TEMP_ROD_RANGES:
-                db.update_player(user_id, chat_id, current_rod=BAMBOO_ROD)
-                db.init_player_rod(user_id, BAMBOO_ROD, chat_id)
-                player = db.get_player(user_id, chat_id)
+                await _run_sync(db.update_player, user_id, chat_id, current_rod=BAMBOO_ROD)
+                await _run_sync(db.init_player_rod, user_id, BAMBOO_ROD, chat_id)
+                player = await _run_sync(db.get_player, user_id, chat_id)
                 rod_name = player['current_rod']
-                player_rod = db.get_player_rod(user_id, rod_name, chat_id)
+                player_rod = await _run_sync(db.get_player_rod, user_id, rod_name, chat_id)
             else:
-                db.init_player_rod(user_id, rod_name, chat_id)
-                player_rod = db.get_player_rod(user_id, rod_name, chat_id)
+                await _run_sync(db.init_player_rod, user_id, rod_name, chat_id)
+                player_rod = await _run_sync(db.get_player_rod, user_id, rod_name, chat_id)
         durability_line = ""
         if player_rod and rod_name == BAMBOO_ROD:
             durability_line = f"🔧 Прочность: {player_rod['current_durability']}/{player_rod['max_durability']}\n"
@@ -9928,17 +9938,17 @@ class FishBot:
         """Команда /net - использовать сеть"""
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         
         if not player:
             await update.message.reply_text("Сначала создайте профиль командой /start")
             return
         
         # Показываем доступные сети игрока
-        player_nets = db.get_player_nets(user_id, chat_id)
+        player_nets = await _run_sync(db.get_player_nets, user_id, chat_id)
         if not player_nets:
-            db.init_player_net(user_id, 'Базовая сеть', chat_id)
-            player_nets = db.get_player_nets(user_id, chat_id)
+            await _run_sync(db.init_player_net, user_id, 'Базовая сеть', chat_id)
+            player_nets = await _run_sync(db.get_player_nets, user_id, chat_id)
         
         if not player_nets:
             await update.message.reply_text(
@@ -9951,7 +9961,7 @@ class FishBot:
         keyboard = []
         any_on_cooldown = False
         for net in player_nets:
-            cooldown = db.get_net_cooldown_remaining(user_id, net['net_name'], chat_id)
+            cooldown = await _run_sync(db.get_net_cooldown_remaining, user_id, net['net_name'], chat_id)
             if cooldown > 0:
                 any_on_cooldown = True
                 hours = cooldown // 3600
@@ -10934,7 +10944,7 @@ class FishBot:
                 return
 
             selected_fish_ids = [items[idx - 1]['id'] for idx in indices]
-            result = db.convert_fish_to_bait_by_ids(user_id, chat_id, selected_fish_ids)
+            result = await _run_sync(db.convert_fish_to_bait_by_ids, user_id, chat_id, selected_fish_ids)
 
             if result.get('ok'):
                 details = result.get('details', {})
@@ -10981,12 +10991,12 @@ class FishBot:
             selected = [items[idx - 1] for idx in indices]
             fish_ids = [f['id'] for f in selected]
             total_value = sum(f['price'] for f in selected)
-            player = db.get_player(user_id, chat_id)
-            db.mark_fish_as_sold(fish_ids)
-            db.update_player(user_id, chat_id, coins=player['coins'] + total_value)
+            player = await _run_sync(db.get_player, user_id, chat_id)
+            await _run_sync(db.mark_fish_as_sold, fish_ids)
+            await _run_sync(db.update_player, user_id, chat_id, coins=player['coins'] + total_value)
 
             xp_earned, base_xp, rarity_bonus, weight_bonus, total_weight = calculate_sale_summary(selected)
-            level_info = db.add_player_xp(user_id, chat_id, xp_earned)
+            level_info = await _run_sync(db.add_player_xp, user_id, chat_id, xp_earned)
             progress_line = format_level_progress(level_info)
             total_xp_now = level_info.get('xp_total', 0)
 
@@ -11336,7 +11346,7 @@ class FishBot:
             return
         
         # Начинаем рыбалку на текущей локации
-        result = game.fish(user_id, chat_id, player['current_location'])
+        result = await self.handle_fish_message(user_id, chat_id, player['current_location'])
 
         storm_result = self._maybe_trigger_boat_storm(user_id, result=result)
         if storm_result and storm_result.get('applied'):
@@ -12579,7 +12589,7 @@ class FishBot:
             except Exception:
                 logger.exception("Failed to update population state from guaranteed catch for user=%s location=%s", user_id, location)
 
-            result = game.fish(user_id, group_chat_id, location, guaranteed=True)
+            result = await _run_sync(game.fish, user_id, group_chat_id, location, guaranteed=True)
             
         except Exception as e:
             logger.error(f"Critical error in guaranteed catch for user {user_id}: {e}", exc_info=True)
