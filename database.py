@@ -4116,7 +4116,14 @@ class Database:
             ''')
             conn.commit()
 
-    def add_fish_to_boat(self, user_id: int, fish_id: int, weight: float, chat_id: int) -> bool:
+    def add_fish_to_boat(
+        self,
+        user_id: int,
+        fish_id: int,
+        weight: float,
+        chat_id: int,
+        location: Optional[str] = None,
+    ) -> bool:
         """Добавить рыбу в общий садок активной лодки."""
         self._ensure_boat_tables()
         self._ensure_boat_catch_table()
@@ -4125,7 +4132,6 @@ class Database:
             return False
 
         item_name = None
-        location = None
         try:
             fish = self.get_fish_by_id(fish_id)
             if fish:
@@ -4164,6 +4170,240 @@ class Database:
             )
             conn.commit()
             return True
+
+    def add_boat_catch(
+        self,
+        boat_id: int,
+        item_name: str,
+        weight: float,
+        chat_id: int,
+        location: Optional[str] = None,
+        user_id: Optional[int] = None,
+        fish_id: Optional[int] = None,
+    ) -> bool:
+        """Добавить запись в общий садок конкретной лодки."""
+        self._ensure_boat_tables()
+        self._ensure_boat_catch_table()
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, user_id, current_weight FROM boats WHERE id = ?', (int(boat_id),))
+            boat_row = cursor.fetchone()
+            if not boat_row:
+                return False
+
+            owner_id = int(boat_row[1]) if boat_row[1] is not None else int(user_id or 0)
+            author_id = int(user_id) if user_id is not None else owner_id
+            current_weight = float(boat_row[2] or 0.0)
+
+            cursor.execute(
+                '''
+                INSERT INTO boat_catch (boat_id, user_id, fish_id, item_name, weight, chat_id, location)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    int(boat_id),
+                    author_id,
+                    int(fish_id) if fish_id is not None else None,
+                    str(item_name or '').strip() or 'Неизвестный улов',
+                    float(weight or 0.0),
+                    int(chat_id) if chat_id is not None else None,
+                    location,
+                ),
+            )
+            cursor.execute(
+                'UPDATE boats SET current_weight = ? WHERE id = ?',
+                (current_weight + float(weight or 0.0), int(boat_id)),
+            )
+            conn.commit()
+            return True
+
+    def can_start_boat_trip(self, user_id: int) -> tuple[bool, int]:
+        """Проверка, можно ли начать плавание: учитывает активность и КД после возврата."""
+        self._ensure_boat_tables()
+        boat = self.get_user_boat(user_id)
+        if not boat:
+            return True, 0
+
+        if int(boat.get('is_active') or 0) == 1:
+            return False, 0
+
+        now = datetime.now(timezone.utc)
+        cooldown_until = None
+
+        raw_boat_cd = boat.get('cooldown_until')
+        if raw_boat_cd:
+            try:
+                cooldown_until = datetime.fromisoformat(str(raw_boat_cd).replace('Z', '+00:00'))
+                if cooldown_until.tzinfo is None:
+                    cooldown_until = cooldown_until.replace(tzinfo=timezone.utc)
+            except Exception:
+                cooldown_until = None
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT last_boat_return_time
+                FROM players
+                WHERE user_id = ?
+                  AND last_boat_return_time IS NOT NULL
+                ORDER BY id DESC
+                LIMIT 1
+                ''',
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+
+        if row and row[0]:
+            try:
+                returned_at = datetime.fromisoformat(str(row[0]).replace('Z', '+00:00'))
+                if returned_at.tzinfo is None:
+                    returned_at = returned_at.replace(tzinfo=timezone.utc)
+                players_cd_until = returned_at + timedelta(hours=12)
+                if cooldown_until is None or players_cd_until > cooldown_until:
+                    cooldown_until = players_cd_until
+            except Exception:
+                pass
+
+        if cooldown_until and cooldown_until > now:
+            remaining = int((cooldown_until - now).total_seconds())
+            return False, max(1, remaining)
+
+        return True, 0
+
+    def start_boat_trip(self, user_id: int) -> bool:
+        """Запустить плавание: активирует лодку пользователя."""
+        self._ensure_boat_tables()
+        can_start, _ = self.can_start_boat_trip(user_id)
+        if not can_start:
+            return False
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id
+                FROM boats
+                WHERE user_id = ?
+                ORDER BY CASE WHEN type = 'paid' THEN 0 ELSE 1 END, id DESC
+                LIMIT 1
+                ''',
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+
+            if row:
+                boat_id = int(row[0])
+            else:
+                cursor.execute(
+                    '''
+                    INSERT INTO boats (user_id, type, name, capacity, max_weight, durability, max_durability, is_active)
+                    VALUES (?, 'free', 'Бесплатная лодка', 1, 500, 100, 100, 0)
+                    RETURNING id
+                    ''',
+                    (int(user_id),),
+                )
+                boat_id = int(cursor.fetchone()[0])
+
+            cursor.execute(
+                'INSERT INTO boat_members (boat_id, user_id, is_owner) VALUES (?, ?, 1) ON CONFLICT DO NOTHING',
+                (boat_id, int(user_id)),
+            )
+            cursor.execute('UPDATE boats SET is_active = 1 WHERE id = ?', (boat_id,))
+            conn.commit()
+            return True
+
+    def check_boat_weight_warning(self, user_id: int) -> Optional[float]:
+        """Сколько веса осталось у активной лодки пользователя."""
+        boat = self.get_active_boat_by_user(user_id)
+        if not boat:
+            return None
+        try:
+            left = float(boat.get('max_weight') or 0.0) - float(boat.get('current_weight') or 0.0)
+            return left
+        except Exception:
+            return None
+
+    def check_boat_crash(self, user_id: int) -> bool:
+        """Проверить перегруз лодки и завершить плавание при крушении."""
+        boat = self.get_active_boat_by_user(user_id)
+        if not boat:
+            return False
+
+        try:
+            overloaded = float(boat.get('current_weight') or 0.0) > float(boat.get('max_weight') or 0.0)
+        except Exception:
+            overloaded = False
+
+        if not overloaded:
+            return False
+
+        owner_id = int(boat.get('user_id') or user_id)
+        cooldown_until = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM boat_catch WHERE boat_id = ?', (int(boat.get('id') or 0),))
+            cursor.execute('DELETE FROM boat_members WHERE boat_id = ? AND is_owner = 0', (int(boat.get('id') or 0),))
+            cursor.execute(
+                '''
+                UPDATE boats
+                SET is_active = 0,
+                    current_weight = 0,
+                    durability = 0,
+                    cooldown_until = ?
+                WHERE id = ?
+                ''',
+                (cooldown_until, int(boat.get('id') or 0)),
+            )
+            cursor.execute(
+                'UPDATE players SET last_boat_return_time = ? WHERE user_id = ?',
+                (datetime.now(timezone.utc).isoformat(), owner_id),
+            )
+            conn.commit()
+        return True
+
+    def sink_active_boat_by_storm(self, user_id: int, cooldown_hours: int = 18) -> Dict[str, Any]:
+        """Потопить активную лодку (шторм): завершить плавание и обнулить улов."""
+        boat = self.get_active_boat_by_user(user_id)
+        if not boat:
+            return {'applied': False}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*), COALESCE(SUM(weight), 0) FROM boat_catch WHERE boat_id = ?', (int(boat.get('id') or 0),))
+            row = cursor.fetchone()
+            lost_count = int(row[0] or 0) if row else 0
+            lost_weight = float(row[1] or 0.0) if row else 0.0
+
+            cursor.execute('DELETE FROM boat_catch WHERE boat_id = ?', (int(boat.get('id') or 0),))
+            cursor.execute('DELETE FROM boat_members WHERE boat_id = ? AND is_owner = 0', (int(boat.get('id') or 0),))
+
+            cooldown_until_dt = datetime.now(timezone.utc) + timedelta(hours=max(1, int(cooldown_hours or 18)))
+            cooldown_until = cooldown_until_dt.isoformat()
+            cursor.execute(
+                '''
+                UPDATE boats
+                SET is_active = 0,
+                    current_weight = 0,
+                    cooldown_until = ?
+                WHERE id = ?
+                ''',
+                (cooldown_until, int(boat.get('id') or 0)),
+            )
+            cursor.execute(
+                'UPDATE players SET last_boat_return_time = ? WHERE user_id = ?',
+                (datetime.now(timezone.utc).isoformat(), int(boat.get('user_id') or user_id)),
+            )
+            conn.commit()
+
+        return {
+            'applied': True,
+            'boat_id': int(boat.get('id') or 0),
+            'lost_count': lost_count,
+            'lost_weight': lost_weight,
+            'cooldown_until': cooldown_until,
+        }
 
     def __init__(self):
         self._pool = None
