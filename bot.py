@@ -13089,7 +13089,7 @@ def main():
             import requests
             response = requests.get(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/getMe",
-                timeout=10
+                timeout=60
             )
             if response.status_code == 200:
                 bot_info = response.json()
@@ -13113,7 +13113,7 @@ def main():
             import requests
             response = requests.get(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/getMe",
-                timeout=10
+                timeout=60
             )
             if response.status_code == 200:
                 bot_info = response.json()
