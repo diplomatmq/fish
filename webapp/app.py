@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Optional
 
 from urllib.parse import parse_qsl
+from urllib.error import HTTPError, URLError
+from urllib.request import Request as UrlRequest, urlopen
 
 
 
@@ -510,6 +512,27 @@ def ping():
 
 
 
+
+
+@app.post(f"/{os.getenv('WEBHOOK_PATH', 'telegram-webhook').strip('/') or 'telegram-webhook'}")
+def telegram_webhook_proxy():
+	target_url = os.getenv("BOT_INTERNAL_WEBHOOK_URL", "http://127.0.0.1:9000/telegram-webhook")
+	payload = request.get_data(cache=False)
+	headers = {
+		"Content-Type": request.headers.get("Content-Type", "application/json"),
+		"X-Telegram-Bot-Api-Secret-Token": request.headers.get("X-Telegram-Bot-Api-Secret-Token", ""),
+	}
+	try:
+		proxy_request = UrlRequest(target_url, data=payload, headers=headers, method="POST")
+		with urlopen(proxy_request, timeout=55) as response:
+			body = response.read()
+			return body, response.status, {"Content-Type": response.headers.get("Content-Type", "text/plain")}
+	except HTTPError as exc:
+		logger.exception("Telegram webhook proxy got HTTP error from bot")
+		return exc.read() or b"bot_webhook_http_error", exc.code
+	except URLError:
+		logger.exception("Telegram webhook proxy cannot reach bot at %s", target_url)
+		return jsonify({"ok": False, "error": "bot_webhook_unavailable"}), 503
 
 
 @app.get("/api/fish-image/<path:filename>")

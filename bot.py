@@ -14053,6 +14053,19 @@ def main():
     # drop_pending_updates=True — при перезапуске все сообщения, отправленные
     # пока бот был выключен, будут проигнорированы (старые рыбалки не сработают).
     try:
+        if os.getenv("BOT_USE_WEBHOOK", "1") == "0":
+            application.run_polling(
+                drop_pending_updates=True,
+                allowed_updates=[
+                    "message",
+                    "callback_query",
+                    "pre_checkout_query",
+                    "chosen_inline_result",
+                ],
+            )
+            print("✅ Polling запущен успешно")
+            return
+
         webhook_url = get_public_base_url()
         webhook_path = os.getenv("WEBHOOK_PATH", BOT_TOKEN)
         listen = os.getenv("WEBHOOK_LISTEN", "0.0.0.0")

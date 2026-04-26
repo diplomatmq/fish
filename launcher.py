@@ -2,47 +2,95 @@ import logging
 import os
 import subprocess
 import sys
-from bot import main as bot_main
+import time
 
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
 )
 logger = logging.getLogger("Launcher")
 
-def start_webapp_process() -> subprocess.Popen:
-    """Start WebApp in a dedicated Python process."""
-    cmd = [sys.executable, "-m", "webapp.app"]
+
+def _public_base_url() -> str:
+    raw = (
+        os.getenv("WEBHOOK_URL")
+        or os.getenv("WEBAPP_URL")
+        or os.getenv("RAILWAY_PUBLIC_DOMAIN")
+        or os.getenv("APP_DOMAIN")
+        or ""
+    ).strip().rstrip("/")
+    if raw and not raw.startswith(("http://", "https://")):
+        raw = f"https://{raw.lstrip('/')}"
+    return raw
+
+
+def start_bot_process() -> subprocess.Popen:
+    """Start PTB webhook server on an internal localhost port."""
     env = os.environ.copy()
+    webhook_path = env.get("WEBHOOK_PATH") or "telegram-webhook"
+    internal_port = env.get("BOT_INTERNAL_WEBHOOK_PORT") or "9000"
+
+    env["BOT_USE_WEBHOOK"] = "1"
+    env["WEBHOOK_LISTEN"] = "127.0.0.1"
+    env["WEBHOOK_PORT"] = internal_port
+    env["WEBHOOK_PATH"] = webhook_path
+    env["BOT_INTERNAL_WEBHOOK_URL"] = f"http://127.0.0.1:{internal_port}/{webhook_path}"
+
+    public_url = _public_base_url()
+    if public_url:
+        env["WEBHOOK_URL"] = public_url
+
+    cmd = [sys.executable, "-u", "bot.py"]
+    logger.info(
+        "Starting Bot webhook server: internal=%s public=%s/%s",
+        env["BOT_INTERNAL_WEBHOOK_URL"],
+        env.get("WEBHOOK_URL", ""),
+        webhook_path,
+    )
+    return subprocess.Popen(cmd, env=env)
+
+
+def start_webapp_process() -> subprocess.Popen:
+    """Start WebApp on Railway public port."""
+    env = os.environ.copy()
+    webhook_path = env.get("WEBHOOK_PATH") or "telegram-webhook"
+    internal_port = env.get("BOT_INTERNAL_WEBHOOK_PORT") or "9000"
+    env["WEBHOOK_PATH"] = webhook_path
+    env["BOT_INTERNAL_WEBHOOK_URL"] = f"http://127.0.0.1:{internal_port}/{webhook_path}"
+
+    cmd = [sys.executable, "-u", "-m", "webapp.app"]
     logger.info("Starting WebApp via subprocess: %s", " ".join(cmd))
     return subprocess.Popen(cmd, env=env)
 
-def main():
-    if os.getenv("BOT_USE_WEBHOOK", "1") != "0":
-        raise RuntimeError(
-            "SERVICE_MODE=all cannot run bot webhook and WebApp on one Railway public port. "
-            "Create two Railway services from the same repo: one with SERVICE_MODE=bot for the Telegram webhook, "
-            "and one with SERVICE_MODE=webapp for the Mini App. "
-            "The bot uses WEBAPP_URL/APP_DOMAIN as WEBHOOK_URL fallback automatically."
-        )
-    logger.info("🚀 Starting FishBot Unified Launcher (Bot + WebApp)...")
 
-    # Keep WebApp and Bot isolated so web traffic does not starve bot polling.
+def main():
+    logger.info("Starting FishBot unified launcher: public WebApp + proxied Telegram webhook")
+
+    bot_process = start_bot_process()
+    logger.info("Bot process started (pid=%s)", bot_process.pid)
+
     webapp_process = start_webapp_process()
     logger.info("WebApp process started (pid=%s)", webapp_process.pid)
 
     try:
-        # IMPORTANT: python-telegram-bot polling must run in the main thread.
-        logger.info("Starting Bot...")
-        bot_main()
+        while True:
+            bot_code = bot_process.poll()
+            webapp_code = webapp_process.poll()
+            if bot_code is not None:
+                raise RuntimeError(f"Bot process exited with code {bot_code}")
+            if webapp_code is not None:
+                raise RuntimeError(f"WebApp process exited with code {webapp_code}")
+            time.sleep(5)
     finally:
-        if webapp_process.poll() is None:
-            logger.info("Stopping WebApp process...")
-            webapp_process.terminate()
-            try:
-                webapp_process.wait(timeout=10)
-            except Exception:
-                logger.warning("WebApp process did not stop gracefully")
+        for process, name in ((webapp_process, "WebApp"), (bot_process, "Bot")):
+            if process.poll() is None:
+                logger.info("Stopping %s process...", name)
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except Exception:
+                    logger.warning("%s process did not stop gracefully", name)
+
 
 if __name__ == "__main__":
     try:
