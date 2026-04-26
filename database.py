@@ -4000,17 +4000,26 @@ class Database:
                 def close(self):
                     # Instead of closing the raw connection, return it to the pool
                     if self._pool_ref and self._conn:
-                        try:
-                            self._pool_ref.putconn(self._conn)
-                        except Exception:
-                            pass
+                        conn = self._conn
+                        pool = self._pool_ref
                         self._conn = None
                         self._pool_ref = None
+                        try:
+                            pool.putconn(conn)
+                        except Exception:
+                            pass
 
                 def __exit__(self, exc_type, exc, tb):
-                    # Commit/rollback and then return to pool
-                    super().__exit__(exc_type, exc, tb)
+                    # Commit/rollback and then return to pool without closing raw connection.
+                    try:
+                        if exc_type:
+                            self._conn.rollback()
+                        else:
+                            self._conn.commit()
+                    except Exception:
+                        pass
                     self.close()
+                    return False
 
             return PooledConnectionWrapper(raw_conn, self._pool)
         except Exception as e:

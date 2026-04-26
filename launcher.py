@@ -1,9 +1,8 @@
-import asyncio
 import logging
 import os
-import threading
+import subprocess
+import sys
 from bot import main as bot_main
-from webapp.app import app as flask_app
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -11,35 +10,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger("Launcher")
 
-def run_flask():
-    """Run Flask in a separate thread."""
-    port = int(os.getenv("PORT") or os.getenv("APP_PORT", "8008"))
-    host = os.getenv("APP_HOST", "0.0.0.0")
-    logger.info(f"Starting WebApp on {host}:{port}...")
-    flask_app.run(host=host, port=port, debug=False, use_reloader=False)
+def start_webapp_process() -> subprocess.Popen:
+    """Start WebApp in a dedicated Python process."""
+    cmd = [sys.executable, "-m", "webapp.app"]
+    env = os.environ.copy()
+    logger.info("Starting WebApp via subprocess: %s", " ".join(cmd))
+    return subprocess.Popen(cmd, env=env)
 
-async def run_bot():
-    """Run the bot main function."""
-    logger.info("Starting Bot...")
-    # Since bot_main calls run_polling(), it is a blocking call.
-    # We run it in the main loop or a thread? 
-    # Better to run it in a thread if we want true async with other tasks.
-    # But python-telegram-bot v20 is async, so we should ideally call its async methods.
-    # However, bot_main() is already structured to run the whole app.
-    await asyncio.to_thread(bot_main)
-
-async def main():
+def main():
     logger.info("🚀 Starting FishBot Unified Launcher (Bot + WebApp)...")
-    
-    # Run Flask in a background thread
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    
-    # Run Bot in the main event loop (via thread because bot_main is blocking)
-    await run_bot()
+
+    # Keep WebApp and Bot isolated so web traffic does not starve bot polling.
+    webapp_process = start_webapp_process()
+    logger.info("WebApp process started (pid=%s)", webapp_process.pid)
+
+    try:
+        # IMPORTANT: python-telegram-bot polling must run in the main thread.
+        logger.info("Starting Bot...")
+        bot_main()
+    finally:
+        if webapp_process.poll() is None:
+            logger.info("Stopping WebApp process...")
+            webapp_process.terminate()
+            try:
+                webapp_process.wait(timeout=10)
+            except Exception:
+                logger.warning("WebApp process did not stop gracefully")
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
         logger.info("Stopping...")
