@@ -3688,6 +3688,11 @@ class FishBot:
 
         for attempt in range(3):
             try:
+                if document and hasattr(document, 'seek'):
+                    try:
+                        document.seek(0)
+                    except Exception:
+                        pass
                 return await self.application.bot.send_document(**kwargs)
             except (BadRequest, Forbidden) as e:
                 exc_str = str(e)

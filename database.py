@@ -4114,6 +4114,19 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_boat_catch_user
                 ON boat_catch (user_id, boat_id)
             ''')
+            # Ensure fish_id is nullable: older Postgres schemas may have NOT NULL
+            try:
+                cursor.execute('''
+                    DO $$
+                    BEGIN
+                        ALTER TABLE boat_catch ALTER COLUMN fish_id DROP NOT NULL;
+                    EXCEPTION
+                        WHEN OTHERS THEN
+                            NULL;
+                    END $$;
+                ''')
+            except Exception:
+                pass
             conn.commit()
 
     def add_fish_to_boat(
