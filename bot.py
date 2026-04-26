@@ -13302,7 +13302,7 @@ def main():
             await init_async_storage()
             # Ensure DB table exists synchronously, then schedule the async worker
             notifications.init_notifications_table()
-            application.create_task(notifications.start_worker(application))
+            await notifications.start_worker(application)
         except Exception as e:
             logger.exception("post_init: failed to start notifications worker: %s", e)
 

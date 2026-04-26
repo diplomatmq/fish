@@ -3,6 +3,7 @@ import time
 import json
 import asyncio
 import logging
+from io import BytesIO
 from typing import Any, Dict
 from pathlib import Path
 from config import DB_PATH
@@ -48,15 +49,9 @@ async def enqueue_notification(method: str, kwargs: Dict[str, Any], delay_second
 
 async def start_worker(application, poll_interval: float = 1.0):
     """Запустить фоновую задачу-воркер для отправки уведомлений."""
-    # Prefer scheduling the worker on the provided Application event loop so it uses the same asyncio context
-    try:
-        application.create_task(_worker(application, poll_interval))
-        logger.info("Notifications worker scheduled on application loop")
-    except Exception:
-        # Fallback to scheduling on the running loop
-        loop = asyncio.get_event_loop()
-        loop.create_task(_worker(application, poll_interval))
-        logger.info("Notifications worker scheduled on fallback event loop")
+    loop = asyncio.get_running_loop()
+    loop.create_task(_worker(application, poll_interval))
+    logger.info("Notifications worker scheduled on running event loop")
 
 async def _worker(application, poll_interval: float):
     path = str(DB_PATH)
@@ -93,8 +88,10 @@ async def _worker(application, poll_interval: float):
                             _delete_notification(nid)
                             continue
 
-                        with open(doc_path, 'rb') as f:
-                            await application.bot.send_document(**{**kwargs, 'document': f})
+                        data = await asyncio.to_thread(Path(doc_path).read_bytes)
+                        document = BytesIO(data)
+                        document.name = Path(doc_path).name
+                        await application.bot.send_document(**{**kwargs, 'document': document})
                     else:
                         func = getattr(application.bot, method, None)
                         if not func:

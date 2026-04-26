@@ -55,10 +55,27 @@ def start_webapp_process() -> subprocess.Popen:
     env = os.environ.copy()
     webhook_path = env.get("WEBHOOK_PATH") or "telegram-webhook"
     internal_port = env.get("BOT_INTERNAL_WEBHOOK_PORT") or "9000"
+    host = env.get("APP_HOST") or "0.0.0.0"
+    port = env.get("PORT") or env.get("APP_PORT") or "8080"
+    workers = env.get("GUNICORN_WORKERS") or "4"
+    timeout = env.get("GUNICORN_TIMEOUT") or "120"
     env["WEBHOOK_PATH"] = webhook_path
     env["BOT_INTERNAL_WEBHOOK_URL"] = f"http://127.0.0.1:{internal_port}/{webhook_path}"
 
-    cmd = [sys.executable, "-u", "-m", "webapp.app"]
+    cmd = [
+        "gunicorn",
+        "-w",
+        workers,
+        "-b",
+        f"{host}:{port}",
+        "webapp.app:app",
+        "--timeout",
+        timeout,
+        "--access-logfile",
+        "-",
+        "--error-logfile",
+        "-",
+    ]
     logger.info("Starting WebApp via subprocess: %s", " ".join(cmd))
     return subprocess.Popen(cmd, env=env)
 
