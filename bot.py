@@ -13146,15 +13146,16 @@ def main():
     # Передаём их в HTTPXRequest, т.к. при использовании .bot() в builder'е
     # нельзя задавать таймауты через builder — они должны быть на уровне Request.
     from telegram.request import HTTPXRequest
-    _read_timeout = float(os.getenv('TG_READ_TIMEOUT', '7'))
-    _write_timeout = float(os.getenv('TG_WRITE_TIMEOUT', '10'))
-    _connect_timeout = float(os.getenv('TG_CONNECT_TIMEOUT', '10'))
-    _pool_timeout = float(os.getenv('TG_POOL_TIMEOUT', '3'))
+    _read_timeout = float(os.getenv('TG_READ_TIMEOUT', '30'))
+    _write_timeout = float(os.getenv('TG_WRITE_TIMEOUT', '30'))
+    _connect_timeout = float(os.getenv('TG_CONNECT_TIMEOUT', '30'))
+    _pool_timeout = float(os.getenv('TG_POOL_TIMEOUT', '30'))
     _request = HTTPXRequest(
         read_timeout=_read_timeout,
         write_timeout=_write_timeout,
         connect_timeout=_connect_timeout,
         pool_timeout=_pool_timeout,
+        connection_pool_size=128,
     )
     emoji_bot = EmojiBot(token=BOT_TOKEN, defaults=defaults, request=_request)
 
