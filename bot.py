@@ -408,21 +408,13 @@ def format_percent_value(value: float) -> str:
 # Thread pool for blocking DB / game logic so the asyncio event loop stays responsive
 from concurrent.futures import ThreadPoolExecutor
 _DB_WORKERS = max(4, int(os.getenv('TG_DB_WORKERS', '14')))
-_DB_QUEUE_LIMIT = max(_DB_WORKERS, int(os.getenv('TG_DB_QUEUE_LIMIT', '64')))
-_DB_WAIT_WARNING_SEC = float(os.getenv('TG_DB_WAIT_WARNING_SEC', '1.0'))
 _db_executor = ThreadPoolExecutor(max_workers=_DB_WORKERS, thread_name_prefix="db_worker")
-_db_queue_guard = asyncio.Semaphore(_DB_QUEUE_LIMIT)
 
 async def _run_sync(func, *args, **kwargs):
     """Run a sync function in a background thread and await the result."""
     import functools
     loop = asyncio.get_running_loop()
-    wait_started = loop.time()
-    async with _db_queue_guard:
-        waited = loop.time() - wait_started
-        if waited >= _DB_WAIT_WARNING_SEC:
-            logger.warning("DB queue wait %.2fs for %s", waited, getattr(func, '__name__', str(func)))
-        return await loop.run_in_executor(_db_executor, functools.partial(func, *args, **kwargs))
+    return await loop.run_in_executor(_db_executor, functools.partial(func, *args, **kwargs))
 
 
 class EmojiBot(ExtBot):
@@ -2595,9 +2587,6 @@ class FishBot:
         }
         self.fight_sessions: Dict[str, Dict[str, Any]] = {}
         self.fight_timeout_tasks: Dict[str, asyncio.Task] = {}
-        self._fish_request_guard: Dict[str, float] = {}
-        self._fish_guard_notice_ts: Dict[str, float] = {}
-        self._fish_guard_window_sec = max(1.0, float(os.getenv("FISH_GUARD_WINDOW_SEC", "4")))
 
     def _is_owner(self, user_id: int) -> bool:
         return int(user_id) == self.OWNER_ID
@@ -4208,24 +4197,9 @@ class FishBot:
         
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
-        loop = asyncio.get_running_loop()
-        now_ts = loop.time()
-        fish_guard_key = f"{chat_id}:{user_id}"
-        last_started = self._fish_request_guard.get(fish_guard_key, 0.0)
-        if now_ts - last_started < self._fish_guard_window_sec:
-            last_notice = self._fish_guard_notice_ts.get(fish_guard_key, 0.0)
-            if now_ts - last_notice >= 2.5:
-                self._fish_guard_notice_ts[fish_guard_key] = now_ts
-                try:
-                    await update.message.reply_text("⏳ Подождите, предыдущий заброс ещё обрабатывается...")
-                except Exception:
-                    pass
-            return
-        self._fish_request_guard[fish_guard_key] = now_ts
-
         current_username = update.effective_user.username or update.effective_user.first_name or str(user_id)
         player = await _run_sync(db.get_player, user_id, chat_id)
-        
+
         if not player:
             # Автоматически создаём профиль в этом чате при первом использовании /fish
             try:
@@ -4256,7 +4230,7 @@ class FishBot:
         if antibot_active_block:
             await self._send_antibot_block_to_user(update, antibot_active_block)
             return
-        
+
         # Проверяем кулдаун
         can_fish, message = await _run_sync(game.can_fish, user_id, chat_id)
         if not can_fish:
@@ -4339,7 +4313,7 @@ class FishBot:
         if antibot_rhythm_block:
             await self._send_antibot_block_to_user(update, antibot_rhythm_block)
             return
-        
+
 
         # --- Boat trip state handled implicitly by game.fish and main block below ---
 
@@ -4348,10 +4322,10 @@ class FishBot:
             # Обновляем состояние популяции рыб (отслеживаем забросы на локации)
             location_changed, consecutive_casts, show_warning = await _run_sync(
                 db.update_population_state,
-                user_id, 
+                user_id,
                 player['current_location']
             )
-            
+
             # Если игрок достиг 30 отдельных забросов на одной локации - показываем предупреждение
             if show_warning:
                 warning_msg = (
@@ -4373,7 +4347,7 @@ class FishBot:
                     await update.message.reply_text(warning_msg)
                 except Exception as e:
                     logger.error(f"Error sending population warning: {e}")
-            
+
             result = await _run_sync(game.fish, user_id, chat_id, player['current_location'])
 
             storm_result = await _run_sync(self._maybe_trigger_boat_storm, user_id, result)
@@ -4394,7 +4368,7 @@ class FishBot:
                     return
             except Exception:
                 logger.exception("RAF roll failed in /fish flow user=%s chat=%s", user_id, chat_id)
-            
+
         except Exception as e:
             logger.exception("Unhandled exception in game.fish for user %s chat %s", user_id, chat_id)
             try:
@@ -11375,7 +11349,7 @@ class FishBot:
             return
         
         # Начинаем рыбалку на текущей локации
-        result = await self.handle_fish_message(user_id, chat_id, player['current_location'])
+        result = await _run_sync(game.fish, user_id, chat_id, player['current_location'])
 
         storm_result = self._maybe_trigger_boat_storm(user_id, result=result)
         if storm_result and storm_result.get('applied'):

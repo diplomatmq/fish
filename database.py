@@ -1546,6 +1546,120 @@ class Database:
         """Проверить, есть ли у пользователя морская болезнь."""
         return self.has_active_effect(user_id, 'seasick')
 
+    def count_active_effects(self, user_id: int, effect_type: str) -> int:
+        """Количество активных эффектов заданного типа."""
+        self._ensure_user_effects_table()
+        now = datetime.utcnow()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT COUNT(*)
+                FROM user_effects
+                WHERE user_id = ?
+                  AND LOWER(TRIM(effect_type)) = LOWER(TRIM(?))
+                  AND expires_at > ?
+                ''',
+                (int(user_id), str(effect_type or ''), now),
+            )
+            row = cursor.fetchone()
+            return int(row[0] or 0) if row else 0
+
+    def get_effect_remaining_seconds(self, user_id: int, effect_type: str) -> int:
+        """Сколько секунд осталось у активного эффекта."""
+        self._ensure_user_effects_table()
+        now = datetime.utcnow()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT MAX(expires_at)
+                FROM user_effects
+                WHERE user_id = ?
+                  AND LOWER(TRIM(effect_type)) = LOWER(TRIM(?))
+                  AND expires_at > ?
+                ''',
+                (int(user_id), str(effect_type or ''), now),
+            )
+            row = cursor.fetchone()
+            expires_at = row[0] if row else None
+            if not expires_at:
+                return 0
+            try:
+                delta = expires_at - now
+                return max(0, int(delta.total_seconds()))
+            except Exception:
+                return 0
+
+    def clear_timed_effect(self, user_id: int, effect_type: str) -> bool:
+        """Удалить активный timed-эффект."""
+        self._ensure_user_effects_table()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'DELETE FROM user_effects WHERE user_id = ? AND LOWER(TRIM(effect_type)) = LOWER(TRIM(?))',
+                (int(user_id), str(effect_type or '')),
+            )
+            conn.commit()
+            return bool(getattr(cursor, 'rowcount', 0))
+
+    def apply_timed_effect(
+        self,
+        user_id: int,
+        effect_type: str,
+        duration_minutes: int,
+        replace_existing: bool = False,
+    ) -> bool:
+        """Добавить timed-эффект пользователю."""
+        self._ensure_user_effects_table()
+        effect_type_norm = str(effect_type or '').strip().lower()
+        if not effect_type_norm:
+            return False
+
+        expires_at = datetime.utcnow() + timedelta(minutes=max(1, int(duration_minutes or 0)))
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            if replace_existing:
+                cursor.execute(
+                    'DELETE FROM user_effects WHERE user_id = ? AND LOWER(TRIM(effect_type)) = LOWER(TRIM(?))',
+                    (int(user_id), effect_type_norm),
+                )
+            cursor.execute(
+                '''
+                INSERT INTO user_effects (user_id, effect_type, expires_at)
+                VALUES (?, ?, ?)
+                ''',
+                (int(user_id), effect_type_norm, expires_at),
+            )
+            conn.commit()
+            return True
+
+    def get_active_beer_bonus_percent(self, user_id: int) -> float:
+        """Суммарный бонус от активных пивных эффектов."""
+        beer_effect_bonus = {
+            'beer_courage': 5.0,
+            'beer_lucky_wave': 3.0,
+            'beer_foamy_focus': 7.0,
+        }
+        self._ensure_user_effects_table()
+        now = datetime.utcnow()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT effect_type
+                FROM user_effects
+                WHERE user_id = ?
+                  AND expires_at > ?
+                ''',
+                (int(user_id), now),
+            )
+            total = 0.0
+            for row in cursor.fetchall() or []:
+                effect_type = str(row[0] or '').strip().lower()
+                total += float(beer_effect_bonus.get(effect_type, 0.0))
+            return float(total)
+
     def _ensure_antibot_captcha_table(self):
         """Создать таблицу анти-абуза для капчи Mini App, если её нет."""
         with self._connect() as conn:
@@ -3973,6 +4087,83 @@ class Database:
                 )
             ''')
             conn.commit()
+
+    def _ensure_boat_catch_table(self):
+        """Создать таблицу общего улова лодки, если её еще нет."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS boat_catch (
+                    id INTEGER PRIMARY KEY,
+                    boat_id INTEGER NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    fish_id BIGINT,
+                    item_name TEXT NOT NULL,
+                    weight REAL NOT NULL DEFAULT 0,
+                    chat_id BIGINT,
+                    location TEXT,
+                    caught_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(boat_id) REFERENCES boats(id)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_boat_catch_boat
+                ON boat_catch (boat_id, id DESC)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_boat_catch_user
+                ON boat_catch (user_id, boat_id)
+            ''')
+            conn.commit()
+
+    def add_fish_to_boat(self, user_id: int, fish_id: int, weight: float, chat_id: int) -> bool:
+        """Добавить рыбу в общий садок активной лодки."""
+        self._ensure_boat_tables()
+        self._ensure_boat_catch_table()
+        boat = self.get_active_boat_by_user(user_id)
+        if not boat:
+            return False
+
+        item_name = None
+        location = None
+        try:
+            fish = self.get_fish_by_id(fish_id)
+            if fish:
+                item_name = str(fish.get('name') or '')
+        except Exception:
+            item_name = None
+
+        if not item_name:
+            item_name = f"fish_{int(fish_id)}"
+
+        try:
+            current_weight = float(boat.get('current_weight') or 0.0)
+        except Exception:
+            current_weight = 0.0
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO boat_catch (boat_id, user_id, fish_id, item_name, weight, chat_id, location)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    int(boat.get('id') or 0),
+                    int(user_id),
+                    int(fish_id),
+                    item_name,
+                    float(weight or 0.0),
+                    int(chat_id) if chat_id is not None else None,
+                    location,
+                ),
+            )
+            cursor.execute(
+                'UPDATE boats SET current_weight = ? WHERE id = ?',
+                (current_weight + float(weight or 0.0), int(boat.get('id') or 0)),
+            )
+            conn.commit()
+            return True
 
     def __init__(self):
         self._pool = None
