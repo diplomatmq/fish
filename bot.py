@@ -124,6 +124,8 @@ async def async_file_bytes(path: Path | str) -> BytesIO:
     source = Path(path)
     async with aiofiles.open(source, "rb") as file_obj:
         data = await file_obj.read()
+    if not data:
+        raise ValueError(f"File is empty: {source}")
     bio = BytesIO(data)
     bio.name = source.name
     bio.seek(0)
@@ -523,7 +525,7 @@ async def _run_sync(func, *args, **kwargs):
 
 
 class EmojiBot(ExtBot):
-    API_CALL_TIMEOUT = float(os.getenv('TG_API_CALL_TIMEOUT', '20'))
+    API_CALL_TIMEOUT = float(os.getenv('TG_API_CALL_TIMEOUT', '12'))
     API_CALL_RETRIES = int(os.getenv('TG_API_CALL_RETRIES', '1'))
     RETRY_BACKOFF_SEC = float(os.getenv('TG_API_RETRY_BACKOFF', '1.5'))
 
@@ -1682,7 +1684,7 @@ class FishBot:
             extra_title = ''
             if draft.get('tournament_type') == 'specific_fish' and draft.get('criteria'):
                 extra_title = f" ({'вес' if draft['criteria']=='weight' else 'кол-во'})"
-            tournament_id = db.create_tournament(
+            tournament_id = await _run_sync(db.create_tournament,
                 chat_id=int(draft['chat_id']),
                 created_by=int(draft['created_by']),
                 title=(draft.get('title') or 'Турнир') + extra_title,
@@ -1695,7 +1697,7 @@ class FishBot:
             )
 
             if tournament_id:
-                created = db.get_tournament(tournament_id) or {}
+                created = await _run_sync(db.get_tournament, tournament_id) or {}
                 t_type = created.get('tournament_type') or draft.get('tournament_type')
                 t_type_name = self.TOUR_TYPES.get(t_type, t_type)
                 fish_line = ""
@@ -1720,8 +1722,20 @@ class FishBot:
 
     async def tour_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать топ-10 игроков в активном турнире."""
-        tour = db.get_active_tournament()
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id if update.effective_chat else 0
+        cache_key = ("tour", chat_id, user_id)
+        cached = self._tour_response_cache.get(cache_key)
+        now_ts = time.monotonic()
+        if cached and cached[0] > now_ts:
+            await update.message.reply_text(cached[1])
+            return
+
+        loading_message = await update.message.reply_text("Считаю турнир...")
+        tour = await _run_sync(db.get_active_tournament)
         if not tour:
+            await loading_message.edit_text("Сейчас нет активных турниров.")
+            return
             await update.message.reply_text("🏁 Сейчас нет активных турниров.")
             return
 
@@ -1739,16 +1753,15 @@ class FishBot:
             "",
         ]
 
-        user_id = update.effective_user.id
         user_row = None
         user_place = None
         if target_location:
             if t_type == 'longest_fish':
-                rows = db.get_location_leaderboard_length(target_location, tour['starts_at'], tour['ends_at'], limit=top_limit)
-                all_rows = db.get_location_leaderboard_length(target_location, tour['starts_at'], tour['ends_at'], limit=1000)
+                rows = await _run_sync(db.get_location_leaderboard_length, target_location, tour['starts_at'], tour['ends_at'], top_limit)
+                all_rows = await _run_sync(db.get_location_leaderboard_length, target_location, tour['starts_at'], tour['ends_at'], 1000)
             elif t_type == 'biggest_weight':
-                rows = db.get_location_leaderboard_weight(target_location, tour['starts_at'], tour['ends_at'], limit=top_limit)
-                all_rows = db.get_location_leaderboard_weight(target_location, tour['starts_at'], tour['ends_at'], limit=1000)
+                rows = await _run_sync(db.get_location_leaderboard_weight, target_location, tour['starts_at'], tour['ends_at'], top_limit)
+                all_rows = await _run_sync(db.get_location_leaderboard_weight, target_location, tour['starts_at'], tour['ends_at'], 1000)
             else:
                 rows = []
                 all_rows = []
@@ -1784,11 +1797,11 @@ class FishBot:
                         lines.append(f"<i>Ваше место: {user_place}. {name} — {fish} — {weight} кг</i>")
         else:
             if t_type == 'total_length':
-                rows = db.get_tour_leaderboard_length(tour['starts_at'], tour['ends_at'], limit=top_limit)
-                all_rows = db.get_tour_leaderboard_length(tour['starts_at'], tour['ends_at'], limit=1000)
+                rows = await _run_sync(db.get_tour_leaderboard_length, tour['starts_at'], tour['ends_at'], top_limit)
+                all_rows = await _run_sync(db.get_tour_leaderboard_length, tour['starts_at'], tour['ends_at'], 1000)
             else:
-                rows = db.get_tour_leaderboard_weight(tour['starts_at'], tour['ends_at'], limit=top_limit)
-                all_rows = db.get_tour_leaderboard_weight(tour['starts_at'], tour['ends_at'], limit=1000)
+                rows = await _run_sync(db.get_tour_leaderboard_weight, tour['starts_at'], tour['ends_at'], top_limit)
+                all_rows = await _run_sync(db.get_tour_leaderboard_weight, tour['starts_at'], tour['ends_at'], 1000)
             if not rows:
                 lines.append("Пока никто не поймал рыбу.")
             else:
@@ -1817,12 +1830,18 @@ class FishBot:
                         weight = round(float(user_row.get('total_weight') or 0), 2)
                         lines.append(f"<i>Ваше место: {user_place}. {name} — {weight} кг</i>")
 
-        await update.message.reply_text("\n".join(lines))
+        response_text = "\n".join(lines)
+        self._tour_response_cache[cache_key] = (time.monotonic() + self._tour_cache_ttl, response_text)
+        if len(self._tour_response_cache) > 500:
+            expired_keys = [key for key, value in self._tour_response_cache.items() if value[0] <= time.monotonic()]
+            for key in expired_keys[:250]:
+                self._tour_response_cache.pop(key, None)
+        await loading_message.edit_text(response_text)
 
     async def _location_leaderboard_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE, location_name: str):
         """Топ-10 по самой длинной рыбе на локации в рамках активного турнира."""
         try:
-            tour = db.get_active_tournament_for_location(location_name)
+            tour = await _run_sync(db.get_active_tournament_for_location, location_name)
             if not tour:
                 await update.message.reply_text(f"🏁 Нет активного турнира для этой локации.")
                 return
@@ -1850,8 +1869,8 @@ class FishBot:
                 await update.message.reply_text("\n".join(lines), parse_mode='HTML')
                 return
             if criteria == 'weight':
-                rows = db.get_location_fish_leaderboard_weight(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=top_limit)
-                all_rows = db.get_location_fish_leaderboard_weight(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=1000)
+                rows = await _run_sync(db.get_location_fish_leaderboard_weight, location_name, target_fish, tour['starts_at'], tour['ends_at'], top_limit)
+                all_rows = await _run_sync(db.get_location_fish_leaderboard_weight, location_name, target_fish, tour['starts_at'], tour['ends_at'], 1000)
                 logger.info(f"Rows found for {location_name} (weight): {len(rows)}")
                 if not rows:
                     lines.append(f"Пока никто не поймал рыбу '{target_fish}' на этой локации.")
@@ -1873,8 +1892,8 @@ class FishBot:
                         lines.append("")
                         lines.append(f"<i>Ваше место: {user_place}. {name} — {weight} кг</i>")
             elif criteria == 'count':
-                rows = db.get_location_fish_leaderboard_count(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=top_limit)
-                all_rows = db.get_location_fish_leaderboard_count(location_name, target_fish, tour['starts_at'], tour['ends_at'], limit=1000)
+                rows = await _run_sync(db.get_location_fish_leaderboard_count, location_name, target_fish, tour['starts_at'], tour['ends_at'], top_limit)
+                all_rows = await _run_sync(db.get_location_fish_leaderboard_count, location_name, target_fish, tour['starts_at'], tour['ends_at'], 1000)
                 if not rows:
                     lines.append(f"Пока никто не поймал рыбу '{target_fish}' на этой локации.")
                 else:
@@ -2620,6 +2639,8 @@ class FishBot:
         self.active_timeouts = {}  # Отслеживание активных таймеров
         self.active_invoices = {}  # Отслеживание активных инвойсов по пользователям
         self.application = None  # Будет установлено в main()
+        self._tour_response_cache = {}
+        self._tour_cache_ttl = float(os.getenv("TOUR_CACHE_TTL_SECONDS", "10"))
         self.OWNER_ID = 793216884
         self.webapp_url = (os.getenv("WEBAPP_URL") or "https://fish.monkeysdynasty.website").strip()
         # Множество уже оплаченных payload'ов — защита от двойной оплаты одного инвойса

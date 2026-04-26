@@ -15,6 +15,7 @@ import os
 import sys
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from datetime import datetime, timedelta
 
@@ -35,6 +36,10 @@ from flask import Flask, jsonify, render_template, request, send_from_directory
 
 
 logger = logging.getLogger(__name__)
+WEBHOOK_PROXY_EXECUTOR = ThreadPoolExecutor(
+	max_workers=int(os.getenv("WEBHOOK_PROXY_WORKERS", "128")),
+	thread_name_prefix="telegram_webhook_proxy",
+)
 
 fish_db = None
 
@@ -522,17 +527,21 @@ def telegram_webhook_proxy():
 		"Content-Type": request.headers.get("Content-Type", "application/json"),
 		"X-Telegram-Bot-Api-Secret-Token": request.headers.get("X-Telegram-Bot-Api-Secret-Token", ""),
 	}
+	WEBHOOK_PROXY_EXECUTOR.submit(_forward_telegram_update, target_url, payload, headers)
+	return jsonify({"ok": True})
+
+
+def _forward_telegram_update(target_url: str, payload: bytes, headers: dict) -> None:
 	try:
 		proxy_request = UrlRequest(target_url, data=payload, headers=headers, method="POST")
-		with urlopen(proxy_request, timeout=55) as response:
-			body = response.read()
-			return body, response.status, {"Content-Type": response.headers.get("Content-Type", "text/plain")}
+		with urlopen(proxy_request, timeout=float(os.getenv("WEBHOOK_PROXY_TIMEOUT", "2"))) as response:
+			response.read(1024)
 	except HTTPError as exc:
-		logger.exception("Telegram webhook proxy got HTTP error from bot")
-		return exc.read() or b"bot_webhook_http_error", exc.code
-	except URLError:
-		logger.exception("Telegram webhook proxy cannot reach bot at %s", target_url)
-		return jsonify({"ok": False, "error": "bot_webhook_unavailable"}), 503
+		logger.warning("Telegram webhook proxy got HTTP %s from bot", exc.code)
+	except (TimeoutError, URLError) as exc:
+		logger.debug("Telegram webhook proxy background forward did not wait for bot response: %s", exc)
+	except Exception:
+		logger.exception("Telegram webhook proxy background forward failed")
 
 
 @app.get("/api/fish-image/<path:filename>")
