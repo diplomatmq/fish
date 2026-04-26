@@ -61,6 +61,13 @@ def start_webapp_process() -> subprocess.Popen:
     timeout = env.get("GUNICORN_TIMEOUT") or "120"
     env["WEBHOOK_PATH"] = webhook_path
     env["BOT_INTERNAL_WEBHOOK_URL"] = f"http://127.0.0.1:{internal_port}/{webhook_path}"
+    try:
+        proxy_timeout = float(env.get("WEBHOOK_PROXY_TIMEOUT", "0") or "0")
+    except ValueError:
+        proxy_timeout = 0
+    if proxy_timeout < 30:
+        env["WEBHOOK_PROXY_TIMEOUT"] = "30"
+    env.setdefault("WEBHOOK_PROXY_LOG_UPDATES", "1")
 
     cmd = [
         "gunicorn",

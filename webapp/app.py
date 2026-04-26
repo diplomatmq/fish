@@ -527,6 +527,8 @@ def telegram_webhook_proxy():
 		"Content-Type": request.headers.get("Content-Type", "application/json"),
 		"X-Telegram-Bot-Api-Secret-Token": request.headers.get("X-Telegram-Bot-Api-Secret-Token", ""),
 	}
+	if os.getenv("WEBHOOK_PROXY_LOG_UPDATES", "1") == "1":
+		logger.info("Telegram webhook proxy accepted update: bytes=%s target=%s", len(payload), target_url)
 	WEBHOOK_PROXY_EXECUTOR.submit(_forward_telegram_update, target_url, payload, headers)
 	return jsonify({"ok": True})
 
@@ -534,12 +536,14 @@ def telegram_webhook_proxy():
 def _forward_telegram_update(target_url: str, payload: bytes, headers: dict) -> None:
 	try:
 		proxy_request = UrlRequest(target_url, data=payload, headers=headers, method="POST")
-		with urlopen(proxy_request, timeout=float(os.getenv("WEBHOOK_PROXY_TIMEOUT", "2"))) as response:
+		with urlopen(proxy_request, timeout=float(os.getenv("WEBHOOK_PROXY_TIMEOUT", "30"))) as response:
 			response.read(1024)
+		if os.getenv("WEBHOOK_PROXY_LOG_UPDATES", "1") == "1":
+			logger.info("Telegram webhook proxy forwarded update to bot: status=%s", getattr(response, "status", "?"))
 	except HTTPError as exc:
 		logger.warning("Telegram webhook proxy got HTTP %s from bot", exc.code)
 	except (TimeoutError, URLError) as exc:
-		logger.debug("Telegram webhook proxy background forward did not wait for bot response: %s", exc)
+		logger.warning("Telegram webhook proxy could not forward update to bot: %s", exc)
 	except Exception:
 		logger.exception("Telegram webhook proxy background forward failed")
 

@@ -2641,6 +2641,7 @@ class FishBot:
         self.application = None  # Будет установлено в main()
         self._tour_response_cache = {}
         self._tour_cache_ttl = float(os.getenv("TOUR_CACHE_TTL_SECONDS", "10"))
+        self._telegram_document_file_id_cache = {}
         self.OWNER_ID = 793216884
         self.webapp_url = (os.getenv("WEBAPP_URL") or "https://fish.monkeysdynasty.website").strip()
         # Множество уже оплаченных payload'ов — защита от двойной оплаты одного инвойса
@@ -3657,18 +3658,65 @@ class FishBot:
             logger.warning("_send_catch_image: File not found: %s", image_path)
             return None
 
+        cache_key = str(image_path.resolve())
+
         try:
+            cached_file_id = self._telegram_document_file_id_cache.get(cache_key)
+            if cached_file_id:
+                sent = await self._safe_send_document(
+                    chat_id=chat_id,
+                    document=cached_file_id,
+                    reply_to_message_id=reply_to_message_id
+                )
+                if sent:
+                    return sent
+                self._telegram_document_file_id_cache.pop(cache_key, None)
+
             if True:
                 f = await async_file_bytes(image_path)
                 # Отправляем именно как документ, как в обычном /fish
-                return await self._safe_send_document(
+                sent = await self._safe_send_document(
                     chat_id=chat_id,
                     document=f,
                     reply_to_message_id=reply_to_message_id
                 )
+                file_id = getattr(getattr(sent, "document", None), "file_id", None)
+                if file_id:
+                    self._telegram_document_file_id_cache[cache_key] = file_id
+                return sent
         except Exception as e:
             logger.warning("_send_catch_image: Failed to send image '%s': %s", image_file, e)
             return None
+
+    async def _send_document_path_cached(
+        self,
+        chat_id: int,
+        path: Path,
+        reply_to_message_id: Optional[int] = None,
+    ) -> Optional[Message]:
+        cache_key = str(path.resolve())
+
+        cached_file_id = self._telegram_document_file_id_cache.get(cache_key)
+        if cached_file_id:
+            sent = await self._safe_send_document(
+                chat_id=chat_id,
+                document=cached_file_id,
+                reply_to_message_id=reply_to_message_id,
+            )
+            if sent:
+                return sent
+            self._telegram_document_file_id_cache.pop(cache_key, None)
+
+        file_obj = await async_file_bytes(path)
+        sent = await self._safe_send_document(
+            chat_id=chat_id,
+            document=file_obj,
+            reply_to_message_id=reply_to_message_id,
+        )
+        file_id = getattr(getattr(sent, "document", None), "file_id", None)
+        if file_id:
+            self._telegram_document_file_id_cache[cache_key] = file_id
+        return sent
 
     async def _check_torch_event(self, chat_id: int, user_id: int, username: str, rarity: str, chat_title: Optional[str] = None):
         """Проверка и выдача NFT-призов по редкости улова."""
@@ -4326,6 +4374,11 @@ class FishBot:
             logger.exception("Failed to sync username for user_id=%s chat_id=%s", user_id, chat_id)
     
     async def fish_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.info(
+            "/fish received: user=%s chat=%s",
+            getattr(update.effective_user, "id", None),
+            getattr(update.effective_chat, "id", None),
+        )
         """Команда /fish - просто забросить удочку"""
         # Команда работает только в группах/каналах, не в личных чатах
         if update.effective_chat.type == 'private':
@@ -4929,13 +4982,11 @@ class FishBot:
                             trash_image = TRASH_STICKERS[trash_name]
                             image_path = Path(__file__).parent / trash_image
                             if image_path.exists():
-                                if True:
-                                    f = await async_file_bytes(image_path)
-                                    sticker_message = await self._safe_send_document(
-                                        chat_id=update.effective_chat.id,
-                                        document=f,
-                                        reply_to_message_id=update.message.message_id
-                                    )
+                                sticker_message = await self._send_document_path_cached(
+                                    chat_id=update.effective_chat.id,
+                                    path=image_path,
+                                    reply_to_message_id=update.message.message_id,
+                                )
                                 if sticker_message:
                                     context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
                     except Exception as e:
@@ -5003,13 +5054,11 @@ class FishBot:
                             if inspector_image:
                                 image_path = Path(__file__).parent / inspector_image
                                 if image_path.exists():
-                                    if True:
-                                        f = await async_file_bytes(image_path)
-                                        await self._safe_send_document(
-                                            chat_id=update.effective_chat.id,
-                                            document=f,
-                                            reply_to_message_id=update.message.message_id
-                                        )
+                                    await self._send_document_path_cached(
+                                        chat_id=update.effective_chat.id,
+                                        path=image_path,
+                                        reply_to_message_id=update.message.message_id,
+                                    )
                         except Exception as e:
                             logger.warning(f"Could not send fish inspector sticker: {e}")
 
@@ -10824,13 +10873,11 @@ class FishBot:
             sticker_path = Path(__file__).parent / "fishdef.webp"
             if sticker_path.exists():
                 try:
-                    if True:
-                        f = await async_file_bytes(sticker_path)
-                        await self._safe_send_document(
-                            chat_id=chat_id,
-                            document=f,
-                            reply_to_message_id=reply_to_message_id,
-                        )
+                    await self._send_document_path_cached(
+                        chat_id=chat_id,
+                        path=sticker_path,
+                        reply_to_message_id=reply_to_message_id,
+                    )
                 except Exception as e:
                     logger.warning("Could not send fishdef.webp on dynamite arrest: %s", e)
 
@@ -11049,6 +11096,12 @@ class FishBot:
         await self._execute_dynamite_blast(user_id, chat_id, guaranteed=False, reply_to_message_id=update.effective_message.message_id if update.effective_message else None)
     
     async def handle_fish_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.info(
+            "text update received: user=%s chat=%s text=%r",
+            getattr(update.effective_user, "id", None),
+            getattr(update.effective_chat, "id", None),
+            (getattr(update.effective_message, "text", "") or "")[:80],
+        )
         """Обработка сообщения 'рыбалка' и других текстовых сообщений"""
         # Игнорируем сообщения, отправленные ДО запуска бота (старые рыбалки не срабатывают)
         if update.message and update.message.date:
@@ -11592,13 +11645,11 @@ class FishBot:
                         if image_path.exists():
                             reply_to_id = reply_anchor_id
                             try:
-                                if True:
-                                    f = await async_file_bytes(image_path)
-                                    sticker_message = await self._safe_send_document(
-                                        chat_id=update.effective_chat.id,
-                                        document=f,
-                                        reply_to_message_id=reply_to_id
-                                    )
+                                sticker_message = await self._send_document_path_cached(
+                                    chat_id=update.effective_chat.id,
+                                    path=image_path,
+                                    reply_to_message_id=reply_to_id,
+                                )
                                 if sticker_message:
                                     context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
                             except Exception as send_exc:
@@ -11880,13 +11931,11 @@ class FishBot:
                         if inspector_image:
                             image_path = Path(__file__).parent / inspector_image
                             if image_path.exists():
-                                if True:
-                                    f = await async_file_bytes(image_path)
-                                    await self._safe_send_document(
-                                        chat_id=update.effective_chat.id,
-                                        document=f,
-                                        reply_to_message_id=query.message.message_id if query and query.message else None
-                                    )
+                                await self._send_document_path_cached(
+                                    chat_id=update.effective_chat.id,
+                                    path=image_path,
+                                    reply_to_message_id=query.message.message_id if query and query.message else None,
+                                )
                     except Exception as e:
                         logger.warning(f"Could not send fish inspector sticker from callback: {e}")
 
@@ -14093,6 +14142,7 @@ def main():
         port = int(os.getenv("WEBHOOK_PORT", os.getenv("PORT", "8080")))
         if not webhook_url:
             raise RuntimeError("WEBHOOK_URL is required for webhook mode")
+        logger.info("Starting PTB webhook server: listen=%s port=%s path=/%s public=%s/%s", listen, port, webhook_path, webhook_url, webhook_path)
         application.run_webhook(
             listen=listen,
             port=port,
