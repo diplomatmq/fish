@@ -772,7 +772,7 @@ class FishBot:
         """Команда /skip_boat_cd — сбросить КД лодки за звёзды."""
         user_id = update.effective_user.id
         price = 20  # Цена сброса КД (пример)
-        ok = db.skip_boat_cooldown(user_id, price)
+        ok = await _run_sync(db.skip_boat_cooldown, user_id, price)
         if ok:
             await update.message.reply_text(f"⏩ КД лодки сброшен за {price} ⭐! Можно выплывать снова.")
         else:
@@ -782,7 +782,7 @@ class FishBot:
         """Команда /cure_seasick — вылечить морскую болезнь за звёзды."""
         user_id = update.effective_user.id
         price = 10  # Цена лечения (пример)
-        ok = db.cure_seasick(user_id, price)
+        ok = await _run_sync(db.cure_seasick, user_id, price)
         if ok:
             await update.message.reply_text(f"🚑 Морская болезнь вылечена за {price} ⭐!")
         else:
@@ -792,7 +792,7 @@ class FishBot:
         """Команда /buy_boat — купить платную лодку за звёзды."""
         user_id = update.effective_user.id
         price = 50  # Цена платной лодки (пример)
-        ok = db.buy_paid_boat(user_id, price)
+        ok = await _run_sync(db.buy_paid_boat, user_id, price)
         if ok:
             await update.message.reply_text(f"⛵ Платная лодка куплена за {price} ⭐! Теперь вы можете выплывать без ограничений.")
         else:
@@ -808,7 +808,7 @@ class FishBot:
             return
 
         price = 50  # Цена платной лодки (пример)
-        ok = db.buy_paid_boat(user_id, price)
+        ok = await _run_sync(db.buy_paid_boat, user_id, price)
         if ok:
             await update.callback_query.answer(f"⛵ Платная лодка куплена за {price} ⭐!", show_alert=True)
             await self.show_fishing_menu(update, context)
@@ -828,12 +828,12 @@ class FishBot:
             to_user_id = int(to_user)
         else:
             # Поиск по username среди игроков
-            to_user_id = db.get_user_id_by_username(to_user)
+            to_user_id = await _run_sync(db.get_user_id_by_username, to_user)
             if not to_user_id:
                 await update.message.reply_text("Пользователь не найден.")
                 return
         # Создать приглашение
-        ok = db.create_boat_invite(user_id, to_user_id)
+        ok = await _run_sync(db.create_boat_invite, user_id, to_user_id)
         if not ok:
             await update.message.reply_text("Ошибка: нельзя пригласить (вы не в плавании, нет лодки или она переполнена).")
             return
@@ -872,11 +872,11 @@ class FishBot:
             return
 
         # Найти последнее приглашение к этому пользователю
-        invite_id = db.get_last_pending_invite_id(user_id)
+        invite_id = await _run_sync(db.get_last_pending_invite_id, user_id)
         if not invite_id:
             await update.callback_query.answer("Нет активного приглашения.", show_alert=True)
             return
-        success = db.respond_boat_invite(invite_id, accept=True)
+        success = await _run_sync(db.respond_boat_invite, invite_id, accept=True)
         if success:
             await update.callback_query.answer("Вы присоединились к лодке!")
         else:
@@ -900,11 +900,11 @@ class FishBot:
             await query.answer("Эта кнопка не для вас", show_alert=True)
             return
 
-        invite_id = db.get_last_pending_invite_id(user_id)
+        invite_id = await _run_sync(db.get_last_pending_invite_id, user_id)
         if not invite_id:
             await update.callback_query.answer("Нет активного приглашения.", show_alert=True)
             return
-        db.respond_boat_invite(invite_id, accept=False)
+        await _run_sync(db.respond_boat_invite, invite_id, accept=False)
         await update.callback_query.answer("Приглашение отклонено.")
 
     async def duel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -917,10 +917,10 @@ class FishBot:
         chat_id = update.effective_chat.id
         inviter_username = update.effective_user.username or update.effective_user.first_name or str(user_id)
 
-        inviter_player = db.get_player(user_id, chat_id)
+        inviter_player = await _run_sync(db.get_player, user_id, chat_id)
         if not inviter_player:
             try:
-                inviter_player = db.create_player(user_id, inviter_username, chat_id)
+                inviter_player = await _run_sync(db.create_player, user_id, inviter_username, chat_id)
             except Exception:
                 logger.exception("duel_command: failed to create player user=%s chat=%s", user_id, chat_id)
                 inviter_player = None
@@ -942,7 +942,7 @@ class FishBot:
             await update.message.reply_text("Некорректный username для дуэли.")
             return
 
-        target_id = db.get_user_id_by_username(target_username_arg)
+        target_id = await _run_sync(db.get_user_id_by_username, target_username_arg)
         if not target_id:
             await update.message.reply_text("Пользователь не найден в базе. Он должен хотя бы раз начать игру.")
             return
@@ -951,7 +951,7 @@ class FishBot:
             await update.message.reply_text("Нельзя вызвать самого себя на дуэль.")
             return
 
-        target_username = db.get_username_by_user_id(int(target_id)) or target_username_arg
+        target_username = await _run_sync(db.get_username_by_user_id, int(target_id)) or target_username_arg
 
         if self._is_user_beer_drunk(int(user_id)):
             await update.message.reply_text("Нельзя начать дуэль: вы находитесь в опьянении.")
@@ -964,28 +964,27 @@ class FishBot:
             return
 
         try:
-            db.expire_pending_duels()
+            await _run_sync(db.expire_pending_duels)
         except Exception:
             logger.exception("duel_command: failed to expire pending duels")
 
-        active_for_inviter = db.get_active_duel_for_user(user_id)
+        active_for_inviter = await _run_sync(db.get_active_duel_for_user, user_id)
         if active_for_inviter:
             await update.message.reply_text("У вас уже есть активная/ожидающая дуэль. Завершите её перед новым вызовом.")
             return
 
-        active_for_target = db.get_active_duel_for_user(int(target_id))
+        active_for_target = await _run_sync(db.get_active_duel_for_user, int(target_id))
         if active_for_target:
             await update.message.reply_text(
                 f"{self._duel_user_label(int(target_id), target_username)} уже участвует в другой активной дуэли."
             )
             return
 
-        attempts = db.get_duel_attempts_status(user_id, free_limit=DUEL_FREE_INVITES_PER_DAY)
+        attempts = await _run_sync(db.get_duel_attempts_status, user_id, free_limit=DUEL_FREE_INVITES_PER_DAY)
         free_left = int(attempts.get('left') or 0)
 
         if free_left > 0:
-            create_result = db.create_duel_invitation(
-                chat_id=chat_id,
+            create_result = await _run_sync(db.create_duel_invitation, chat_id=chat_id,
                 inviter_id=user_id,
                 target_id=int(target_id),
                 inviter_username=inviter_username,
@@ -1018,7 +1017,7 @@ class FishBot:
             if not sent_message:
                 try:
                     force_now = datetime.now(timezone.utc) + timedelta(seconds=DUEL_INVITE_TIMEOUT_SECONDS + 1)
-                    db.expire_duel_invitation_by_id(int(duel.get('id') or 0), now=force_now)
+                    await _run_sync(db.expire_duel_invitation_by_id, int(duel.get('id') or 0), now=force_now)
                 except Exception:
                     logger.exception("duel_command: failed to rollback duel after send error duel_id=%s", duel.get('id'))
                 await update.message.reply_text("Не удалось отправить приглашение на дуэль. Попробуйте ещё раз.")
@@ -1074,7 +1073,7 @@ class FishBot:
         chat_id = update.effective_chat.id
 
         try:
-            cancel_result = db.cancel_duel_for_user(user_id=int(user_id), chat_id=int(chat_id))
+            cancel_result = await _run_sync(db.cancel_duel_for_user, user_id=int(user_id), chat_id=int(chat_id))
         except Exception:
             logger.exception("notduel_command: failed to cancel duel user=%s chat=%s", user_id, chat_id)
             await update.message.reply_text("Не удалось отменить дуэль. Попробуйте ещё раз.")
@@ -1131,7 +1130,7 @@ class FishBot:
 
         duel_snapshot = None
         try:
-            duel_snapshot = db.get_duel_by_id(duel_id)
+            duel_snapshot = await _run_sync(db.get_duel_by_id, duel_id)
         except Exception:
             logger.exception("handle_duel_accept: failed to load duel snapshot duel_id=%s", duel_id)
 
@@ -1148,7 +1147,7 @@ class FishBot:
                 await query.answer("Вы в состоянии опьянения. Дуэль пока нельзя начать.", show_alert=True)
                 return
 
-        accept_result = db.accept_duel_invitation(duel_id, user_id)
+        accept_result = await _run_sync(db.accept_duel_invitation, duel_id, user_id)
         if not accept_result.get('ok'):
             error_code = str(accept_result.get('error') or 'accept_failed')
             if error_code == 'expired':
@@ -1195,7 +1194,7 @@ class FishBot:
             return
 
         await query.answer()
-        decline_result = db.decline_duel_invitation(duel_id, user_id)
+        decline_result = await _run_sync(db.decline_duel_invitation, duel_id, user_id)
         if not decline_result.get('ok'):
             error_code = str(decline_result.get('error') or 'decline_failed')
             if error_code == 'not_pending':
@@ -1220,20 +1219,20 @@ class FishBot:
         """Команда /ref: показать статистику и обработать вывод звёзд"""
         user_id = update.effective_user.id
         # Получаем разрешённые чаты для пользователя
-        allowed_chats = db.get_ref_access_chats(user_id)
+        allowed_chats = await _run_sync(db.get_ref_access_chats, user_id)
         if not allowed_chats:
             await update.message.reply_text("Нет разрешённых чатов для просмотра дохода.")
             return
         # Собираем статистику по каждому чату
         lines = []
         for ref_chat_id in allowed_chats:
-            chat_title = db.get_chat_title(ref_chat_id) or f"Чат {ref_chat_id}"
-            stars_total = db.get_chat_stars_total(ref_chat_id)
-            matured_stars_total = db.get_chat_stars_total(ref_chat_id, min_age_days=21)
-            refunds_total = db.get_chat_refunds_total(ref_chat_id)
+            chat_title = await _run_sync(db.get_chat_title, ref_chat_id) or f"Чат {ref_chat_id}"
+            stars_total = await _run_sync(db.get_chat_stars_total, ref_chat_id)
+            matured_stars_total = await _run_sync(db.get_chat_stars_total, ref_chat_id, min_age_days=21)
+            refunds_total = await _run_sync(db.get_chat_refunds_total, ref_chat_id)
             percent_sum = int((matured_stars_total * 0.85) / 2)
-            available_stars = db.get_available_stars_for_withdraw(user_id, ref_chat_id)
-            withdrawn_stars = db.get_withdrawn_stars(user_id, ref_chat_id)
+            available_stars = await _run_sync(db.get_available_stars_for_withdraw, user_id, ref_chat_id)
+            withdrawn_stars = await _run_sync(db.get_withdrawn_stars, user_id, ref_chat_id)
             lines.append(
                 f"{chat_title}\nВсего звёзд: {stars_total}\nЗвёзд старше 21 дня: {matured_stars_total}\nРефаунды: {refunds_total}\nВаш процент: {percent_sum}\nДоступно к выводу: {available_stars}\nУже выведено: {withdrawn_stars}"
             )
@@ -1263,8 +1262,8 @@ class FishBot:
             await update.message.reply_text("Ошибка: введите число.")
             return
 
-        allowed_chats = db.get_ref_access_chats(user_id)
-        available_stars = sum(db.get_available_stars_for_withdraw(user_id, chat_id) for chat_id in allowed_chats)
+        allowed_chats = await _run_sync(db.get_ref_access_chats, user_id)
+        available_stars = sum(await _run_sync(db.get_available_stars_for_withdraw, user_id, chat_id) for chat_id in allowed_chats)
         if amount < 1000:
             await update.message.reply_text("Ошибка: минимальный вывод 1000 звёзд.")
             return
@@ -1302,7 +1301,7 @@ class FishBot:
         user_id = int(user_id)
         amount = int(amount)
 
-        allowed_chats = db.get_ref_access_chats(user_id)
+        allowed_chats = await _run_sync(db.get_ref_access_chats, user_id)
         if not allowed_chats:
             await query.answer("Нет доступных чатов для вывода", show_alert=True)
             return
@@ -1311,12 +1310,12 @@ class FishBot:
         for chat_id in allowed_chats:
             if remaining <= 0:
                 break
-            chat_available = db.get_available_stars_for_withdraw(user_id, chat_id)
+            chat_available = await _run_sync(db.get_available_stars_for_withdraw, user_id, chat_id)
             if chat_available <= 0:
                 continue
             chunk = min(remaining, chat_available)
             if chunk > 0:
-                db.mark_stars_withdrawn(user_id, chunk, chat_id=chat_id)
+                await _run_sync(db.mark_stars_withdrawn, user_id, chunk, chat_id=chat_id)
                 remaining -= chunk
 
         if remaining > 0:
@@ -1397,7 +1396,7 @@ class FishBot:
             )
             return
         try:
-            db.add_ref_access(ref_user_id, chat_id)
+            await _run_sync(db.add_ref_access, ref_user_id, chat_id)
             await update.message.reply_text(f"✅ Доступ для пользователя {ref_user_id} к чату {chat_id} сохранён.")
         except Exception as e:
             await update.message.reply_text(f"Ошибка при сохранении: {e}")
@@ -1459,7 +1458,7 @@ class FishBot:
             since = context.user_data.pop('check_since', None)
             context.user_data.pop('check_step', None)
 
-            rows = db.get_users_weight_leaderboard(user_ids=ids, since=since, until=dt)
+            rows = await _run_sync(db.get_users_weight_leaderboard, user_ids=ids, since=since, until=dt)
 
             since_str = since.strftime('%d.%m.%Y %H:%M') if since else '?'
             until_str = dt.strftime('%d.%m.%Y %H:%M')
@@ -1523,7 +1522,7 @@ class FishBot:
         draft['tournament_type'] = selected_type
         if selected_type == 'specific_fish':
             # Для specific_fish: сначала локация, потом критерий, потом рыба
-            locations = db.get_locations()
+            locations = await _run_sync(db.get_locations)
             keyboard = [
                 [InlineKeyboardButton(loc['name'], callback_data=f'tour_location_{loc["name"]}')]
                 for loc in locations
@@ -1537,7 +1536,7 @@ class FishBot:
             return
 
         if selected_type in ('longest_fish', 'biggest_weight'):
-            locations = db.get_locations()
+            locations = await _run_sync(db.get_locations)
             keyboard = [
                 [InlineKeyboardButton(loc['name'], callback_data=f'tour_location_{loc["name"]}')]
                 for loc in locations
@@ -1961,7 +1960,7 @@ class FishBot:
             await update.message.reply_text("Использование: /mes <текст>")
             return
         text = " ".join(context.args)
-        chat_ids = db.get_all_chat_ids()
+        chat_ids = await _run_sync(db.get_all_chat_ids)
         sent = 0
         failed = 0
         for cid in chat_ids:
@@ -2296,7 +2295,7 @@ class FishBot:
 
     async def _handle_duel_invite_timeout(self, duel_id: int, chat_id: int):
         try:
-            result = db.expire_duel_invitation_by_id(int(duel_id))
+            result = await _run_sync(db.expire_duel_invitation_by_id, int(duel_id))
         except Exception:
             logger.exception("Failed to expire duel invite by timeout duel_id=%s", duel_id)
             return
@@ -2319,8 +2318,7 @@ class FishBot:
 
     async def _handle_duel_active_timeout(self, duel_id: int, chat_id: int):
         try:
-            result = db.expire_active_duel_by_id(
-                int(duel_id),
+            result = await _run_sync(db.expire_active_duel_by_id, int(duel_id),
                 timeout_seconds=DUEL_ACTIVE_TIMEOUT_SECONDS,
             )
         except Exception:
@@ -2377,7 +2375,7 @@ class FishBot:
         resolve_latest_catch: bool = True,
     ) -> None:
         """Если у пользователя активная дуэль в этом чате, засчитать улов и объявить результат."""
-        duel = db.get_active_duel_for_user(int(user_id))
+        duel = await _run_sync(db.get_active_duel_for_user, int(user_id))
         if not duel or str(duel.get('status') or '') != 'active':
             return
 
@@ -2392,14 +2390,13 @@ class FishBot:
         normalized_catch_id = int(catch_id) if catch_id is not None else None
         if normalized_catch_id is None and resolve_latest_catch:
             try:
-                latest_catch = db.get_latest_unsold_catch(int(user_id), int(chat_id))
+                latest_catch = await _run_sync(db.get_latest_unsold_catch, int(user_id), int(chat_id))
                 if latest_catch and latest_catch.get('id') is not None:
                     normalized_catch_id = int(latest_catch.get('id'))
             except Exception:
                 logger.exception("Failed to load latest catch for duel user=%s chat=%s", user_id, chat_id)
 
-        record_result = db.record_duel_catch(
-            duel_id=duel_id,
+        record_result = await _run_sync(db.record_duel_catch, duel_id=duel_id,
             user_id=int(user_id),
             fish_name=fish_name,
             weight=weight,
@@ -2478,8 +2475,7 @@ class FishBot:
         transfer_possible = loser_catch_id is not None
         if loser_catch_id is not None:
             try:
-                transfer_done = db.move_caught_fish_to_user(
-                    fish_id=int(loser_catch_id),
+                transfer_done = await _run_sync(db.move_caught_fish_to_user, fish_id=int(loser_catch_id),
                     from_user_id=int(loser_id),
                     to_user_id=int(winner_id),
                     to_chat_id=duel_chat,
@@ -2534,7 +2530,7 @@ class FishBot:
         return f"{minutes}м {sec}с"
 
     async def _execute_harpoon_catch(self, user_id: int, group_chat_id: int, reply_to_message_id: Optional[int] = None) -> None:
-        player = db.get_player(user_id, group_chat_id)
+        player = await _run_sync(db.get_player, user_id, group_chat_id)
         if not player:
             await self._safe_send_message(
                 chat_id=group_chat_id,
@@ -2546,7 +2542,7 @@ class FishBot:
         location = player.get('current_location') or "Городской пруд"
         result = game.fish_with_harpoon(user_id, group_chat_id, location)
 
-        db.mark_harpoon_used(user_id, group_chat_id)
+        await _run_sync(db.mark_harpoon_used, user_id, group_chat_id)
 
         if not result.get("success"):
             await self._safe_send_message(
@@ -2560,7 +2556,7 @@ class FishBot:
         weight = result.get('weight', 0)
         length = result.get('length', 0)
         fish_name = fish.get('name', 'Неизвестная рыба')
-        fish_price = db.calculate_fish_price(fish, weight, length) if fish else 0
+        fish_price = await _run_sync(db.calculate_fish_price, fish, weight, length) if fish else 0
 
         fish_name_display = format_fish_name(fish_name)
         message = (
@@ -3223,8 +3219,7 @@ class FishBot:
         winner_username = str(username or '').strip()
         won_location = result.get('location')
         try:
-            won_prize = db.try_roll_raf_prize(
-                chat_id=chat_id,
+            won_prize = await _run_sync(db.try_roll_raf_prize, chat_id=chat_id,
                 rarity_key=rarity_key,
                 winner_user_id=user_id,
                 winner_username=winner_username,
@@ -3240,7 +3235,7 @@ class FishBot:
 
         rollback_info = {}
         try:
-            rollback_info = db.rollback_reward_after_raf_win(user_id, chat_id, result)
+            rollback_info = await _run_sync(db.rollback_reward_after_raf_win, user_id, chat_id, result)
         except Exception:
             logger.exception("[RAF_LOG] rollback failed after prize win user=%s chat=%s", user_id, chat_id)
 
@@ -3375,14 +3370,14 @@ class FishBot:
         if draft:
             event_id = draft.get('event_id')
             if event_id:
-                cancelled = db.cancel_raf_event_creation(int(event_id), int(user_id))
+                cancelled = await _run_sync(db.cancel_raf_event_creation, int(event_id), int(user_id))
             else:
                 cancelled = True
         else:
-            pending = db.get_latest_raf_pending_event(int(user_id))
+            pending = await _run_sync(db.get_latest_raf_pending_event, int(user_id))
             if pending:
                 event_id = pending.get('id')
-                cancelled = db.cancel_raf_event_creation(int(event_id), int(user_id))
+                cancelled = await _run_sync(db.cancel_raf_event_creation, int(event_id), int(user_id))
 
         if cancelled:
             if event_id:
@@ -3530,8 +3525,7 @@ class FishBot:
                 )
                 return True
 
-            event_id = db.create_raf_event_draft(
-                creator_user_id=int(draft['creator_user_id']),
+            event_id = await _run_sync(db.create_raf_event_draft, creator_user_id=int(draft['creator_user_id']),
                 creator_username=update.effective_user.username or update.effective_user.first_name,
                 title=str(draft.get('title') or 'RAF Event'),
                 target_chat_id=int(draft.get('target_chat_id')),
@@ -3608,17 +3602,17 @@ class FishBot:
             await query.answer("Эта кнопка не для вас", show_alert=True)
             return
 
-        event = db.get_raf_event(event_id)
+        event = await _run_sync(db.get_raf_event, event_id)
         if not event or int(event.get('creator_user_id') or 0) != user_id:
             await query.answer("Ивент не найден", show_alert=True)
             return
 
-        activated = db.activate_raf_event(event_id, user_id)
+        activated = await _run_sync(db.activate_raf_event, event_id, user_id)
         if not activated:
             await query.answer("Ивент уже запущен или не оплачен", show_alert=True)
             return
 
-        prizes = db.get_raf_event_prizes(event_id)
+        prizes = await _run_sync(db.get_raf_event_prizes, event_id)
         prizes_text = self._format_raf_prizes_summary(prizes)
 
         starts_at = activated.get('starts_at') or activated.get('activated_at')
@@ -3791,13 +3785,13 @@ class FishBot:
             return False
 
         prize_key = f"{prize['flag_prefix']}_won_{chat_id}"
-        already_won = db.get_system_flag(prize_key)
+        already_won = await _run_sync(db.get_system_flag, prize_key)
         if already_won == "1":
             logger.info("[TORCH_LOG] Prize %s already won in chat %s. Skipping.", prize_key, chat_id)
             return False
 
         try:
-            db.set_system_flag(prize_key, "1")
+            await _run_sync(db.set_system_flag, prize_key, "1")
             logger.info("[TORCH_LOG] Flag %s successfully set to 1", prize_key)
         except Exception as e:
             logger.error("[TORCH_LOG] Error setting system flag %s: %s", prize_key, e, exc_info=True)
@@ -4106,7 +4100,7 @@ class FishBot:
     async def auto_recover_rods(self):
         """Автоматически восстанавливает прочность удочек игроков каждые 10 минут"""
         try:
-            with db._connect() as conn:
+            with await _run_sync(db._connect) as conn:
                 cursor = conn.cursor()
                 # Получаем все удочки, у которых начато восстановление
                 cursor.execute('''
@@ -4214,10 +4208,10 @@ class FishBot:
         chat_id = update.effective_chat.id
         username = update.effective_user.username or update.effective_user.first_name
 
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             # Создаем нового игрока
-            player = db.create_player(user_id, username, chat_id)
+            player = await _run_sync(db.create_player, user_id, username, chat_id)
             welcome_text = f"""
 🎣 Добро пожаловать в мир рыбалки, {username}!
 
@@ -4252,17 +4246,17 @@ class FishBot:
             if not player.get('current_location'):
                 updates['current_location'] = 'Городской пруд'
             if updates:
-                db.update_player(user_id, chat_id, **updates)
-                player = db.get_player(user_id, chat_id)
+                await _run_sync(db.update_player, user_id, chat_id, **updates)
+                player = await _run_sync(db.get_player, user_id, chat_id)
             if player:
-                player_rod = db.get_player_rod(user_id, player['current_rod'], chat_id)
+                player_rod = await _run_sync(db.get_player_rod, user_id, player['current_rod'], chat_id)
                 if not player_rod:
                     if player['current_rod'] in TEMP_ROD_RANGES:
-                        db.update_player(user_id, chat_id, current_rod=BAMBOO_ROD)
-                        db.init_player_rod(user_id, BAMBOO_ROD, chat_id)
-                        player = db.get_player(user_id, chat_id)
+                        await _run_sync(db.update_player, user_id, chat_id, current_rod=BAMBOO_ROD)
+                        await _run_sync(db.init_player_rod, user_id, BAMBOO_ROD, chat_id)
+                        player = await _run_sync(db.get_player, user_id, chat_id)
                     else:
-                        db.init_player_rod(user_id, player['current_rod'], chat_id)
+                        await _run_sync(db.init_player_rod, user_id, player['current_rod'], chat_id)
 
         await update.message.reply_text(welcome_text)
 
@@ -4319,7 +4313,7 @@ class FishBot:
             return
 
         try:
-            rows = db.get_all_chat_stars()
+            rows = await _run_sync(db.get_all_chat_stars)
         except Exception as e:
             logger.exception("stars_command: db error: %s", e)
             await update.message.reply_text(f"Ошибка БД: {e}", parse_mode=None)
@@ -4770,11 +4764,11 @@ class FishBot:
                 # Если на лодке — доп проверки
                 if result.get('is_on_boat'):
                     # Проверка на крушение
-                    if db.check_boat_crash(user_id):
+                    if await _run_sync(db.check_boat_crash, user_id):
                         await update.message.reply_text("💥 <b>КРУШЕНИЕ!</b> Лодка не выдержала веса мусора и сломалась! Весь улов текущего плавания утерян.")
                     else:
                         # Предупреждение о малом весе
-                        left = db.check_boat_weight_warning(user_id)
+                        left = await _run_sync(db.check_boat_weight_warning, user_id)
                         if left is not None and left < 50:
                             await update.message.reply_text(f"⚠️ <b>ВНИМАНИЕ!</b> Лодка почти полна. Осталось места: {left:.1f} кг")
 
@@ -4877,18 +4871,18 @@ class FishBot:
             # Если на лодке — доп проверки
             if result.get('is_on_boat'):
                 # Проверка на крушение
-                if db.check_boat_crash(user_id):
+                if await _run_sync(db.check_boat_crash, user_id):
                     message += "\n\n💥 <b>КРУШЕНИЕ!</b> Лодка не выдержала веса и сломалась! Весь улов текущего плавания утерян."
                 else:
                     # Предупреждение о малом весе
-                    left = db.check_boat_weight_warning(user_id)
+                    left = await _run_sync(db.check_boat_weight_warning, user_id)
                     if left is not None and left < 50:
                         message += f"\n\n⚠️ <b>ВНИМАНИЕ!</b> Лодка почти полна. Осталось места: {left:.1f} кг"
 
             # Добавляем примечание о популяции (дебафф при частых забросах на одной локации)
             try:
-                population_penalty = db.get_population_penalty(user_id)
-                consecutive_casts_count = db.get_consecutive_casts(user_id)
+                population_penalty = await _run_sync(db.get_population_penalty, user_id)
+                consecutive_casts_count = await _run_sync(db.get_consecutive_casts, user_id)
                 if consecutive_casts_count >= 30 and population_penalty > 0:
                     penalty_info = (
                         f"\n⚠️ Популяция рыб снижена на {int(population_penalty)}%\n"
@@ -5118,7 +5112,7 @@ class FishBot:
             return
         
         chat_id = update.effective_chat.id
-        player = db.get_player(update.effective_user.id, chat_id)
+        player = await _run_sync(db.get_player, update.effective_user.id, chat_id)
         
         if not player:
             await update.message.reply_text("Сначала создайте профиль командой /start")
@@ -5173,9 +5167,9 @@ class FishBot:
 
 
         # --- ЛОДОЧНОЕ МЕНЮ ---
-        boat = db.get_user_boat(user_id)
+        boat = await _run_sync(db.get_user_boat, user_id)
         is_active = boat.get('is_active', 0) if boat else 0
-        members_count = db.get_boat_members_count(boat['id']) if boat else 1
+        members_count = await _run_sync(db.get_boat_members_count, boat['id']) if boat else 1
         capacity = boat.get('capacity', 1) if boat else 1
         boat_line = f"\n⛵ Лодка: {boat['name']} ({members_count}/{capacity})\nВес: {boat.get('current_weight', 0):.1f}/{boat.get('max_weight', 0):.1f} кг" if boat else ""
         menu_text += boat_line
@@ -5203,7 +5197,7 @@ class FishBot:
                 InlineKeyboardButton(f"▶️ Выплыть ({members_count}/{capacity})", callback_data=f"boat_start_{user_id}")
             ])
         # Если есть морская болезнь — кнопка лечения
-        if db.is_user_seasick(user_id):
+        if await _run_sync(db.is_user_seasick, user_id):
             keyboard.insert(1, [InlineKeyboardButton("🚑 Вылечить морскую болезнь (10⭐)", callback_data=f"cure_seasick_{user_id}")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -5222,7 +5216,7 @@ class FishBot:
             return
 
         price = 20  # Цена сброса КД (пример)
-        ok = db.skip_boat_cooldown(user_id, price)
+        ok = await _run_sync(db.skip_boat_cooldown, user_id, price)
         if ok:
             await update.callback_query.answer(f"⏩ КД лодки сброшен за {price} ⭐!", show_alert=True)
             await self.show_fishing_menu(update, context)
@@ -5239,7 +5233,7 @@ class FishBot:
             return
 
         price = 10  # Цена лечения (пример)
-        ok = db.cure_seasick(user_id, price)
+        ok = await _run_sync(db.cure_seasick, user_id, price)
         if ok:
             await update.callback_query.answer(f"🚑 Морская болезнь вылечена за {price} ⭐!", show_alert=True)
             await self.show_fishing_menu(update, context)
@@ -5303,7 +5297,7 @@ class FishBot:
 
         logger.info("[boat] Return requested: user_id=%s chat_id=%s", user_id, chat_id)
         try:
-            results, boat_id, status = db.return_boat_trip_and_split_catch(user_id)
+            results, boat_id, status = await _run_sync(db.return_boat_trip_and_split_catch, user_id)
         except Exception as e:
             logger.exception("[boat] Return failed: user_id=%s chat_id=%s error=%s", user_id, chat_id, e)
             await update.callback_query.answer("Ошибка при возврате лодки. Попробуйте ещё раз.", show_alert=True)
@@ -5353,18 +5347,18 @@ class FishBot:
             return
 
         # Во время плавания на лодке смена локации запрещена
-        if db.get_active_boat_by_user(user_id):
+        if await _run_sync(db.get_active_boat_by_user, user_id):
             await query.answer("⛵ Нельзя менять локацию, пока вы в плавании. Сначала нажмите «Вернуться».", show_alert=True)
             return
         
         await query.answer()
         
-        locations = db.get_locations()
+        locations = await _run_sync(db.get_locations)
         keyboard = []
         
         for loc in locations:
             # Показываем актуальное количество человек в чате
-            players_count = db.get_location_players_count(loc['name'], chat_id)
+            players_count = await _run_sync(db.get_location_players_count, loc['name'], chat_id)
             players_info = f"👥 {players_count}"
             
             keyboard.append([InlineKeyboardButton(
@@ -5395,7 +5389,7 @@ class FishBot:
         await query.answer()
         
         # Получаем все локации
-        locations = db.get_locations()
+        locations = await _run_sync(db.get_locations)
         
         keyboard = []
         for idx, location in enumerate(locations):
@@ -5416,7 +5410,7 @@ class FishBot:
             callback_data=f"select_net_{user_id}"
         )])
 
-        if db.is_echosounder_active(user_id, chat_id):
+        if await _run_sync(db.is_echosounder_active, user_id, chat_id):
             keyboard.append([InlineKeyboardButton(
                 "📡 Эхолот",
                 callback_data=f"show_echosounder_{user_id}"
@@ -5451,11 +5445,11 @@ class FishBot:
             await query.answer("Эта кнопка не для вас", show_alert=True)
             return
 
-        if not db.is_echosounder_active(user_id, chat_id):
+        if not await _run_sync(db.is_echosounder_active, user_id, chat_id):
             await query.answer("Эхолот не активен. Купите его в магазине.", show_alert=True)
             return
 
-        locations = db.get_locations()
+        locations = await _run_sync(db.get_locations)
         if not locations:
             await query.answer("Локации не найдены.", show_alert=True)
             return
@@ -5468,7 +5462,7 @@ class FishBot:
             loc_name = loc.get('name')
             if not loc_name:
                 continue
-            weather = db.get_or_update_weather(loc_name)
+            weather = await _run_sync(db.get_or_update_weather, loc_name)
             condition = weather.get('condition', 'Ясно') if weather else 'Ясно'
             bonus = weather_system.get_weather_bonus(condition)
             if bonus > best_bonus:
@@ -5481,7 +5475,7 @@ class FishBot:
             return
 
         season = get_current_season()
-        fish_list = db.get_fish_by_location(best_location, season, min_level=999)
+        fish_list = await _run_sync(db.get_fish_by_location, best_location, season, min_level=999)
         top_fish = None
         if fish_list:
             top_fish = max(fish_list, key=lambda item: float(item.get('max_weight') or 0))
@@ -5535,7 +5529,7 @@ class FishBot:
             pass
 
         try:
-            locations = db.get_locations()
+            locations = await _run_sync(db.get_locations)
         except Exception as e:
             logger.exception("handle_change_bait_location: db.get_locations failed: %s", e)
             try:
@@ -5551,7 +5545,7 @@ class FishBot:
         
         # Получаем наживки игрока для этой локации
         try:
-            baits = db.get_player_baits_for_location(user_id, location)
+            baits = await _run_sync(db.get_player_baits_for_location, user_id, location)
         except Exception as e:
             logger.exception("handle_change_bait_location: db error user=%s location=%s: %s", user_id, location, e)
             try:
@@ -5648,18 +5642,18 @@ class FishBot:
         
         await query.answer()
         
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if player and player.get('current_rod') == HARPOON_NAME:
-            db.init_player_rod(user_id, BAMBOO_ROD, chat_id)
-            db.update_player(user_id, chat_id, current_rod=BAMBOO_ROD)
-            player = db.get_player(user_id, chat_id)
-        db.ensure_rod_catalog()
-        all_rods = db.get_rods()
+            await _run_sync(db.init_player_rod, user_id, BAMBOO_ROD, chat_id)
+            await _run_sync(db.update_player, user_id, chat_id, current_rod=BAMBOO_ROD)
+            player = await _run_sync(db.get_player, user_id, chat_id)
+        await _run_sync(db.ensure_rod_catalog)
+        all_rods = await _run_sync(db.get_rods)
         
         keyboard = []
         
         # Добавляем бамбуковую удочку (всегда есть)
-        bamboo_rod = db.get_rod("Бамбуковая удочка")
+        bamboo_rod = await _run_sync(db.get_rod, "Бамбуковая удочка")
         if bamboo_rod:
             current = "✅" if player['current_rod'] == "Бамбуковая удочка" else ""
             kb_data = f"select_rod_Бамбуковая удочка_{user_id}"
@@ -5673,14 +5667,14 @@ class FishBot:
         # Добавляем остальные удочки
         for rod in all_rods:
             if rod['name'] not in ("Бамбуковая удочка", HARPOON_NAME):  # Исключаем стартовую и гарпун (он отдельный инструмент)
-                owned_rod = db.get_player_rod(user_id, rod['name'], chat_id)
+                owned_rod = await _run_sync(db.get_player_rod, user_id, rod['name'], chat_id)
                 if not owned_rod:
                     continue
                 current = "✅" if player['current_rod'] == rod['name'] else ""
                 # Получаем текущую прочность удочки
                 durability_str = ""
                 if rod['name'] == BAMBOO_ROD:
-                    player_rod = db.get_player_rod(user_id, rod['name'], chat_id)
+                    player_rod = await _run_sync(db.get_player_rod, user_id, rod['name'], chat_id)
                     if player_rod:
                         durability_str = f" ({player_rod['current_durability']}/{player_rod['max_durability']})"
                 
@@ -5694,9 +5688,9 @@ class FishBot:
                 )])
 
         # Гарпун отдельным инструментом (не как удочка)
-        harpoon_owned = db.get_player_rod(user_id, HARPOON_NAME, chat_id)
+        harpoon_owned = await _run_sync(db.get_player_rod, user_id, HARPOON_NAME, chat_id)
         if harpoon_owned:
-            remaining = db.get_harpoon_cooldown_remaining(user_id, chat_id, HARPOON_COOLDOWN_MINUTES)
+            remaining = await _run_sync(db.get_harpoon_cooldown_remaining, user_id, chat_id, HARPOON_COOLDOWN_MINUTES)
             if remaining > 0:
                 harpoon_status = f"⏳ {self._format_seconds_compact(remaining)}"
             else:
@@ -5729,7 +5723,7 @@ class FishBot:
             return
 
         # Дублируем запрет для защиты от старых/кэшированных кнопок выбора локации
-        if db.get_active_boat_by_user(user_id):
+        if await _run_sync(db.get_active_boat_by_user, user_id):
             await query.answer("⛵ Во время плавания локацию менять нельзя. Сначала завершите плавание.", show_alert=True)
             await self.show_fishing_menu(update, context)
             return
@@ -5740,7 +5734,7 @@ class FishBot:
         location_name = query.data.replace(f"select_location_", "").replace(f"_{user_id}", "")
         
         # Обновляем локацию игрока
-        db.update_player_location(user_id, chat_id, location_name)
+        await _run_sync(db.update_player_location, user_id, chat_id, location_name)
 
         keyboard = [[
             InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}"),
@@ -5786,7 +5780,7 @@ class FishBot:
                         bait_id = None
 
             if bait_id is not None:
-                baits = db.get_baits()
+                baits = await _run_sync(db.get_baits)
                 bait = next((b for b in baits if b['id'] == bait_id), None)
                 if bait:
                     bait_name = bait['name']
@@ -5798,7 +5792,7 @@ class FishBot:
             return
 
         # Обновляем наживку игрока
-        db.update_player_bait(user_id, chat_id, bait_name)
+        await _run_sync(db.update_player_bait, user_id, chat_id, bait_name)
 
         await query.edit_message_text(f"🪱 Наживка изменена на: {bait_name}")
     
@@ -5816,10 +5810,10 @@ class FishBot:
         await query.answer()
         
         # Показываем доступные сети игрока
-        player_nets = db.get_player_nets(user_id, chat_id)
+        player_nets = await _run_sync(db.get_player_nets, user_id, chat_id)
         if not player_nets:
-            db.init_player_net(user_id, 'Базовая сеть', chat_id)
-            player_nets = db.get_player_nets(user_id, chat_id)
+            await _run_sync(db.init_player_net, user_id, 'Базовая сеть', chat_id)
+            player_nets = await _run_sync(db.get_player_nets, user_id, chat_id)
         
         if not player_nets:
             keyboard = [
@@ -5839,7 +5833,7 @@ class FishBot:
         any_on_cooldown = False
         for net in player_nets:
             # Проверяем кулдаун
-            cooldown = db.get_net_cooldown_remaining(user_id, net['net_name'], chat_id)
+            cooldown = await _run_sync(db.get_net_cooldown_remaining, user_id, net['net_name'], chat_id)
             
             if cooldown > 0:
                 any_on_cooldown = True
@@ -5883,19 +5877,19 @@ class FishBot:
         parts = query.data.split('_')
         net_name = '_'.join(parts[2:-1])  # Все части между use_net и user_id
         
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             await query.answer("Профиль не найден", show_alert=True)
             return
         
         # Проверяем наличие сети у игрока
-        player_net = db.get_player_net(user_id, net_name, chat_id)
+        player_net = await _run_sync(db.get_player_net, user_id, net_name, chat_id)
         if not player_net:
             await query.answer("❌ У вас нет этой сети!", show_alert=True)
             return
         
         # Проверяем кулдаун
-        cooldown = db.get_net_cooldown_remaining(user_id, net_name, chat_id)
+        cooldown = await _run_sync(db.get_net_cooldown_remaining, user_id, net_name, chat_id)
         if cooldown > 0:
             hours = cooldown // 3600
             minutes = (cooldown % 3600) // 60
@@ -5904,7 +5898,7 @@ class FishBot:
             return
         
         # Нельзя использовать сеть во время плавания на лодке
-        active_boat = db.get_active_boat_by_user(user_id)
+        active_boat = await _run_sync(db.get_active_boat_by_user, user_id)
         if active_boat:
             await query.answer("❌ Нельзя использовать сеть во время плавания на лодке!", show_alert=True)
             return
@@ -5922,12 +5916,12 @@ class FishBot:
         fish_count = player_net['fish_count']
         
         # Получаем рыбу для текущей локации и сезона
-        available_fish = db.get_fish_by_location(location, season, min_level=player.get('level', 0) or 0)
+        available_fish = await _run_sync(db.get_fish_by_location, location, season, min_level=player.get('level', 0) or 0)
         # Исключаем NFT из улова сетями
         available_fish = [f for f in available_fish if f['rarity'] != 'NFT']
         
         # Получаем мусор для локации
-        available_trash = db.get_trash_by_location(location)
+        available_trash = await _run_sync(db.get_trash_by_location, location)
         
         if not available_fish and not available_trash:
             await query.edit_message_text(
@@ -5940,7 +5934,7 @@ class FishBot:
         total_value = 0
         net_tickets_base = 0
         net_treasure_totals: Dict[str, int] = {}
-        feeder_bonus = db.get_active_feeder_bonus(user_id, chat_id)
+        feeder_bonus = await _run_sync(db.get_active_feeder_bonus, user_id, chat_id)
         clothing_bonus_percent = self._get_clothing_bonus_percent(user_id)
         beer_bonus_percent = self._get_active_beer_bonus_percent(user_id)
         fish_chance = min(95.0, 80 + feeder_bonus + clothing_bonus_percent + beer_bonus_percent)
@@ -5978,7 +5972,7 @@ class FishBot:
                         location,
                     )
                 else:
-                    db.add_caught_fish(user_id, chat_id, trash['name'], trash['weight'], location, 0)
+                    await _run_sync(db.add_caught_fish, user_id, chat_id, trash['name'], trash['weight'], location, 0)
 
                     logger.info(
                         "Net catch (trash): user=%s chat_id=%s chat_title=%s item=%s weight=%.2fkg location=%s",
@@ -6015,7 +6009,7 @@ class FishBot:
                 length = round(random.uniform(fish['min_length'], fish['max_length']), 1)
                 
                 # Добавляем рыбу в улов игрока
-                db.add_caught_fish(user_id, chat_id, fish['name'], weight, location, length)
+                await _run_sync(db.add_caught_fish, user_id, chat_id, fish['name'], weight, location, length)
 
                 logger.info(
                     "Net catch (fish): user=%s chat_id=%s chat_title=%s fish=%s weight=%.2fkg length=%.1fcm location=%s",
@@ -6028,7 +6022,7 @@ class FishBot:
                     location
                 )
                 
-                fish_price = db.calculate_fish_price(fish, weight, length)
+                fish_price = await _run_sync(db.calculate_fish_price, fish, weight, length)
 
                 catch_results.append({
                     'type': 'fish',
@@ -6042,7 +6036,7 @@ class FishBot:
                 net_tickets_base += self._calculate_tickets_for_rarity(fish.get('rarity', 'Обычная'))
         
         # Используем сеть
-        db.use_net(user_id, net_name, chat_id)
+        await _run_sync(db.use_net, user_id, net_name, chat_id)
         tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(
             user_id,
             net_tickets_base,
@@ -6084,7 +6078,7 @@ class FishBot:
             message += f"🧺 Бонус кормушки: +{feeder_bonus}% (рыба {fish_chance}%)\n"
         
         # Обновляем оставшиеся использования
-        player_net = db.get_player_net(user_id, net_name, chat_id)
+        player_net = await _run_sync(db.get_player_net, user_id, net_name, chat_id)
         if player_net['max_uses'] != -1:
             message += f"🕸️ Осталось использований: {player_net['uses_left']}"
         
@@ -6123,7 +6117,7 @@ class FishBot:
             else:
                 try:
                     rod_id = int(parts[1])
-                    rod = db.get_rod_by_id(rod_id)
+                    rod = await _run_sync(db.get_rod_by_id, rod_id)
                     if rod:
                         rod_name = rod['name']
                 except (ValueError, IndexError):
@@ -6143,16 +6137,16 @@ class FishBot:
         # Проверяем, что удочка есть у игрока (или бамбуковая)
         if rod_name != "Бамбуковая удочка":
             # Нужно проверить, куплена ли удочка
-            player_rod = db.get_player_rod(user_id, rod_name, chat_id)
+            player_rod = await _run_sync(db.get_player_rod, user_id, rod_name, chat_id)
             if not player_rod:
                 await query.edit_message_text("❌ Эта удочка не куплена!")
                 return
         else:
             # Инициализируем бамбуковую удочку если её нет
-            db.init_player_rod(user_id, "Бамбуковая удочка", chat_id)
+            await _run_sync(db.init_player_rod, user_id, "Бамбуковая удочка", chat_id)
         
         # Обновляем удочку игрока
-        db.update_player(user_id, chat_id, current_rod=rod_name)
+        await _run_sync(db.update_player, user_id, chat_id, current_rod=rod_name)
         
         # Возвращаемся в меню выбора удочек с подтверждением
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"change_rod_{user_id}")]]
@@ -6172,7 +6166,7 @@ class FishBot:
 
         await query.answer()
 
-        harpoon_owned = db.get_player_rod(user_id, HARPOON_NAME, chat_id)
+        harpoon_owned = await _run_sync(db.get_player_rod, user_id, HARPOON_NAME, chat_id)
         if not harpoon_owned:
             await query.edit_message_text(
                 "❌ У вас нет гарпуна. Купите его в магазине.",
@@ -6180,7 +6174,7 @@ class FishBot:
             )
             return
 
-        remaining = db.get_harpoon_cooldown_remaining(user_id, chat_id, HARPOON_COOLDOWN_MINUTES)
+        remaining = await _run_sync(db.get_harpoon_cooldown_remaining, user_id, chat_id, HARPOON_COOLDOWN_MINUTES)
         if remaining > 0:
             keyboard = [
                 [InlineKeyboardButton(
@@ -6214,9 +6208,9 @@ class FishBot:
         await query.answer()
 
         # Проверяем, что хотя бы одна сеть действительно на КД
-        player_nets = db.get_player_nets(user_id, chat_id)
+        player_nets = await _run_sync(db.get_player_nets, user_id, chat_id)
         any_on_cooldown = any(
-            db.get_net_cooldown_remaining(user_id, net['net_name'], chat_id) > 0
+            await _run_sync(db.get_net_cooldown_remaining, user_id, net['net_name'], chat_id) > 0
             for net in player_nets
         )
         if not any_on_cooldown:
@@ -6259,12 +6253,12 @@ class FishBot:
 
         await query.answer()
 
-        harpoon_owned = db.get_player_rod(user_id, HARPOON_NAME, chat_id)
+        harpoon_owned = await _run_sync(db.get_player_rod, user_id, HARPOON_NAME, chat_id)
         if not harpoon_owned:
             await query.edit_message_text("❌ У вас нет гарпуна. Купите его в магазине.")
             return
 
-        remaining = db.get_harpoon_cooldown_remaining(user_id, chat_id, HARPOON_COOLDOWN_MINUTES)
+        remaining = await _run_sync(db.get_harpoon_cooldown_remaining, user_id, chat_id, HARPOON_COOLDOWN_MINUTES)
         if remaining <= 0:
             await self._execute_harpoon_catch(user_id, chat_id, reply_to_message_id=query.message.message_id)
             return
@@ -6317,7 +6311,7 @@ class FishBot:
             return
         
         # Получаем информацию об удочке
-        player_rod = db.get_player_rod(user_id, rod_name, chat_id)
+        player_rod = await _run_sync(db.get_player_rod, user_id, rod_name, chat_id)
         if not player_rod:
             await query.edit_message_text("❌ Удочка не найдена!")
             return
@@ -6414,10 +6408,10 @@ class FishBot:
         
         await query.answer()
 
-        db.ensure_rod_catalog()
-        rods = db.get_rods()
+        await _run_sync(db.ensure_rod_catalog)
+        rods = await _run_sync(db.get_rods)
         keyboard = []
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         player_level = player.get('level', 0) if player else 0
         for rod in rods:
             # Гарпун только для 25+ уровня
@@ -6461,10 +6455,10 @@ class FishBot:
         rod_id = int(parts[2])
         
         await query.answer()
-        db.ensure_rod_catalog()
+        await _run_sync(db.ensure_rod_catalog)
         
         # Получаем название удочки по ID
-        rods = db.get_rods()
+        rods = await _run_sync(db.get_rods)
         rod_name = None
         for rod in rods:
             if rod['id'] == rod_id:
@@ -6475,7 +6469,7 @@ class FishBot:
             await query.edit_message_text("❌ Удочка не найдена!")
             return
 
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         player_level = int((player or {}).get('level', 0) or 0)
         if rod_name == 'Удачливая удочка' and player_level < 15:
             await query.edit_message_text("❌ Удачливая удочка открывается с 15 уровня.")
@@ -6485,7 +6479,7 @@ class FishBot:
             return
         
         # Покупаем удочку
-        result = db.buy_rod(user_id, chat_id, rod_name)
+        result = await _run_sync(db.buy_rod, user_id, chat_id, rod_name)
         
         if result:
             await query.edit_message_text(f"✅ Удочка {rod_name} куплена!")
@@ -6495,7 +6489,7 @@ class FishBot:
     async def send_rod_repair_invoice(self, user_id: int, rod_name: str):
         """Отправить инвойс для восстановления удочки в личное сообщение"""
         try:
-            rod = db.get_rod(rod_name)
+            rod = await _run_sync(db.get_rod, rod_name)
             if not rod:
                 logger.error(f"Rod not found: {rod_name}")
                 return
@@ -6538,7 +6532,7 @@ class FishBot:
         await query.answer()
         
         # Получаем все локации
-        locations = db.get_locations()
+        locations = await _run_sync(db.get_locations)
         
         keyboard = []
         for idx, location in enumerate(locations):
@@ -6583,7 +6577,7 @@ class FishBot:
             del context.user_data['waiting_bait_quantity']
         
         # Получаем название локации по индексу
-        locations = db.get_locations()
+        locations = await _run_sync(db.get_locations)
         if loc_idx >= len(locations):
             await query.edit_message_text("❌ Локация не найдена!")
             return
@@ -6592,8 +6586,8 @@ class FishBot:
         await query.answer()
         
         chat_id = update.effective_chat.id
-        player = db.get_player(user_id, chat_id)
-        baits = db.get_baits_for_location(location)
+        player = await _run_sync(db.get_player, user_id, chat_id)
+        baits = await _run_sync(db.get_baits_for_location, location)
         
         # Исключаем бесконечную наживку (черви) и наживку, которую можно поймать самому
         _exclude_baits = (
@@ -6677,7 +6671,7 @@ class FishBot:
             return
         await query.answer()
 
-        boat = db.get_user_boat(user_id)
+        boat = await _run_sync(db.get_user_boat, user_id)
         boat_type = boat.get('type', 'free') if boat else 'free'
 
         if boat_type != 'free':
@@ -6727,15 +6721,15 @@ class FishBot:
         await query.answer()
         
         chat_id = update.effective_chat.id
-        player = db.get_player(user_id, chat_id)
-        nets = db.get_nets()
+        player = await _run_sync(db.get_player, user_id, chat_id)
+        nets = await _run_sync(db.get_nets)
         nets_for_sale = [net for net in nets if net.get('price', 0) > 0]
         
         keyboard = []
         
         for net in nets_for_sale:
             # Проверяем, есть ли сеть у игрока
-            player_net = db.get_player_net(user_id, net['name'], chat_id)
+            player_net = await _run_sync(db.get_player_net, user_id, net['name'], chat_id)
             
             if player_net:
                 # Сеть уже куплена - показываем количество использований
@@ -6785,14 +6779,14 @@ class FishBot:
 
         await query.answer()
 
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             await query.edit_message_text("❌ Профиль не найден. Используйте /start")
             return
 
-        active_feeder = db.get_active_feeder(user_id, chat_id)
-        feeder_remaining = db.get_feeder_cooldown_remaining(user_id, chat_id)
-        echosounder_remaining = db.get_echosounder_remaining_seconds(user_id, chat_id)
+        active_feeder = await _run_sync(db.get_active_feeder, user_id, chat_id)
+        feeder_remaining = await _run_sync(db.get_feeder_cooldown_remaining, user_id, chat_id)
+        echosounder_remaining = await _run_sync(db.get_echosounder_remaining_seconds, user_id, chat_id)
 
         keyboard = []
         for feeder in FEEDER_ITEMS:
@@ -6852,20 +6846,20 @@ class FishBot:
 
         await query.answer()
 
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             await query.edit_message_text("❌ Профиль не найден. Используйте /start")
             return
 
         coins = int(player.get("coins", 0) or 0)
-        drunk_remaining = db.get_effect_remaining_seconds(user_id, BEER_DRUNK_EFFECT)
-        trace_count = db.count_active_effects(user_id, BEER_TRACE_EFFECT)
+        drunk_remaining = await _run_sync(db.get_effect_remaining_seconds, user_id, BEER_DRUNK_EFFECT)
+        trace_count = await _run_sync(db.count_active_effects, user_id, BEER_TRACE_EFFECT)
         current_drunk_chance = min(BEER_DRUNK_MAX_CHANCE, BEER_DRUNK_BASE_CHANCE + (trace_count * BEER_DRUNK_PER_TRACE_CHANCE))
         total_beer_bonus = self._get_active_beer_bonus_percent(user_id)
 
         active_bonus_lines = []
         for effect in BEER_POSITIVE_EFFECTS:
-            remaining = db.get_effect_remaining_seconds(user_id, effect["effect_type"])
+            remaining = await _run_sync(db.get_effect_remaining_seconds, user_id, effect["effect_type"])
             if remaining > 0:
                 active_bonus_lines.append(
                     f"• {effect['name']}: +{effect['bonus_percent']}% ({self._format_seconds_compact(remaining)})"
@@ -6912,7 +6906,7 @@ class FishBot:
 
         await query.answer()
 
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             await query.edit_message_text("❌ Профиль не найден. Используйте /start")
             return
@@ -6929,7 +6923,7 @@ class FishBot:
             return
 
         new_balance = coins_before - BEER_PRICE_COINS
-        db.update_player(user_id, chat_id, coins=new_balance)
+        await _run_sync(db.update_player, user_id, chat_id, coins=new_balance)
 
         back_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🍺 В пивную", callback_data=f"shop_beer_{user_id}")],
@@ -6938,22 +6932,21 @@ class FishBot:
 
         try:
             is_already_drunk = self._is_user_beer_drunk(user_id)
-            traces = db.count_active_effects(user_id, BEER_TRACE_EFFECT)
+            traces = await _run_sync(db.count_active_effects, user_id, BEER_TRACE_EFFECT)
             drunk_chance = min(BEER_DRUNK_MAX_CHANCE, BEER_DRUNK_BASE_CHANCE + (traces * BEER_DRUNK_PER_TRACE_CHANCE))
 
             if is_already_drunk or random.random() < drunk_chance:
                 for beer_effect in BEER_POSITIVE_EFFECTS:
                     try:
-                        db.clear_timed_effect(user_id, beer_effect["effect_type"])
+                        await _run_sync(db.clear_timed_effect, user_id, beer_effect["effect_type"])
                     except Exception:
                         logger.exception(
                             "Failed to clear beer buff=%s for user=%s",
                             beer_effect.get("effect_type"),
                             user_id,
                         )
-                db.clear_timed_effect(user_id, BEER_TRACE_EFFECT)
-                db.apply_timed_effect(
-                    user_id,
+                await _run_sync(db.clear_timed_effect, user_id, BEER_TRACE_EFFECT)
+                await _run_sync(db.apply_timed_effect, user_id,
                     BEER_DRUNK_EFFECT,
                     duration_minutes=BEER_DRUNK_DURATION_MINUTES,
                     replace_existing=True,
@@ -6970,16 +6963,14 @@ class FishBot:
                 )
                 return
 
-            db.apply_timed_effect(
-                user_id,
+            await _run_sync(db.apply_timed_effect, user_id,
                 BEER_TRACE_EFFECT,
                 duration_minutes=BEER_TRACE_DURATION_MINUTES,
                 replace_existing=False,
             )
 
             effect = random.choice(BEER_POSITIVE_EFFECTS)
-            db.apply_timed_effect(
-                user_id,
+            await _run_sync(db.apply_timed_effect, user_id,
                 effect["effect_type"],
                 duration_minutes=int(effect["duration_minutes"]),
                 replace_existing=False,
@@ -6998,7 +6989,7 @@ class FishBot:
         except Exception:
             logger.exception("Failed to process beer purchase for user=%s chat=%s", user_id, chat_id)
             try:
-                db.update_player(user_id, chat_id, coins=coins_before)
+                await _run_sync(db.update_player, user_id, chat_id, coins=coins_before)
             except Exception:
                 logger.exception("Failed to refund coins after beer purchase error for user=%s", user_id)
 
@@ -7025,16 +7016,16 @@ class FishBot:
             await query.edit_message_text("❌ Кормушка не найдена.")
             return
 
-        active_feeder = db.get_active_feeder(user_id, chat_id)
+        active_feeder = await _run_sync(db.get_active_feeder, user_id, chat_id)
         if active_feeder:
-            remaining = db.get_feeder_cooldown_remaining(user_id, chat_id)
+            remaining = await _run_sync(db.get_feeder_cooldown_remaining, user_id, chat_id)
             await query.answer(
                 f"Сначала дождитесь окончания активной кормушки ({self._format_seconds_compact(remaining)})",
                 show_alert=True,
             )
             return
 
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             await query.edit_message_text("❌ Профиль не найден.")
             return
@@ -7047,10 +7038,9 @@ class FishBot:
             return
 
         # Deduct coins and try to activate feeder; on failure refund coins
-        db.update_player(user_id, chat_id, coins=int(player.get("coins", 0)) - price)
+        await _run_sync(db.update_player, user_id, chat_id, coins=int(player.get("coins", 0)) - price)
         try:
-            db.activate_feeder(
-                user_id,
+            await _run_sync(db.activate_feeder, user_id,
                 chat_id,
                 feeder_type=feeder["code"],
                 bonus_percent=int(feeder["bonus"]),
@@ -7060,7 +7050,7 @@ class FishBot:
             logger.exception("Failed to activate feeder for user=%s chat=%s: %s", user_id, chat_id, e)
             # Refund coins on failure
             try:
-                db.update_player(user_id, chat_id, coins=int(player.get("coins", 0)))
+                await _run_sync(db.update_player, user_id, chat_id, coins=int(player.get("coins", 0)))
             except Exception:
                 logger.exception("Failed to refund coins after feeder activation failure for user=%s", user_id)
 
@@ -7093,9 +7083,9 @@ class FishBot:
             await query.edit_message_text("❌ Кормушка не найдена.")
             return
 
-        active_feeder = db.get_active_feeder(user_id, chat_id)
+        active_feeder = await _run_sync(db.get_active_feeder, user_id, chat_id)
         if active_feeder:
-            remaining = db.get_feeder_cooldown_remaining(user_id, chat_id)
+            remaining = await _run_sync(db.get_feeder_cooldown_remaining, user_id, chat_id)
             await query.answer(
                 f"Сначала дождитесь окончания активной кормушки ({self._format_seconds_compact(remaining)})",
                 show_alert=True,
@@ -7142,7 +7132,7 @@ class FishBot:
 
         await query.answer()
 
-        remaining = db.get_echosounder_remaining_seconds(user_id, chat_id)
+        remaining = await _run_sync(db.get_echosounder_remaining_seconds, user_id, chat_id)
         if remaining > 0:
             await query.answer(
                 f"Эхолот уже активен: {self._format_seconds_compact(remaining)}",
@@ -7198,21 +7188,21 @@ class FishBot:
         
         chat_id = update.effective_chat.id
         # Покупаем сеть
-        result = db.buy_net(user_id, net_name, chat_id)
+        result = await _run_sync(db.buy_net, user_id, net_name, chat_id)
         
         if result:
-            net = db.get_net(net_name)
+            net = await _run_sync(db.get_net, net_name)
             message = f"✅ Сеть '{net_name}' куплена!\n\n"
             message += f"🐟 Вытаскивает: {net['fish_count']} рыб\n"
             message += f"⏰ Кулдаун: {net['cooldown_hours']} часов\n"
             if net['max_uses'] == -1:
                 message += "♾️ Использований: бесконечно"
             else:
-                player_net = db.get_player_net(user_id, net_name, chat_id)
+                player_net = await _run_sync(db.get_player_net, user_id, net_name, chat_id)
                 message += f"📦 Использований: {player_net['uses_left']}"
         else:
-            player = db.get_player(user_id, chat_id)
-            net = db.get_net(net_name)
+            player = await _run_sync(db.get_player, user_id, chat_id)
+            net = await _run_sync(db.get_net, net_name)
             if not net:
                 message = "❌ Сеть не найдена!"
             elif player['coins'] < net['price']:
@@ -7255,14 +7245,14 @@ class FishBot:
         await query.answer()
         
         # Получаем локацию
-        locations = db.get_locations()
+        locations = await _run_sync(db.get_locations)
         if loc_idx >= len(locations):
             await query.edit_message_text("❌ Локация не найдена!")
             return
         location = locations[loc_idx]['name']
         
         # Получаем наживку
-        baits = db.get_baits_for_location(location)
+        baits = await _run_sync(db.get_baits_for_location, location)
         baits = [
             b for b in baits
             if b['name'].strip().lower() not in ('черви', LIVE_BAIT_NAME.lower())
@@ -7276,7 +7266,7 @@ class FishBot:
             return
         
         chat_id = update.effective_chat.id
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         
         # Рассчитываем максимальное количество
         max_qty = min(999, player['coins'] // bait['price'])
@@ -7366,7 +7356,7 @@ class FishBot:
             return
         
         chat_id = update.effective_chat.id
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         total_cost = price * qty
         
         if player['coins'] < total_cost:
@@ -7374,11 +7364,11 @@ class FishBot:
             return
         
         # Покупаем
-        db.add_bait_to_inventory(user_id, bait_name, qty)
-        db.update_player(user_id, chat_id, coins=player['coins'] - total_cost)
+        await _run_sync(db.add_bait_to_inventory, user_id, bait_name, qty)
+        await _run_sync(db.update_player, user_id, chat_id, coins=player['coins'] - total_cost)
         
         # Автоматически применяем купленную наживку
-        db.update_player_bait(user_id, chat_id, bait_name)
+        await _run_sync(db.update_player_bait, user_id, chat_id, bait_name)
         
         new_balance = player['coins'] - total_cost
         
@@ -7413,7 +7403,7 @@ class FishBot:
         await query.answer()
 
         quantity = 0 if qty_token == 'all' else int(qty_token)
-        conversion = db.convert_small_fish_to_live_bait(user_id=user_id, chat_id=chat_id, quantity=quantity)
+        conversion = await _run_sync(db.convert_small_fish_to_live_bait, user_id=user_id, chat_id=chat_id, quantity=quantity)
         if not conversion.get('ok'):
             await query.edit_message_text(
                 "❌ Не удалось выполнить конвертацию.\n"
@@ -7501,7 +7491,7 @@ class FishBot:
 
         await query.answer()
 
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             await query.edit_message_text("❌ Профиль не найден. Используйте /start")
             return
@@ -7552,12 +7542,12 @@ class FishBot:
 
         await query.answer()
 
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             await query.edit_message_text("❌ Профиль не найден. Используйте /start")
             return
 
-        owned_items = db.get_player_clothing(user_id)
+        owned_items = await _run_sync(db.get_player_clothing, user_id)
         owned_codes = {str(item.get('item_key', '')).lower() for item in owned_items}
         diamonds = int(player.get('diamonds') or 0)
 
@@ -7620,8 +7610,7 @@ class FishBot:
             [InlineKeyboardButton("🔙 Магазин", callback_data=f"shop_{user_id}")],
         ])
 
-        purchase_result = db.purchase_clothing_item(
-            user_id=user_id,
+        purchase_result = await _run_sync(db.purchase_clothing_item, user_id=user_id,
             chat_id=chat_id,
             item_key=item['code'],
             display_name=item['name'],
@@ -7689,7 +7678,7 @@ class FishBot:
 
         await query.answer()
 
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             await query.edit_message_text("❌ Профиль не найден. Используйте /start")
             return
@@ -7724,10 +7713,10 @@ class FishBot:
             )
             return
 
-        db.subtract_diamonds(user_id, chat_id, cost)
-        new_level = db.set_dynamite_upgrade_level(user_id, chat_id, current_level + 1)
+        await _run_sync(db.subtract_diamonds, user_id, chat_id, cost)
+        new_level = await _run_sync(db.set_dynamite_upgrade_level, user_id, chat_id, current_level + 1)
         new_state = self._get_dynamite_upgrade_state(user_id, chat_id)
-        refreshed_player = db.get_player(user_id, chat_id) or {}
+        refreshed_player = await _run_sync(db.get_player, user_id, chat_id) or {}
         new_diamonds = int(refreshed_player.get('diamonds') or max(0, diamonds - cost))
 
         await query.edit_message_text(
@@ -7760,7 +7749,7 @@ class FishBot:
             rod_id = int(parts[2])
             
             # Получаем название удочки по ID
-            rods = db.get_rods()
+            rods = await _run_sync(db.get_rods)
             rod_name = None
             for rod in rods:
                 if rod['id'] == rod_id:
@@ -7772,7 +7761,7 @@ class FishBot:
                 return
             
             # Покупаем удочку
-            result = db.buy_rod(user_id, chat_id, rod_name)
+            result = await _run_sync(db.buy_rod, user_id, chat_id, rod_name)
             
             if result:
                 await query.edit_message_text(f"✅ Удочка {rod_name} куплена!")
@@ -7785,7 +7774,7 @@ class FishBot:
             bait_id = int(parts[2])
             
             # Получаем название наживки по ID
-            baits = db.get_baits()
+            baits = await _run_sync(db.get_baits)
             bait_name = None
             for bait in baits:
                 if bait['id'] == bait_id:
@@ -7804,7 +7793,7 @@ class FishBot:
                 return
             
             # Покупаем наживку
-            result = db.add_bait_to_inventory(user_id, bait_name)
+            result = await _run_sync(db.add_bait_to_inventory, user_id, bait_name)
             
             if result:
                 await query.edit_message_text(f"✅ Наживка {bait_name} куплена!")
@@ -7816,7 +7805,7 @@ class FishBot:
             capacity = 3
             max_weight = 1500.0
             durability = 100
-            ok = db.buy_paid_boat(user_id, name=name, price=price, capacity=capacity, max_weight=max_weight, durability=durability)
+            ok = await _run_sync(db.buy_paid_boat, user_id, name=name, price=price, capacity=capacity, max_weight=max_weight, durability=durability)
             if ok:
                 await query.edit_message_text(f"⛵ {name} куплена за {price} 💎!\n👥 Вместимость: {capacity}\n⚖️ Грузоподъёмность: {max_weight} кг\n🔧 Прочность: {durability}")
             else:
@@ -7827,7 +7816,7 @@ class FishBot:
             capacity = 5
             max_weight = 600.0
             durability = 300
-            ok = db.buy_paid_boat(user_id, name=name, price=price, capacity=capacity, max_weight=max_weight, durability=durability)
+            ok = await _run_sync(db.buy_paid_boat, user_id, name=name, price=price, capacity=capacity, max_weight=max_weight, durability=durability)
             if ok:
                 await query.edit_message_text(f"⛵ {name} куплена за {price} 💎! Вместимость: {capacity}, грузоподъёмность: {max_weight} кг, прочность: {durability}.")
             else:
@@ -7838,7 +7827,7 @@ class FishBot:
             capacity = 8
             max_weight = 2000.0
             durability = 1000
-            ok = db.buy_paid_boat(user_id, name=name, price=price, capacity=capacity, max_weight=max_weight, durability=durability)
+            ok = await _run_sync(db.buy_paid_boat, user_id, name=name, price=price, capacity=capacity, max_weight=max_weight, durability=durability)
             if ok:
                 await query.edit_message_text(f"⛵ {name} куплена за {price} 💎! Вместимость: {capacity}, грузоподъёмность: {max_weight} кг, прочность: {durability}.")
             else:
@@ -7860,12 +7849,12 @@ class FishBot:
         
         await query.answer()
         
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if player:
             if player['current_rod'] in TEMP_ROD_RANGES:
                 await query.edit_message_text("❌ Эта удочка одноразовая и не ремонтируется.")
                 return
-            db.repair_rod(user_id, player['current_rod'], chat_id)
+            await _run_sync(db.repair_rod, user_id, player['current_rod'], chat_id)
             await query.edit_message_text("✅ Удочка починена!")
         else:
             await query.edit_message_text("❌ Ошибка: профиль не найден!")
@@ -8005,7 +7994,7 @@ class FishBot:
 
         await query.answer()
 
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             await query.edit_message_text("❌ Профиль не найден. Используйте /start")
             return
@@ -8074,7 +8063,7 @@ class FishBot:
 
         await query.answer()
 
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             await query.edit_message_text("❌ Профиль не найден.")
             return
@@ -8097,8 +8086,8 @@ class FishBot:
             return
 
         # Списываем монеты и добавляем бриллиант
-        db.update_player(user_id, chat_id, coins=coins - DIAMOND_BUY_PRICE)
-        db.add_diamonds(user_id, chat_id, 1)
+        await _run_sync(db.update_player, user_id, chat_id, coins=coins - DIAMOND_BUY_PRICE)
+        await _run_sync(db.add_diamonds, user_id, chat_id, 1)
 
         new_coins = coins - DIAMOND_BUY_PRICE
         new_diamonds = player.get('diamonds', 0) + 1
@@ -8124,7 +8113,7 @@ class FishBot:
 
         await query.answer()
 
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             await query.edit_message_text("❌ Профиль не найден.")
             return
@@ -8143,8 +8132,8 @@ class FishBot:
 
         # Добавляем монеты и вычитаем бриллиант
         coins = player.get('coins', 0)
-        db.update_player(user_id, chat_id, coins=coins + DIAMOND_SELL_PRICE)
-        db.subtract_diamonds(user_id, chat_id, 1)
+        await _run_sync(db.update_player, user_id, chat_id, coins=coins + DIAMOND_SELL_PRICE)
+        await _run_sync(db.subtract_diamonds, user_id, chat_id, 1)
 
         new_coins = coins + DIAMOND_SELL_PRICE
         new_diamonds = diamonds - 1
@@ -8194,7 +8183,7 @@ class FishBot:
             )
             return
 
-        db.add_treasure(user_id, 'Жемчуг', 1, chat_id)
+        await _run_sync(db.add_treasure, user_id, 'Жемчуг', 1, chat_id)
 
         await query.edit_message_text(
             f"✅ Обмен выполнен!\n\n"
@@ -8239,7 +8228,7 @@ class FishBot:
             )
             return
 
-        db.add_diamonds(user_id, chat_id, 1)
+        await _run_sync(db.add_diamonds, user_id, chat_id, 1)
 
         await query.edit_message_text(
             f"✅ Обмен выполнен!\n\n"
@@ -8271,8 +8260,8 @@ class FishBot:
             query = None
 
         try:
-            # Получаем всю пойманную рыбу пользователя
-            caught_fish = db.get_caught_fish(user_id, chat_id)
+            # Получаем всю непроданную рыбу пользователя
+            caught_fish = await _run_sync(db.get_caught_fish, user_id, chat_id, only_unsold=True)
         except Exception as e:
             logger.exception("handle_sell_fish: db.get_caught_fish failed user=%s chat=%s: %s", user_id, chat_id, e)
             _err_text = "❌ Не удалось загрузить улов. Попробуйте позже."
@@ -8285,10 +8274,10 @@ class FishBot:
                 pass
             return
 
-        # Фильтруем только непроданную рыбу (sold=0)
+        # Фильтруем от мусора
         unsold_fish = [
             f for f in caught_fish
-            if f.get('sold', 0) == 0 and not bool(f.get('is_trash'))
+            if not bool(f.get('is_trash'))
         ]
         
         if not unsold_fish:
@@ -8517,8 +8506,8 @@ class FishBot:
         await query.answer()
         
         # Получаем рыбу с этой локации
-        caught_fish = db.get_caught_fish(user_id, chat_id)
-        location_fish = [f for f in caught_fish if f['location'] == location and f.get('sold', 0) == 0]
+        caught_fish = await _run_sync(db.get_caught_fish, user_id, chat_id, only_unsold=True)
+        location_fish = [f for f in caught_fish if f['location'] == location]
 
         if not location_fish:
             await query.edit_message_text(f"На локации {location} нет пойманной рыбы.")
@@ -8619,7 +8608,7 @@ class FishBot:
 
         await query.answer()
 
-        trash_summary = db.get_unsold_trash_summary(user_id, chat_id)
+        trash_summary = await _run_sync(db.get_unsold_trash_summary, user_id, chat_id)
         if not trash_summary:
             await query.edit_message_text(
                 "🗑️ Мусор\n\nУ вас нет непроданного мусора.",
@@ -8641,7 +8630,7 @@ class FishBot:
 
         trash_item_map: Dict[str, str] = {}
         keyboard = []
-        clan = db.get_clan_by_user(user_id)
+        clan = await _run_sync(db.get_clan_by_user, user_id)
         for idx, item in enumerate(page_items, start=start):
             item_name = str(item.get('fish_name') or '')
             qty = int(item.get('quantity') or 0)
@@ -8706,8 +8695,8 @@ class FishBot:
 
         await query.answer()
 
-        catches = db.get_caught_fish(user_id, chat_id)
-        unsold_trash = [item for item in catches if item.get('sold', 0) == 0 and bool(item.get('is_trash'))]
+        catches = await _run_sync(db.get_caught_fish, user_id, chat_id, only_unsold=True)
+        unsold_trash = [item for item in catches if bool(item.get('is_trash'))]
         if not unsold_trash:
             await query.edit_message_text(
                 "🗑️ Нечего продавать: у вас нет непроданного мусора.",
@@ -8719,14 +8708,14 @@ class FishBot:
 
         total_value = int(sum(int(item.get('price') or 0) for item in unsold_trash))
         fish_ids = [int(item['id']) for item in unsold_trash]
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         old_balance = int((player or {}).get('coins', 0) or 0)
 
-        db.mark_fish_as_sold(fish_ids)
-        db.update_player(user_id, chat_id, coins=old_balance + total_value)
+        await _run_sync(db.mark_fish_as_sold, fish_ids)
+        await _run_sync(db.update_player, user_id, chat_id, coins=old_balance + total_value)
 
         xp_earned = len(unsold_trash)
-        level_info = db.add_player_xp(user_id, chat_id, xp_earned)
+        level_info = await _run_sync(db.add_player_xp, user_id, chat_id, xp_earned)
 
         await query.edit_message_text(
             "✅ Мусор продан\n\n"
@@ -8766,7 +8755,7 @@ class FishBot:
             return
 
         await query.answer()
-        donated = db.donate_trash_to_clan(user_id, chat_id, item_name, 1)
+        donated = await _run_sync(db.donate_trash_to_clan, user_id, chat_id, item_name, 1)
         if not donated.get('ok'):
             reason = donated.get('reason')
             if reason == 'not_in_clan':
@@ -8872,7 +8861,7 @@ class FishBot:
                 pass
 
     async def _render_inventory_trophies_menu(self, query, user_id: int, page: int = 0):
-        trophies = db.get_player_trophies(user_id)
+        trophies = await _run_sync(db.get_player_trophies, user_id)
         total = len(trophies)
         page_size = TROPHY_LIST_PAGE_SIZE
         total_pages = max(1, (total + page_size - 1) // page_size)
@@ -9014,13 +9003,13 @@ class FishBot:
             try:
                 player, caught_fish = await asyncio.gather(
                     _run_sync(db.get_player, user_id, chat_id),
-                    _run_sync(db.get_caught_fish, user_id, chat_id),
+                    _run_sync(db.get_caught_fish, user_id, chat_id, True),
                 )
                 balance = int(player.get('coins', 0)) if player else 0
 
                 candidates = [
                     fish for fish in caught_fish
-                    if fish.get('sold', 0) == 0 and not bool(fish.get('is_trash'))
+                    if not bool(fish.get('is_trash'))
                 ]
                 candidates.sort(key=lambda item: float(item.get('weight') or 0), reverse=True)
 
@@ -9118,8 +9107,7 @@ class FishBot:
 
         await query.answer()
 
-        result = db.create_trophy_from_catch(
-            user_id=user_id,
+        result = await _run_sync(db.create_trophy_from_catch, user_id=user_id,
             chat_id=chat_id,
             caught_fish_id=fish_id,
             cost_coins=TROPHY_CREATE_COST_COINS,
@@ -9191,7 +9179,7 @@ class FishBot:
             await query.answer("Эта кнопка не для вас", show_alert=True)
             return
 
-        success = db.set_active_trophy(user_id, trophy_id)
+        success = await _run_sync(db.set_active_trophy, user_id, trophy_id)
         if not success:
             await query.answer("Трофей не найден", show_alert=True)
             return
@@ -9222,7 +9210,7 @@ class FishBot:
         treasure_key = '_'.join(parts[2:-1])  # Все части кроме "sell_treasure" и user_id
         treasure_key = treasure_key.replace('_', ' ')
         
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             await query.edit_message_text("❌ Профиль не найден.")
             return
@@ -9253,7 +9241,7 @@ class FishBot:
             await query.edit_message_text("❌ Не удалось продать сокровище. Попробуйте снова.")
             return
 
-        db.update_player(user_id, chat_id, coins=coins + sell_price, xp=xp + sell_xp)
+        await _run_sync(db.update_player, user_id, chat_id, coins=coins + sell_price, xp=xp + sell_xp)
         
         # Получаем обновленные данные
         remaining = treasure_obj.get('quantity', 0) - 1
@@ -9301,10 +9289,10 @@ class FishBot:
         await query.answer()
         
         # Получаем всю рыбу этого вида
-        caught_fish = db.get_caught_fish(user_id, chat_id)
+        caught_fish = await _run_sync(db.get_caught_fish, user_id, chat_id, only_unsold=True)
         species_fish = [
             f for f in caught_fish
-            if f['fish_name'] == fish_name and f.get('sold', 0) == 0 and not bool(f.get('is_trash'))
+            if f['fish_name'] == fish_name and not bool(f.get('is_trash'))
         ]
         
         if not species_fish:
@@ -9313,12 +9301,12 @@ class FishBot:
         
         if len(species_fish) == 1:
             total_value = species_fish[0]['price']
-            player = db.get_player(user_id, chat_id)
-            db.mark_fish_as_sold([species_fish[0]['id']])
-            db.update_player(user_id, chat_id, coins=player['coins'] + total_value)
+            player = await _run_sync(db.get_player, user_id, chat_id)
+            await _run_sync(db.mark_fish_as_sold, [species_fish[0]['id']])
+            await _run_sync(db.update_player, user_id, chat_id, coins=player['coins'] + total_value)
 
             xp_earned, base_xp, rarity_bonus, weight_bonus, total_weight = calculate_sale_summary([species_fish[0]])
-            level_info = db.add_player_xp(user_id, chat_id, xp_earned)
+            level_info = await _run_sync(db.add_player_xp, user_id, chat_id, xp_earned)
             progress_line = format_level_progress(level_info)
             total_xp_now = level_info.get('xp_total', 0)
             
@@ -9379,10 +9367,10 @@ class FishBot:
         await query.answer()
         
         # Получаем всю рыбу пользователя (только непроданную)
-        caught_fish = db.get_caught_fish(user_id, chat_id)
+        caught_fish = await _run_sync(db.get_caught_fish, user_id, chat_id, only_unsold=True)
         unsold_fish = [
             f for f in caught_fish
-            if f.get('sold', 0) == 0 and not bool(f.get('is_trash'))
+            if not bool(f.get('is_trash'))
         ]
         
         if not unsold_fish:
@@ -9427,10 +9415,10 @@ class FishBot:
         
         await query.answer()
         
-        caught_fish = db.get_caught_fish(user_id, chat_id)
+        caught_fish = await _run_sync(db.get_caught_fish, user_id, chat_id, only_unsold=True)
         unsold_fish = [
             f for f in caught_fish
-            if f.get('sold', 0) == 0 and not bool(f.get('is_trash'))
+            if not bool(f.get('is_trash'))
         ]
         if not unsold_fish:
             await query.edit_message_text("У вас нет рыбы для продажи.")
@@ -9439,13 +9427,13 @@ class FishBot:
         total_value = sum(f['price'] for f in unsold_fish)
         fish_count = len(unsold_fish)
         
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         fish_ids = [f['id'] for f in unsold_fish]
-        db.mark_fish_as_sold(fish_ids)
-        db.update_player(user_id, chat_id, coins=player['coins'] + total_value)
+        await _run_sync(db.mark_fish_as_sold, fish_ids)
+        await _run_sync(db.update_player, user_id, chat_id, coins=player['coins'] + total_value)
 
         xp_earned, base_xp, rarity_bonus, weight_bonus, total_weight = calculate_sale_summary(unsold_fish)
-        level_info = db.add_player_xp(user_id, chat_id, xp_earned)
+        level_info = await _run_sync(db.add_player_xp, user_id, chat_id, xp_earned)
         progress_line = format_level_progress(level_info)
         total_xp_now = level_info.get('xp_total', 0)
         
@@ -9518,15 +9506,14 @@ class FishBot:
         """Команда /stats - показать статистику"""
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         
         if not player:
             await update.message.reply_text("Сначала создайте профиль командой /start")
             return
         
-        stats = db.get_player_stats(user_id, chat_id)
-        total_species = db.get_total_fish_species()
-        caught_fish = db.get_caught_fish(user_id, chat_id)
+        stats = await _run_sync(db.get_player_stats, user_id, chat_id)
+        total_species = await _run_sync(db.get_total_fish_species)
         
         message = f"""
 📊 Ваша статистика
@@ -9589,7 +9576,7 @@ class FishBot:
 
     async def topl_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /topl - топ по уровню (глобально)"""
-        rows = db.get_level_leaderboard(limit=10)
+        rows = await _run_sync(db.get_level_leaderboard, limit=10)
         if not rows:
             body = "Нет данных"
         else:
@@ -9638,14 +9625,14 @@ class FishBot:
                 body = "\n".join(lines) if lines else "Нет уловов"
             return f"{title}\n<blockquote><span class=\"tg-spoiler\">{body}</span></blockquote>"
 
-        global_week = db.get_leaderboard_period(limit=10, since=week_since)
-        global_day = db.get_leaderboard_period(limit=10, since=day_since)
+        global_week = await _run_sync(db.get_leaderboard_period, limit=10, since=week_since)
+        global_day = await _run_sync(db.get_leaderboard_period, limit=10, since=day_since)
 
         is_group = update.effective_chat.type in ('group', 'supergroup', 'channel')
         if is_group:
             _lb_logger.info('leaderboard_command: chat_id=%s type=%s, querying chat leaderboard', chat_id, update.effective_chat.type)
-            chat_week = db.get_chat_leaderboard_period(chat_id=chat_id, limit=10, since=week_since)
-            chat_day = db.get_chat_leaderboard_period(chat_id=chat_id, limit=10, since=day_since)
+            chat_week = await _run_sync(db.get_chat_leaderboard_period, chat_id=chat_id, limit=10, since=week_since)
+            chat_day = await _run_sync(db.get_chat_leaderboard_period, chat_id=chat_id, limit=10, since=day_since)
             _lb_logger.info('leaderboard_command: chat_week=%d rows, chat_day=%d rows', len(chat_week), len(chat_day))
         else:
             chat_week = []
@@ -9675,16 +9662,16 @@ class FishBot:
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             await update.message.reply_text("❌ Профиль не найден!")
             return
         
         # Получаем информацию об удочке
         rod_name = player['current_rod']
-        if not rod_name or not db.get_rod(rod_name):
+        if not rod_name or not await _run_sync(db.get_rod, rod_name):
             rod_name = BAMBOO_ROD
-            db.update_player(user_id, chat_id, current_rod=rod_name)
+            await _run_sync(db.update_player, user_id, chat_id, current_rod=rod_name)
 
         if rod_name in TEMP_ROD_RANGES:
             await update.message.reply_text(
@@ -9692,12 +9679,12 @@ class FishBot:
                 "Купите новую в магазине."
             )
             return
-        player_rod = db.get_player_rod(user_id, rod_name, chat_id)
+        player_rod = await _run_sync(db.get_player_rod, user_id, rod_name, chat_id)
         
         if not player_rod:
             # Инициализируем удочку, если записи нет
-            db.init_player_rod(user_id, rod_name, chat_id)
-            player_rod = db.get_player_rod(user_id, rod_name, chat_id)
+            await _run_sync(db.init_player_rod, user_id, rod_name, chat_id)
+            player_rod = await _run_sync(db.get_player_rod, user_id, rod_name, chat_id)
         if not player_rod:
             await update.message.reply_text("❌ Ошибка: удочка не найдена.")
             return
@@ -9734,7 +9721,7 @@ class FishBot:
         else:
             # Начинаем восстановление, если еще не начато
             if current_dur < max_dur:
-                db.start_rod_recovery(user_id, rod_name, chat_id)
+                await _run_sync(db.start_rod_recovery, user_id, rod_name, chat_id)
             
             recovery_per_10min = max(1, max_dur // 30)
             intervals_needed = (missing_durability + recovery_per_10min - 1) // recovery_per_10min
@@ -9763,7 +9750,7 @@ class FishBot:
         
         try:
             # Тест получения игрока
-            player = db.get_player(user_id, chat_id)
+            player = await _run_sync(db.get_player, user_id, chat_id)
             if player:
                 await update.message.reply_text(f"✅ Игрок найден: {player['username']}")
             else:
@@ -9771,15 +9758,15 @@ class FishBot:
                 return
             
             # Тест получения локаций
-            locations = db.get_locations()
+            locations = await _run_sync(db.get_locations)
             await update.message.reply_text(f"✅ Локаций найдено: {len(locations)}")
             
             # Тест получения удочек
-            rods = db.get_rods()
+            rods = await _run_sync(db.get_rods)
             await update.message.reply_text(f"✅ Удочек найдено: {len(rods)}")
             
             # Тест получения наживок
-            baits = db.get_baits()
+            baits = await _run_sync(db.get_baits)
             await update.message.reply_text(f"✅ Наживок найдено: {len(baits)}")
             
             # Тест проверки возможности рыбалки
@@ -9830,12 +9817,12 @@ class FishBot:
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
 
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             await update.message.reply_text("Сначала создайте профиль командой /start")
             return
 
-        convertible = db.get_convertible_fish_list(user_id, chat_id)
+        convertible = await _run_sync(db.get_convertible_fish_list, user_id, chat_id)
         if not convertible:
             await update.message.reply_text(
                 "🪱 *Переработка рыбы в наживку*\n\n"
@@ -9895,8 +9882,7 @@ class FishBot:
                 await update.message.reply_text("Укажите название рыбы: /market set <рыба> [множитель] [кг]")
                 return
 
-            ok = db.set_daily_market_offer(
-                fish_name=fish_name,
+            ok = await _run_sync(db.set_daily_market_offer, fish_name=fish_name,
                 multiplier=multiplier,
                 target_weight=target_weight,
             )
@@ -9949,8 +9935,7 @@ class FishBot:
                 else:
                     location = ' '.join(args[1:]).strip()
 
-                started = db.start_ecological_disaster(
-                    location=location,
+                started = await _run_sync(db.start_ecological_disaster, location=location,
                     reward_type=reward_type,
                     duration_minutes=60,
                     reward_multiplier=5,
@@ -9971,7 +9956,7 @@ class FishBot:
                 if not location:
                     await update.message.reply_text("Использование: /disaster stop <локация>")
                     return
-                stopped = db.stop_ecological_disaster(location)
+                stopped = await _run_sync(db.stop_ecological_disaster, location)
                 if not stopped:
                     await update.message.reply_text("ℹ️ Активной катастрофы на этой локации нет.")
                     return
@@ -9979,12 +9964,12 @@ class FishBot:
                 return
 
         chat_id = update.effective_chat.id
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         location = (player or {}).get('current_location') or 'Городской пруд'
-        current = db.get_active_ecological_disaster(location)
+        current = await _run_sync(db.get_active_ecological_disaster, location)
         pond = None
         if location != 'Городской пруд':
-            pond = db.get_active_ecological_disaster('Городской пруд')
+            pond = await _run_sync(db.get_active_ecological_disaster, 'Городской пруд')
 
         lines = ["🌪️ Эко-катастрофы"]
         if current:
@@ -10007,7 +9992,7 @@ class FishBot:
         args = context.args or []
 
         if not args:
-            clan = db.get_clan_by_user(user_id)
+            clan = await _run_sync(db.get_clan_by_user, user_id)
             if not clan:
                 await update.message.reply_text(
                     "🏗️ Артель\n\n"
@@ -10017,10 +10002,10 @@ class FishBot:
                 )
                 return
 
-            info = db.get_clan_info(int(clan['id']))
+            info = await _run_sync(db.get_clan_info, int(clan['id']))
             donations = info.get('donations', {}) if info else {}
             donation_line = ", ".join([f"{k}: {v}" for k, v in donations.items() if int(v or 0) > 0]) or "пока пусто"
-            next_req = db.get_clan_upgrade_requirements(int(info.get('level', 1)) + 1) if info else {}
+            next_req = await _run_sync(db.get_clan_upgrade_requirements, int(info.get('level', 1)) + 1) if info else {}
             req_line = ", ".join([f"{k} x{v}" for k, v in next_req.items()]) or "максимальный уровень"
 
             await update.message.reply_text(
@@ -10042,7 +10027,7 @@ class FishBot:
             if not clan_name:
                 await update.message.reply_text("Использование: /guild create <название>")
                 return
-            created = db.create_clan(user_id, clan_name)
+            created = await _run_sync(db.create_clan, user_id, clan_name)
             if not created.get('ok'):
                 reason = created.get('reason')
                 if reason == 'already_in_clan':
@@ -10067,7 +10052,7 @@ class FishBot:
             if not clan_name:
                 await update.message.reply_text("Использование: /guild join <название>")
                 return
-            joined = db.join_clan(user_id, clan_name)
+            joined = await _run_sync(db.join_clan, user_id, clan_name)
             if not joined.get('ok'):
                 reason = joined.get('reason')
                 if reason == 'already_in_clan':
@@ -10082,12 +10067,12 @@ class FishBot:
             return
 
         if action == 'members':
-            clan = db.get_clan_by_user(user_id)
+            clan = await _run_sync(db.get_clan_by_user, user_id)
             if not clan:
                 await update.message.reply_text("❌ Вы не состоите в артели.")
                 return
 
-            members = db.list_clan_members(int(clan['id']))
+            members = await _run_sync(db.list_clan_members, int(clan['id']))
             if not members:
                 await update.message.reply_text("В артели пока нет участников.")
                 return
@@ -10113,7 +10098,7 @@ class FishBot:
                 if len(args) > 2:
                     item_name = CLAN_DONATABLE_ITEMS.get(str(args[1]).strip().lower()) or ' '.join(args[1:-1]).strip()
 
-            donated = db.donate_trash_to_clan(user_id, chat_id, item_name, donate_qty)
+            donated = await _run_sync(db.donate_trash_to_clan, user_id, chat_id, item_name, donate_qty)
             if not donated.get('ok'):
                 reason = donated.get('reason')
                 if reason == 'not_in_clan':
@@ -10136,7 +10121,7 @@ class FishBot:
             return
 
         if action == 'upgrade':
-            upgrade = db.upgrade_clan(user_id)
+            upgrade = await _run_sync(db.upgrade_clan, user_id)
             if not upgrade.get('ok'):
                 reason = upgrade.get('reason')
                 if reason == 'not_leader':
@@ -10646,7 +10631,7 @@ class FishBot:
         return None
 
     async def _execute_dynamite_blast(self, user_id: int, chat_id: int, guaranteed: bool = False, reply_to_message_id: Optional[int] = None) -> None:
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         if not player:
             await self._safe_send_message(
                 chat_id=chat_id,
@@ -10664,23 +10649,23 @@ class FishBot:
         location = player.get('current_location', 'Городской пруд')
         season = get_current_season()
         player_level = int(player.get('level') or 0)
-        weather = db.get_or_update_weather(location)
+        weather = await _run_sync(db.get_or_update_weather, location)
         weather_bonus = weather_system.get_weather_bonus(weather['condition']) if weather else 0
-        feeder_bonus = db.get_active_feeder_bonus(user_id, chat_id)
+        feeder_bonus = await _run_sync(db.get_active_feeder_bonus, user_id, chat_id)
         clothing_bonus_percent = self._get_clothing_bonus_percent(user_id)
         beer_bonus_percent = self._get_active_beer_bonus_percent(user_id)
 
         # Любой динамитный заброс учитываем в системе восстановления штрафа популяции.
         try:
-            db.update_population_state(user_id, location)
+            await _run_sync(db.update_population_state, user_id, location)
         except Exception:
             logger.exception("Failed to update population state from dynamite for user=%s location=%s", user_id, location)
 
-        population_penalty = db.get_population_penalty(user_id)
+        population_penalty = await _run_sync(db.get_population_penalty, user_id)
         # Update dynamite usage state and get dynamite-specific penalty
         # Update dynamite usage state (returns new penalty and consecutive count)
         try:
-            _loc_changed, consecutive_dynamite, dynamite_penalty, _recovery = db.update_dynamite_state(user_id, location)
+            _loc_changed, consecutive_dynamite, dynamite_penalty, _recovery = await _run_sync(db.update_dynamite_state, user_id, location)
             logger.info("[DYNAMITE] user=%s consecutive_dynamite=%s dynamite_penalty=%.2f", user_id, consecutive_dynamite, dynamite_penalty)
         except Exception:
             logger.exception("Failed to update dynamite state for user=%s", user_id)
@@ -10772,7 +10757,7 @@ class FishBot:
                 continue
 
             if adjusted_roll <= trash_max:
-                trash = db.get_random_trash(location)
+                trash = await _run_sync(db.get_random_trash, location)
                 if trash:
                     trash_name = trash.get('name', 'Мусор')
                     trash_price = int(trash.get('price', 0) or 0)
@@ -10853,7 +10838,7 @@ class FishBot:
             search_attempts = 0
             fish_candidate = fish
             while not found and rarity_idx >= 0:
-                available_fish = db.get_fish_by_location(location, season, min_level=player_level)
+                available_fish = await _run_sync(db.get_fish_by_location, location, season, min_level=player_level)
                 pool = [f for f in available_fish if f.get('rarity') == search_rarity and float(f.get('max_weight', 0)) <= max_fish_weight and float(f.get('min_weight', 0)) <= max_fish_weight]
                 if pool:
                     fish_candidate = random.choice(pool)
@@ -10876,7 +10861,7 @@ class FishBot:
                     'weight': weight,
                     'length': length,
                 })
-                fish_value = int(db.calculate_fish_price(fish_candidate, weight, length))
+                fish_value = int(await _run_sync(db.calculate_fish_price, fish_candidate, weight, length))
                 total_haul_coins += fish_value
                 fish_count += 1
                 total_tickets_base += self._calculate_tickets_for_rarity(fish_candidate.get('rarity', target_rarity))
@@ -10901,7 +10886,7 @@ class FishBot:
 
         # Очень редкая отдельная механика для динамита: рыбохрана.
         if random.random() < DYNAMITE_GUARD_CHANCE:
-            db.set_dynamite_ban(user_id, chat_id, DYNAMITE_GUARD_BAN_HOURS)
+            await _run_sync(db.set_dynamite_ban, user_id, chat_id, DYNAMITE_GUARD_BAN_HOURS)
             logger.info(
                 "[DYNAMITE] guard_triggered user=%s chat=%s chance=%.4f ban_hours=%s catches_confiscated=%s",
                 user_id,
@@ -10935,19 +10920,18 @@ class FishBot:
             return
 
         # Проверяем, находится ли игрок на лодке
-        active_boat = db.get_active_boat_by_user(user_id)
+        active_boat = await _run_sync(db.get_active_boat_by_user, user_id)
         is_on_boat_dyn = active_boat is not None
 
         for item in pending_catches:
             if is_on_boat_dyn:
                 # На лодке рыба идёт в общий садок (boat_catch)
                 # Находим fish_id по имени
-                f_data = db.get_fish_by_name(item['name'])
+                f_data = await _run_sync(db.get_fish_by_name, item['name'])
                 if f_data:
-                    db.add_fish_to_boat(user_id, f_data['id'], float(item['weight']), chat_id)
+                    await _run_sync(db.add_fish_to_boat, user_id, f_data['id'], float(item['weight']), chat_id)
             else:
-                db.add_caught_fish(
-                    user_id,
+                await _run_sync(db.add_caught_fish, user_id,
                     chat_id,
                     item['name'],
                     float(item['weight']),
@@ -10970,8 +10954,7 @@ class FishBot:
 
         new_coins = int(player.get('coins', 0) or 0)
         current_username = str(player.get('username') or player.get('first_name') or user_id)
-        db.update_player(
-            user_id,
+        await _run_sync(db.update_player, user_id,
             chat_id,
             coins=new_coins,
             last_dynamite_use_time=datetime.now().isoformat(),
@@ -11019,11 +11002,11 @@ class FishBot:
             message += "\n\n💎 Итог по драгоценностям:\n" + "\n".join(treasure_lines)
         # Добавляем информацию о дебаффах (популяция и динамит), если есть
         try:
-            population_penalty = db.get_population_penalty(user_id)
+            population_penalty = await _run_sync(db.get_population_penalty, user_id)
         except Exception:
             population_penalty = 0.0
         try:
-            dynamite_penalty = db.get_dynamite_penalty(user_id)
+            dynamite_penalty = await _run_sync(db.get_dynamite_penalty, user_id)
         except Exception:
             dynamite_penalty = 0.0
 
@@ -11056,13 +11039,13 @@ class FishBot:
 
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
 
         if not player:
             await update.message.reply_text("Сначала создайте профиль командой /start")
             return
 
-        ban_remaining = db.get_dynamite_ban_remaining(user_id, chat_id)
+        ban_remaining = await _run_sync(db.get_dynamite_ban_remaining, user_id, chat_id)
         if ban_remaining > 0:
             hours = ban_remaining // 3600
             minutes = (ban_remaining % 3600) // 60
@@ -11098,7 +11081,7 @@ class FishBot:
             )
             return
 
-        remaining = db.get_dynamite_cooldown_remaining(user_id, chat_id, DYNAMITE_COOLDOWN_HOURS)
+        remaining = await _run_sync(db.get_dynamite_cooldown_remaining, user_id, chat_id, DYNAMITE_COOLDOWN_HOURS)
         if remaining > 0:
             hours = remaining // 3600
             minutes = (remaining % 3600) // 60
@@ -11287,10 +11270,10 @@ class FishBot:
                 return
 
             fish_name = data.get('fish_name')
-            caught_fish = await _run_sync(db.get_caught_fish, user_id, chat_id)
+            caught_fish = await _run_sync(db.get_caught_fish, user_id, chat_id, True)
             species_fish = [
                 f for f in caught_fish
-                if f['fish_name'] == fish_name and f.get('sold', 0) == 0 and not bool(f.get('is_trash'))
+                if f['fish_name'] == fish_name and not bool(f.get('is_trash'))
             ]
             if not species_fish:
                 context.user_data.pop('waiting_sell_quantity', None)
@@ -11302,7 +11285,7 @@ class FishBot:
                 items = sorted(species_fish, key=lambda f: float(f.get('weight') or 0), reverse=True)
                 lines = []
                 for idx, item in enumerate(items, 1):
-                    details = db.calculate_item_xp_details(item)
+                    details = await _run_sync(db.calculate_item_xp_details, item)
                     lines.append(
                         f"{idx}. {item.get('weight', 0)} кг — {details['xp_total']} XP (+{details['rarity_bonus']} редк., +{details['weight_bonus']} вес)"
                     )
@@ -11406,14 +11389,14 @@ class FishBot:
         """Обработка команды /weather и слова 'погода'"""
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         
         if not player:
             await update.message.reply_text("Сначала создайте профиль командой /start")
             return
         
         location = player['current_location']
-        weather = db.get_or_update_weather(location)
+        weather = await _run_sync(db.get_or_update_weather, location)
         
         season = get_current_season()
         weather_info = weather_system.get_weather_info(weather['condition'], weather['temperature'], season)
@@ -11437,14 +11420,14 @@ class FishBot:
         """Тестовая команда для проверки влияния погоды на броски"""
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         
         if not player:
             await update.message.reply_text("Сначала создайте профиль командой /start")
             return
         
         location = player['current_location']
-        weather = db.get_or_update_weather(location)
+        weather = await _run_sync(db.get_or_update_weather, location)
         
         bonus = weather_system.get_weather_bonus(weather['condition'])
         
@@ -11568,7 +11551,7 @@ class FishBot:
         await query.answer()
         reply_anchor_id = query.message.message_id if query and query.message else None
         
-        player = db.get_player(user_id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         current_username = update.effective_user.username or update.effective_user.first_name or str(user_id)
         self._sync_player_username_if_changed(user_id, chat_id, player, current_username)
 
@@ -11576,7 +11559,7 @@ class FishBot:
             await query.edit_message_text(self._generate_drunk_gibberish())
             return
 
-        if db.is_user_seasick(user_id):
+        if await _run_sync(db.is_user_seasick, user_id):
             await query.edit_message_text(
                 "🤢 Вас укачало в плавании. Ловить сейчас нельзя.\n"
                 "Вылечите морскую болезнь и попробуйте снова."
@@ -11789,6 +11772,7 @@ class FishBot:
 
             weight = result['weight']
             length = result['length']
+            fish_price = int(result.get('fish_price') or await _run_sync(db.calculate_fish_price, fish, weight, length))
 
             logger.info(
                 "Catch: user=%s (%s) fish=%s location=%s bait=%s weight=%.2fkg length=%.1fcm",
@@ -12118,11 +12102,11 @@ class FishBot:
             booster_code = str(parsed_booster.get("booster_code") or "")
             payload_chat_id = int(parsed_booster.get("group_chat_id") or 0)
             if booster_code == ECHOSOUNDER_CODE:
-                if db.is_echosounder_active(user_id, payload_chat_id):
+                if await _run_sync(db.is_echosounder_active, user_id, payload_chat_id):
                     await query.answer(ok=False, error_message="Эхолот уже активен. Дождитесь окончания.")
                     return
             else:
-                active_feeder = db.get_active_feeder(user_id, payload_chat_id)
+                active_feeder = await _run_sync(db.get_active_feeder, user_id, payload_chat_id)
                 if active_feeder:
                     await query.answer(ok=False, error_message="Кормушка уже активна. Дождитесь окончания.")
                     return
@@ -12157,7 +12141,7 @@ class FishBot:
                 await query.answer(ok=False, error_message="Срок действия инвойса истек. Запросите новый.")
                 return
             payload_chat_id = int(parsed_dynamite.get("group_chat_id") or 0)
-            if payload_chat_id and db.get_dynamite_ban_remaining(user_id, payload_chat_id) > 0:
+            if payload_chat_id and await _run_sync(db.get_dynamite_ban_remaining, user_id, payload_chat_id) > 0:
                 await query.answer(ok=False, error_message="Динамит под арестом рыбохраны. Сначала оплатите выкуп.")
                 return
         elif payload.startswith("dynamite_fine_"):
@@ -12186,7 +12170,7 @@ class FishBot:
                 return
 
             event_id = int(parsed_raf.get("event_id") or 0)
-            event = db.get_raf_event(event_id) if event_id else None
+            event = await _run_sync(db.get_raf_event, event_id) if event_id else None
             if not event:
                 await query.answer(ok=False, error_message="RAF-ивент не найден. Создайте новый через /raf.")
                 return
@@ -12226,15 +12210,15 @@ class FishBot:
                 return
 
             try:
-                db.expire_pending_duels()
+                await _run_sync(db.expire_pending_duels)
             except Exception:
                 logger.exception("precheckout duel: failed to expire pending duels")
 
-            if db.get_active_duel_for_user(payload_user_id):
+            if await _run_sync(db.get_active_duel_for_user, payload_user_id):
                 await query.answer(ok=False, error_message="У вас уже есть активная или ожидающая дуэль.")
                 return
 
-            if db.get_active_duel_for_user(target_user_id):
+            if await _run_sync(db.get_active_duel_for_user, target_user_id):
                 await query.answer(ok=False, error_message="У соперника уже есть активная или ожидающая дуэль.")
                 return
 
@@ -12334,7 +12318,7 @@ class FishBot:
                 accounting_chat_title = None
         else:
             try:
-                accounting_chat_title = db.get_chat_title(accounting_chat_id)
+                accounting_chat_title = await _run_sync(db.get_chat_title, accounting_chat_id)
             except Exception:
                 accounting_chat_title = None
 
@@ -12345,8 +12329,7 @@ class FishBot:
         if telegram_payment_charge_id:
             try:
                 # If DB supports chat_id/chat_title columns, add them via migration-aware method
-                db.add_star_transaction(
-                    user_id=user_id,
+                await _run_sync(db.add_star_transaction, user_id=user_id,
                     telegram_payment_charge_id=telegram_payment_charge_id,
                     total_amount=total_amount,
                     refund_status="none",
@@ -12354,7 +12337,7 @@ class FishBot:
                     chat_title=accounting_chat_title,
                 )
                 # update chat-level aggregate (this will also save chat_title in chat_configs)
-                db.increment_chat_stars(accounting_chat_id, total_amount, chat_title=accounting_chat_title)
+                await _run_sync(db.increment_chat_stars, accounting_chat_id, total_amount, chat_title=accounting_chat_title)
             except Exception as e:
                 logger.warning("Failed to record star transaction or increment chat stars: %s", e)
             # If DB has explicit star_transactions chat columns we will keep them in migration
@@ -12375,7 +12358,7 @@ class FishBot:
                     or self.active_invoices[user_id].get('msg_id')
                 )
                 del self.active_invoices[user_id]
-            db.reset_net_cooldowns(user_id)
+            await _run_sync(db.reset_net_cooldowns, user_id)
             await self._safe_send_message(
                 chat_id=accounting_chat_id,
                 text="✅ Кулдаун всех сетей сброшен! Используйте /net чтобы закинуть сети снова.",
@@ -12384,7 +12367,7 @@ class FishBot:
             return
         elif payload and payload.startswith("skip_boat_cd_"):
             # Сброс КД лодки
-            db.skip_boat_cooldown(user_id, 0)
+            await _run_sync(db.skip_boat_cooldown, user_id, 0)
             await self._safe_send_message(
                 chat_id=accounting_chat_id,
                 text="✅ КД лодки сброшен! Теперь вы снова можете выплыть в море. 🚤",
@@ -12439,7 +12422,7 @@ class FishBot:
                 )
                 del self.active_invoices[user_id]
 
-            db.clear_dynamite_ban(user_id, group_chat_id)
+            await _run_sync(db.clear_dynamite_ban, user_id, group_chat_id)
             await self._safe_send_message(
                 chat_id=group_chat_id,
                 text="✅ Выкуп принят. Арест рыбохраны снят, динамит снова доступен.",
@@ -12467,7 +12450,7 @@ class FishBot:
                 except Exception as e:
                     logger.warning(f"Could not send temp rod repair rejection to {user_id}: {e}")
                 return
-            db.repair_rod(user_id, rod_name, accounting_chat_id)
+            await _run_sync(db.repair_rod, user_id, rod_name, accounting_chat_id)
             try:
                 await self._safe_send_message(
                     chat_id=accounting_chat_id,
@@ -12521,7 +12504,7 @@ class FishBot:
                 del self.active_invoices[user_id]
 
             if booster_code == ECHOSOUNDER_CODE:
-                db.activate_echosounder(user_id, group_chat_id, ECHOSOUNDER_DURATION_HOURS)
+                await _run_sync(db.activate_echosounder, user_id, group_chat_id, ECHOSOUNDER_DURATION_HOURS)
                 await self._safe_send_message(
                     chat_id=group_chat_id,
                     text=(
@@ -12538,8 +12521,7 @@ class FishBot:
                 return
 
             try:
-                db.activate_feeder(
-                    user_id,
+                await _run_sync(db.activate_feeder, user_id,
                     group_chat_id,
                     feeder_type=booster_code,
                     bonus_percent=int(feeder["bonus"]),
@@ -12593,7 +12575,7 @@ class FishBot:
                     await self.refund_star_payment(user_id, telegram_payment_charge_id)
                 return
 
-            event = db.get_raf_event(event_id) if event_id else None
+            event = await _run_sync(db.get_raf_event, event_id) if event_id else None
             if not event or int(event.get('creator_user_id') or 0) != user_id:
                 await self._safe_send_message(
                     chat_id=chat_id,
@@ -12606,10 +12588,10 @@ class FishBot:
             current_status = str(event.get('status') or '').strip().lower()
             payment_marked = False
             if current_status == 'draft':
-                payment_marked = db.mark_raf_event_paid(event_id, user_id, telegram_payment_charge_id or '')
+                payment_marked = await _run_sync(db.mark_raf_event_paid, event_id, user_id, telegram_payment_charge_id or '')
 
             if not payment_marked:
-                refreshed = db.get_raf_event(event_id)
+                refreshed = await _run_sync(db.get_raf_event, event_id)
                 refreshed_status = str((refreshed or {}).get('status') or '').strip().lower()
                 if refreshed_status != 'paid':
                     await self._safe_send_message(
@@ -12680,11 +12662,11 @@ class FishBot:
                 return
 
             try:
-                db.expire_pending_duels()
+                await _run_sync(db.expire_pending_duels)
             except Exception:
                 logger.exception("successful_payment duel: failed to expire pending duels")
 
-            if db.get_active_duel_for_user(payload_user_id) or db.get_active_duel_for_user(target_user_id):
+            if await _run_sync(db.get_active_duel_for_user, payload_user_id) or await _run_sync(db.get_active_duel_for_user, target_user_id):
                 await self._safe_send_message(
                     chat_id=group_chat_id,
                     text="❌ Нельзя создать дуэль: у одного из игроков уже есть активная/ожидающая дуэль. Средства возвращены.",
@@ -12721,10 +12703,9 @@ class FishBot:
             inviter_username = update.effective_user.username or update.effective_user.first_name or str(payload_user_id)
             target_username = str(parsed_duel_payload.get("target_username") or "").strip()
             if not target_username:
-                target_username = db.get_username_by_user_id(target_user_id) or ""
+                target_username = await _run_sync(db.get_username_by_user_id, target_user_id) or ""
 
-            create_result = db.create_duel_invitation(
-                chat_id=group_chat_id,
+            create_result = await _run_sync(db.create_duel_invitation, chat_id=group_chat_id,
                 inviter_id=payload_user_id,
                 target_id=target_user_id,
                 inviter_username=inviter_username,
@@ -12754,7 +12735,7 @@ class FishBot:
             if not sent_message:
                 try:
                     force_now = datetime.now(timezone.utc) + timedelta(seconds=DUEL_INVITE_TIMEOUT_SECONDS + 1)
-                    db.expire_duel_invitation_by_id(int(duel.get('id') or 0), now=force_now)
+                    await _run_sync(db.expire_duel_invitation_by_id, int(duel.get('id') or 0), now=force_now)
                 except Exception:
                     logger.exception("Failed to rollback paid duel invite duel_id=%s", duel.get('id'))
 
@@ -12780,14 +12761,14 @@ class FishBot:
             if not location:
                 location = "Неизвестно"
                 try:
-                    player_by_group = db.get_player(user_id, group_chat_id)
+                    player_by_group = await _run_sync(db.get_player, user_id, group_chat_id)
                     if player_by_group and player_by_group.get('current_location'):
                         location = player_by_group['current_location']
                 except Exception as e:
                     logger.warning(f"Could not resolve location for guaranteed payload user={user_id}, chat={group_chat_id}: {e}")
         else:
             # Получаем текущую локацию игрока
-            player = db.get_player(user_id, chat_id)
+            player = await _run_sync(db.get_player, user_id, chat_id)
             location = player['current_location']
             group_chat_id = update.effective_chat.id
         
@@ -12804,11 +12785,11 @@ class FishBot:
         
         # Выполняем гарантированный улов (все проверки уже пройдены в precheckout)
         # Дополнительно: если бамбуковая/обычная удочка сломана — возвращаем звезду
-        player_rod_check = db.get_player(user_id, group_chat_id)
+        player_rod_check = await _run_sync(db.get_player, user_id, group_chat_id)
         if player_rod_check:
             _current_rod = player_rod_check.get('current_rod', BAMBOO_ROD)
             if _current_rod not in TEMP_ROD_RANGES:
-                _rod_data = db.get_player_rod(user_id, _current_rod, group_chat_id)
+                _rod_data = await _run_sync(db.get_player_rod, user_id, _current_rod, group_chat_id)
                 if _rod_data and _rod_data.get('current_durability', 100) <= 0:
                     await self.refund_star_payment(user_id, telegram_payment_charge_id)
                     await self._safe_send_message(
@@ -12834,7 +12815,7 @@ class FishBot:
                     )
                     return
 
-        if db.is_user_seasick(user_id):
+        if await _run_sync(db.is_user_seasick, user_id):
             await self.refund_star_payment(user_id, telegram_payment_charge_id)
             await self._safe_send_message(
                 chat_id=group_chat_id,
@@ -12849,7 +12830,7 @@ class FishBot:
         try:
             # Гарантированный фиш-заброс тоже должен засчитываться для снятия штрафа популяции.
             try:
-                db.update_population_state(user_id, location)
+                await _run_sync(db.update_population_state, user_id, location)
             except Exception:
                 logger.exception("Failed to update population state from guaranteed catch for user=%s location=%s", user_id, location)
 
@@ -12971,7 +12952,7 @@ class FishBot:
         weight = result['weight']
         length = result['length']
 
-        player = db.get_player(user_id, group_chat_id)
+        player = await _run_sync(db.get_player, user_id, group_chat_id)
         logger.info(
             "Catch: user=%s (%s) fish=%s location=%s bait=%s weight=%.2fkg length=%.1fcm guaranteed=True",
             update.effective_user.id,
@@ -13044,7 +13025,7 @@ class FishBot:
                 data = await response.json(content_type=None)
                 status = response.status
             if status == 200 and data.get("ok"):
-                db.update_star_refund_status(telegram_payment_charge_id, "ref")
+                await _run_sync(db.update_star_refund_status, telegram_payment_charge_id, "ref")
                 logger.info("Stars refund successful for user=%s, charge_id=%s", user_id, telegram_payment_charge_id)
                 return True
 
@@ -13066,17 +13047,16 @@ class FishBot:
         telegram_payment_charge_id = getattr(refunded_payment, "telegram_payment_charge_id", None)
         total_amount = getattr(refunded_payment, "total_amount", 0)
 
-        existing = db.get_star_transaction(telegram_payment_charge_id)
+        existing = await _run_sync(db.get_star_transaction, telegram_payment_charge_id)
         if not existing:
-            db.add_star_transaction(
-                user_id=user_id,
+            await _run_sync(db.add_star_transaction, user_id=user_id,
                 telegram_payment_charge_id=telegram_payment_charge_id,
                 total_amount=total_amount,
                 refund_status="need to ban"
             )
         else:
             if existing.get("refund_status") != "ref":
-                db.update_star_refund_status(telegram_payment_charge_id, "need to ban")
+                await _run_sync(db.update_star_refund_status, telegram_payment_charge_id, "need to ban")
     
     async def handle_sticker(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка полученного стикера - отправка информации о рыбе"""
@@ -13528,7 +13508,7 @@ def main():
         out_lines = []
         try:
             # Use db connection wrapper (works with sqlite or Postgres depending on DATABASE_URL)
-            conn = db._connect()
+            conn = await _run_sync(db._connect)
             cur = conn.cursor()
             # Basic counts
             for q, label in [
@@ -13684,7 +13664,7 @@ def main():
             await update.message.reply_text("Нет доступа.")
             return
         try:
-            conn = db._connect()
+            conn = await _run_sync(db._connect)
             cur = conn.cursor()
             cur.execute('DROP TRIGGER IF EXISTS caught_fish_fix_chatid_after_insert')
             try:
@@ -13760,7 +13740,7 @@ def main():
             return
 
         try:
-            chats = db.get_all_chat_stars()
+            chats = await _run_sync(db.get_all_chat_stars)
         except Exception as e:
             logger.exception("chatstar: DB error: %s", e)
             await update.message.reply_text("Ошибка доступа к БД.")
@@ -13784,7 +13764,7 @@ def main():
                         if fetched_title:
                             title = fetched_title
                             try:
-                                db.update_chat_title(chat_id, title)
+                                await _run_sync(db.update_chat_title, chat_id, title)
                             except Exception:
                                 pass
                 except Exception:
@@ -13840,14 +13820,14 @@ def main():
         m = re.match(r'^net(\d+)$', raw_net, re.I)
         if m:
             idx = int(m.group(1))
-            nets = db.get_nets()
+            nets = await _run_sync(db.get_nets)
             if 0 <= idx < len(nets):
                 net_name = nets[idx]['name']
             else:
                 await update.message.reply_text(f"Нет сети с индексом {idx}")
                 return
 
-        ok = db.grant_net(target_user, net_name, getattr(update.effective_chat, 'id', -1), count)
+        ok = await _run_sync(db.grant_net, target_user, net_name, getattr(update.effective_chat, 'id', -1), count)
         if ok:
             await update.message.reply_text(f"Сеть '{net_name}' выдана пользователю {target_user} (x{count}).")
             # Попытаться отправить личное сообщение получателю
@@ -13924,8 +13904,7 @@ def main():
             return
 
         caught_at = update.message.date or datetime.utcnow()
-        saved = db.add_caught_fish_owner_manual(
-            user_id=target_user,
+        saved = await _run_sync(db.add_caught_fish_owner_manual, user_id=target_user,
             fish_name=fish_name,
             location=location_name,
             weight=weight,
@@ -13971,14 +13950,14 @@ def main():
         m = re.match(r'^rod(\d+)$', raw_rod, re.I)
         if m:
             idx = int(m.group(1))
-            rods = db.get_rods()
+            rods = await _run_sync(db.get_rods)
             if 0 <= idx < len(rods):
                 rod_name = rods[idx]['name']
             else:
                 await update.message.reply_text(f"Нет удочки с индексом {idx}")
                 return
 
-        ok = db.grant_rod(target_user, rod_name, getattr(update.effective_chat, 'id', -1))
+        ok = await _run_sync(db.grant_rod, target_user, rod_name, getattr(update.effective_chat, 'id', -1))
         if ok:
             await update.message.reply_text(f"Удочка '{rod_name}' выдана пользователю {target_user}.")
             sender = update.effective_user

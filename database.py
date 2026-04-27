@@ -7324,10 +7324,15 @@ class Database:
             conn.commit()
             return True
     
-    def get_caught_fish(self, user_id: int, chat_id: int) -> List[Dict[str, Any]]:
+    def get_caught_fish(self, user_id: int, chat_id: int, only_unsold: bool = False) -> List[Dict[str, Any]]:
         """Получить всю пойманную рыбу пользователя"""
         with self._connect() as conn:
             cursor = conn.cursor()
+            
+            where_sql = 'cf.user_id = ? AND (cf.chat_id = ? OR cf.chat_id IS NULL OR cf.chat_id < 1)'
+            if only_unsold:
+                where_sql += ' AND COALESCE(cf.sold, 0) = 0'
+
             # Do NOT mutate DB when reading caught_fish (was assigning missing chat_id to current chat)
             # Previously this code updated rows with NULL/invalid chat_id to the current chat_id here,
             # which caused old catches to be retroactively reassigned when a user viewed `/stats`.
@@ -7338,7 +7343,7 @@ class Database:
             # minor casing differences still resolve correctly from the fish/trash catalogs.
             # trash_name is included to distinguish actual trash (t.name IS NOT NULL) from a
             # failed JOIN with the fish table (both f.name and t.name are NULL).
-            cursor.execute('''
+            cursor.execute(f'''
                 SELECT cf.*, 
                        COALESCE(f.name, t.name) AS name,
                        COALESCE(f.rarity, 'Мусор') AS rarity,
@@ -7352,7 +7357,7 @@ class Database:
                 FROM caught_fish cf
                 LEFT JOIN fish f ON LOWER(TRIM(cf.fish_name)) = LOWER(f.name)
                 LEFT JOIN trash t ON LOWER(TRIM(cf.fish_name)) = LOWER(t.name)
-                WHERE cf.user_id = ? AND (cf.chat_id = ? OR cf.chat_id IS NULL OR cf.chat_id < 1)
+                WHERE {where_sql}
                 ORDER BY cf.weight DESC
             ''', (user_id, chat_id))
             
