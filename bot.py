@@ -535,8 +535,13 @@ _db_executor = ThreadPoolExecutor(max_workers=_DB_WORKERS, thread_name_prefix="d
 async def _run_sync(func, *args, **kwargs):
     """Run a sync function in a background thread and await the result."""
     import functools
+    if asyncio.iscoroutinefunction(func):
+        return await func(*args, **kwargs)
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_db_executor, functools.partial(func, *args, **kwargs))
+    result = await loop.run_in_executor(_db_executor, functools.partial(func, *args, **kwargs))
+    if asyncio.iscoroutine(result):
+        return await result
+    return result
 
 
 class EmojiBot(ExtBot):
@@ -4567,7 +4572,7 @@ class FishBot:
 
             result = await _run_sync(game.fish, user_id, chat_id, player['current_location'])
 
-            storm_result = await _run_sync(self._maybe_trigger_boat_storm, user_id, result)
+            storm_result = await self._maybe_trigger_boat_storm(user_id, result)
             if storm_result and storm_result.get('applied'):
                 await update.message.reply_text(self._format_storm_event_message(storm_result), parse_mode=None)
                 return
@@ -5258,7 +5263,6 @@ class FishBot:
             return
 
         await query.answer()
-        await query.edit_message_text("⏳ Обрабатываю...")
 
         async def _process_boat_start() -> None:
             try:
@@ -9017,7 +9021,6 @@ class FishBot:
 
         await query.answer()
 
-        await query.edit_message_text("⏳ Обрабатываю...")
 
         async def _render_trophy_add() -> None:
             try:
@@ -11390,7 +11393,6 @@ class FishBot:
 
         async def _dispatch_triggered_action() -> None:
             try:
-                await message.reply_text("⏳ Обрабатываю...")
                 if re.match(r"^\s*меню\b", message_text):
                     await self.show_fishing_menu(update, context)
                     return
@@ -11516,7 +11518,6 @@ class FishBot:
         
         await query.answer()
 
-        await query.edit_message_text("⏳ Обрабатываю...")
 
         async def _render_stats() -> None:
             try:
