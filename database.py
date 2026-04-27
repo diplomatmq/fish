@@ -4627,6 +4627,15 @@ class Database:
 
             # Таблица трофеев игроков (отдельно от обычного инвентаря/лавки)
             cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_caught_fish_user_chat_sold
+                ON caught_fish (user_id, chat_id, sold)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_caught_fish_user_sold
+                ON caught_fish (user_id, sold)
+            ''')
+
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS player_trophies (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
@@ -7396,6 +7405,63 @@ class Database:
                 item['price'] = self.calculate_fish_price(item, item.get('weight', 0), item.get('length', 0))
 
             return results
+
+    def get_inventory_summary(self, user_id: int, chat_id: int) -> Dict[str, Any]:
+        """Return compact inventory counters for the main inventory menu."""
+        summary: Dict[str, Any] = {
+            'location_counts': {},
+            'regular_count': 0,
+            'trash_count': 0,
+            'total_treasures': 0,
+            'trophy_count': 0,
+        }
+        with self._connect() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT COALESCE(loc.name, length_loc.name, cf.location) AS resolved_location,
+                       COUNT(*) AS fish_count
+                FROM caught_fish cf
+                LEFT JOIN trash t ON LOWER(TRIM(cf.fish_name)) = LOWER(t.name)
+                LEFT JOIN locations loc ON cf.location = loc.name
+                LEFT JOIN locations length_loc ON CAST(cf.length AS TEXT) = length_loc.name
+                WHERE cf.user_id = ?
+                  AND (cf.chat_id = ? OR cf.chat_id IS NULL OR cf.chat_id < 1)
+                  AND COALESCE(cf.sold, 0) = 0
+                  AND t.name IS NULL
+                GROUP BY COALESCE(loc.name, length_loc.name, cf.location)
+            ''', (user_id, chat_id))
+            location_counts: Dict[Any, int] = {}
+            for loc, fish_count in cursor.fetchall():
+                count = int(fish_count or 0)
+                location_counts[loc] = location_counts.get(loc, 0) + count
+                summary['regular_count'] += count
+            summary['location_counts'] = location_counts
+
+            cursor.execute('''
+                SELECT COUNT(*)
+                FROM caught_fish cf
+                INNER JOIN trash t ON LOWER(TRIM(cf.fish_name)) = LOWER(t.name)
+                WHERE cf.user_id = ?
+                  AND (cf.chat_id = ? OR cf.chat_id IS NULL OR cf.chat_id < 1)
+                  AND COALESCE(cf.sold, 0) = 0
+            ''', (user_id, chat_id))
+            row = cursor.fetchone()
+            summary['trash_count'] = int(row[0] or 0) if row else 0
+
+            cursor.execute('''
+                SELECT COALESCE(SUM(quantity), 0)
+                FROM player_treasures
+                WHERE user_id = ? AND quantity > 0
+            ''', (user_id,))
+            row = cursor.fetchone()
+            summary['total_treasures'] = int(row[0] or 0) if row else 0
+
+            cursor.execute('SELECT COUNT(*) FROM player_trophies WHERE user_id = ?', (user_id,))
+            row = cursor.fetchone()
+            summary['trophy_count'] = int(row[0] or 0) if row else 0
+
+        return summary
 
     def calculate_fish_price(self, fish: Dict[str, Any], weight: float, length: float) -> int:
         """Рассчитать цену рыбы: редкость/размер + динамика спроса + дневной рынок."""

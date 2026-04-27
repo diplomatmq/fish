@@ -8410,16 +8410,14 @@ class FishBot:
             query = None
         
         # Получаем все пойманные рыбы и их локации (только непроданные)
-        caught_fish = db.get_caught_fish(user_id, chat_id)
-        unsold_fish = [f for f in caught_fish if f.get('sold', 0) == 0]
-        unsold_regular_fish = [f for f in unsold_fish if not bool(f.get('is_trash'))]
-        unsold_trash = [f for f in unsold_fish if bool(f.get('is_trash'))]
-        treasures = self._get_all_player_treasures(user_id, chat_id)
-        total_treasures = sum(int(t.get('quantity', 0) or 0) for t in treasures)
-        trophy_items = db.get_player_trophies(user_id)
-        trophy_count = len(trophy_items)
+        summary = await _run_sync(db.get_inventory_summary, user_id, chat_id)
+        locations = dict(summary.get('location_counts') or {})
+        unsold_regular_count = int(summary.get('regular_count', 0) or 0)
+        unsold_trash_count = int(summary.get('trash_count', 0) or 0)
+        total_treasures = int(summary.get('total_treasures', 0) or 0)
+        trophy_count = int(summary.get('trophy_count', 0) or 0)
 
-        if not unsold_regular_fish and not unsold_trash and total_treasures <= 0 and trophy_count <= 0:
+        if unsold_regular_count <= 0 and unsold_trash_count <= 0 and total_treasures <= 0 and trophy_count <= 0:
             message = "🎒 Инвентарь\n\nУ вас нет пойманной рыбы и сокровищ."
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=f"back_to_menu_{user_id}")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -8430,30 +8428,20 @@ class FishBot:
             return
         
         # Группируем по локациям (с фильтром на корректные названия)
-        valid_locations = {loc['name'] for loc in db.get_locations()}
-        locations = {}
-        for fish in unsold_regular_fish:
-            loc = fish.get('location')
-            if loc not in valid_locations:
-                length_loc = str(fish.get('length'))
-                if length_loc in valid_locations:
-                    loc = length_loc
-            if loc not in locations:
-                locations[loc] = []
-            locations[loc].append(fish)
 
         # Создаем кнопки разделов инвентаря
         keyboard = []
         for location in sorted(locations.keys(), key=lambda v: str(v)):
-            fish_count = len(locations[location])
-            button_text = f"📍 {location} ({fish_count} рыб)"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"inv_location_{location.replace(' ', '_')}_{user_id}")])
+            fish_count = int(locations.get(location, 0) or 0)
+            location_label = str(location)
+            button_text = f"📍 {location_label} ({fish_count} рыб)"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"inv_location_{location_label.replace(' ', '_')}_{user_id}")])
 
         if total_treasures > 0:
             keyboard.append([InlineKeyboardButton(f"💎 Сокровища ({total_treasures})", callback_data=f"inv_treasures_{user_id}")])
 
-        if unsold_trash:
-            keyboard.append([InlineKeyboardButton(f"🗑️ Мусор ({len(unsold_trash)})", callback_data=f"inv_trash_{user_id}")])
+        if unsold_trash_count > 0:
+            keyboard.append([InlineKeyboardButton(f"🗑️ Мусор ({unsold_trash_count})", callback_data=f"inv_trash_{user_id}")])
 
         keyboard.append([InlineKeyboardButton(f"🏆 Трофеи ({trophy_count})", callback_data=f"inv_trophies_{user_id}")])
         
@@ -8465,8 +8453,8 @@ class FishBot:
         if has_location_fish:
             message = (
                 "🎒 Инвентарь\n\n"
-                f"🐟 Рыба для просмотра: {len(unsold_regular_fish)}\n"
-                f"🗑️ Мусор: {len(unsold_trash)}\n"
+                f"🐟 Рыба для просмотра: {unsold_regular_count}\n"
+                f"🗑️ Мусор: {unsold_trash_count}\n"
                 f"💎 Сокровища: {total_treasures}\n"
                 f"🏆 Трофеи: {trophy_count}\n\n"
                 "Выберите раздел:"
@@ -8475,7 +8463,7 @@ class FishBot:
             message = (
                 "🎒 Инвентарь\n\n"
                 "У вас нет рыбы с корректной локацией.\n"
-                f"🗑️ Мусор: {len(unsold_trash)}\n"
+                f"🗑️ Мусор: {unsold_trash_count}\n"
                 f"💎 Сокровища: {total_treasures}\n"
                 f"🏆 Трофеи: {trophy_count}\n\n"
                 "Выберите раздел:"
