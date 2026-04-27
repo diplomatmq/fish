@@ -532,6 +532,20 @@ from concurrent.futures import ThreadPoolExecutor
 _DB_WORKERS = max(4, int(os.getenv('TG_DB_WORKERS', '14')))
 _db_executor = ThreadPoolExecutor(max_workers=_DB_WORKERS, thread_name_prefix="db_worker")
 
+_action_locks = collections.defaultdict(asyncio.Lock)
+
+def require_action_lock(func):
+    """Обеспечивает последовательное выполнение команд для одного пользователя."""
+    @functools.wraps(func)
+    async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user = getattr(update, 'effective_user', None)
+        if hasattr(user, 'id'):
+            user_id = user.id
+            async with _action_locks[user_id]:
+                return await func(self, update, context, *args, **kwargs)
+        return await func(self, update, context, *args, **kwargs)
+    return wrapper
+
 async def _run_sync(func, *args, **kwargs):
     """Run a sync function in a background thread and await the result."""
     import functools
@@ -546,7 +560,7 @@ async def _run_sync(func, *args, **kwargs):
 
 class EmojiBot(ExtBot):
     API_CALL_TIMEOUT = float(os.getenv('TG_API_CALL_TIMEOUT', '12'))
-    API_CALL_RETRIES = int(os.getenv('TG_API_CALL_RETRIES', '1'))
+    API_CALL_RETRIES = int(os.getenv('TG_API_CALL_RETRIES', '3'))
     RETRY_BACKOFF_SEC = float(os.getenv('TG_API_RETRY_BACKOFF', '1.5'))
 
     async def _call_with_timeout(self, method_name: str, coro_factory):
@@ -6209,10 +6223,12 @@ class FishBot:
 
         # Проверяем, что хотя бы одна сеть действительно на КД
         player_nets = await _run_sync(db.get_player_nets, user_id, chat_id)
-        any_on_cooldown = any(
-            await _run_sync(db.get_net_cooldown_remaining, user_id, net['net_name'], chat_id) > 0
-            for net in player_nets
-        )
+        any_on_cooldown = False
+        for net in player_nets:
+            if await _run_sync(db.get_net_cooldown_remaining, user_id, net['net_name'], chat_id) > 0:
+                any_on_cooldown = True
+                break
+        
         if not any_on_cooldown:
             await query.answer("✅ Все сети уже свободны!", show_alert=True)
             return
@@ -13438,6 +13454,20 @@ def main():
     # Устанавливаем приложение в экземпляр бота
     bot_instance.application = application
     
+    # --- PATCH BEGIN: BLOCK CONCURRENT UPDATES FOR SAME USER ---
+    # Это исправляет рейс-кондишн (двойные нажатия, проскакивание КД),
+    # заставляя апдейты от одного юзера обрабатываться последовательно, 
+    # в то время как весь остальной поток идет асинхронно параллельно.
+    original_process_update = application.process_update
+    async def process_update_with_lock(update: Update, *args, **kwargs):
+        user = getattr(update, 'effective_user', None)
+        if user and hasattr(user, 'id'):
+            async with _action_locks[user.id]:
+                return await original_process_update(update, *args, **kwargs)
+        return await original_process_update(update, *args, **kwargs)
+    application.process_update = process_update_with_lock
+    # --- PATCH END ---
+
     # Создаем asyncio scheduler
     bot_instance.scheduler = AsyncIOScheduler()
     async def warm_up_bot():
