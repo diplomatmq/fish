@@ -530,7 +530,7 @@ def telegram_webhook_proxy():
 	if os.getenv("WEBHOOK_PROXY_LOG_UPDATES", "1") == "1":
 		logger.info("Telegram webhook proxy accepted update: bytes=%s target=%s", len(payload), target_url)
 	WEBHOOK_PROXY_EXECUTOR.submit(_forward_telegram_update, target_url, payload, headers)
-	return jsonify({"ok": True})
+	return "", 200
 
 
 def _forward_telegram_update(target_url: str, payload: bytes, headers: dict) -> None:

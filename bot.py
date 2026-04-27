@@ -213,7 +213,22 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+for noisy_logger_name in ("httpx", "telegram", "apscheduler"):
+    logging.getLogger(noisy_logger_name).setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
+
+
+class RefundedPaymentFilter(filters.MessageFilter):
+    def filter(self, message: Message) -> bool:
+        return bool(getattr(message, "refunded_payment", None))
+
+
+REFUNDED_PAYMENT_FILTER = RefundedPaymentFilter()
+FISH_MESSAGE_TRIGGER_RE = re.compile(
+    r"^\s*(?:меню|menu|фиш|fish|рыбалка|сеть|net|лимит|limit|погода|weather|динамит|dynamite)\b",
+    re.IGNORECASE,
+)
 
 COIN_EMOJI_TAG = '<tg-emoji emoji-id="5379600444098093058">🪙</tg-emoji>'
 BAG_EMOJI_TAG = '<tg-emoji emoji-id="5375296873982604963">💰</tg-emoji>'
@@ -2570,67 +2585,6 @@ class FishBot:
             currency="XTR",
             prices=[{"label": "Вход", "amount": 1}],
         )
-
-    async def _build_guaranteed_invoice_markup(self, user_id: int, chat_id: int) -> Optional[InlineKeyboardMarkup]:
-        """Собрать inline-кнопку со ссылкой на оплату гарантированного улова."""
-        try:
-            invoice_url = await self._create_guaranteed_invoice_url(user_id, chat_id)
-        except Exception as e:
-            logger.error(f"[INVOICE] Failed to create guaranteed invoice link: {e}")
-            return None
-
-        if not invoice_url:
-            return None
-
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"⭐ Оплатить {GUARANTEED_CATCH_COST} Telegram Stars", url=invoice_url)]
-        ])
-
-    async def _create_skip_boat_cd_invoice_url(self, user_id: int, chat_id: int) -> Optional[str]:
-        """Создать ссылку инвойса для сброса КД лодки."""
-        from config import BOT_TOKEN, STAR_NAME
-        tg_api = TelegramBotAPI(BOT_TOKEN)
-        return await tg_api.create_invoice_link(
-            title="Сброс КД лодки",
-            description=f"Мгновенный сброс КД лодки (20 {STAR_NAME})",
-            payload=f"skip_boat_cd_{user_id}_{chat_id}_{int(datetime.now().timestamp())}",
-            currency="XTR",
-            prices=[{"label": "Сброс КД", "amount": 20}],
-        )
-
-    async def _build_skip_boat_cd_invoice_markup(self, user_id: int, chat_id: int) -> Optional[InlineKeyboardMarkup]:
-        """Собрать inline-кнопку со ссылкой на оплату сброса КД."""
-        try:
-            invoice_url = await self._create_skip_boat_cd_invoice_url(user_id, chat_id)
-        except Exception as e:
-            logger.error(f"[INVOICE] Failed to create boat cd skip invoice: {e}")
-            return None
-        if not invoice_url: return None
-        return InlineKeyboardMarkup([[InlineKeyboardButton(f"⭐ Сбросить КД за 20 Stars", url=invoice_url)]])
-
-    async def handle_pay_invoice_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        user_id = update.effective_user.id
-        data = query.data.split(":")
-        if len(data) != 3:
-            await query.answer("Некорректная кнопка", show_alert=True)
-            return
-        _, owner_id, invoice_id = data
-        if str(user_id) != owner_id:
-            await query.answer("Эта кнопка только для вас!", show_alert=True)
-            return
-        # Проверяем, что инвойс ещё активен
-        invoice_info = self.active_invoices.get(int(owner_id))
-        if not invoice_info or invoice_info.get('invoice_id') != invoice_id:
-            await query.answer("Инвойс уже неактивен", show_alert=True)
-            return
-        # Открываем ссылку на оплату (отправляем url в чат)
-        invoice_url = invoice_info['invoice_url']
-        await query.answer()
-        await query.edit_message_reply_markup(reply_markup=None)
-        await query.message.reply_text(f"Откройте ссылку для оплаты: {invoice_url}")
-        # После оплаты (или сразу) можно убрать инвойс из активных
-        del self.active_invoices[int(owner_id)]
 
     def __init__(self):
         self.is_global_stopped = False
@@ -5233,24 +5187,35 @@ class FishBot:
                 await query.answer("Эта кнопка не для вас", show_alert=True)
             return
 
-        can_start, cd = db.can_start_boat_trip(user_id)
-        if can_start:
-            db.start_boat_trip(user_id)
-            await update.callback_query.answer("Вы отправились в плавание!")
-            await self.show_fishing_menu(update, context)
-        else:
-            # Вместо алерта шлем сообщение с инвойсом, как просит пользователь
-            hours = int(cd // 3600)
-            minutes = int((cd % 3600) // 60)
-            reply_markup = await self._build_skip_boat_cd_invoice_markup(user_id, chat_id)
-            
-            # Предлагаем сбросить КД через инвойс
-            await update.callback_query.edit_message_text(
-                f"⏳ Следующий бесплатный выплыв через: {hours}ч {minutes}м.\n\n"
-                f"💸 Хотите выплыть прямо сейчас за 20 ⭐?",
-                reply_markup=reply_markup,
-                parse_mode="HTML"
-            )
+        await query.answer()
+        await query.edit_message_text("⏳ Обрабатываю...")
+
+        async def _process_boat_start() -> None:
+            try:
+                can_start, cd = await _run_sync(db.can_start_boat_trip, user_id)
+                if can_start:
+                    await _run_sync(db.start_boat_trip, user_id)
+                    await self.show_fishing_menu(update, context)
+                    return
+
+                hours = int(cd // 3600)
+                minutes = int((cd % 3600) // 60)
+                reply_markup = await self._build_skip_boat_cd_invoice_markup(user_id, chat_id)
+                await query.edit_message_text(
+                    f"⏳ Следующий бесплатный выплыв через: {hours}ч {minutes}м.\n\n"
+                    f"💸 Хотите выплыть прямо сейчас за 20 ⭐?",
+                    reply_markup=reply_markup,
+                    parse_mode="HTML"
+                )
+            except Exception:
+                logger.exception("handle_boat_start failed for user=%s chat=%s", user_id, chat_id)
+                try:
+                    await query.edit_message_text("❌ Не удалось обработать выплыв. Попробуйте позже.")
+                except Exception:
+                    pass
+
+        asyncio.create_task(_process_boat_start())
+        return
 
     async def handle_boat_return(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка кнопки Вернуться (делёж улова)"""
@@ -8982,75 +8947,90 @@ class FishBot:
 
         await query.answer()
 
-        player = db.get_player(user_id, chat_id)
-        balance = int(player.get('coins', 0)) if player else 0
+        await query.edit_message_text("⏳ Обрабатываю...")
 
-        caught_fish = db.get_caught_fish(user_id, chat_id)
-        candidates = [
-            fish for fish in caught_fish
-            if fish.get('sold', 0) == 0 and not bool(fish.get('is_trash'))
-        ]
-        candidates.sort(key=lambda item: float(item.get('weight') or 0), reverse=True)
-
-        keyboard = []
-        if not candidates:
-            keyboard.append([InlineKeyboardButton("◀️ К трофеям", callback_data=f"inv_trophies_{user_id}")])
-            await query.edit_message_text(
-                "➕ Добавить трофей\n\n"
-                "У вас нет рыбы для создания трофея.\n"
-                "Поймайте рыбу и попробуйте снова.",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-            )
-            return
-
-        page_size = TROPHY_ADD_PAGE_SIZE
-        total = len(candidates)
-        total_pages = max(1, (total + page_size - 1) // page_size)
-        safe_page = max(0, min(page, total_pages - 1))
-        start = safe_page * page_size
-        end = start + page_size
-        page_items = candidates[start:end]
-
-        for fish in page_items:
-            fish_name = str(fish.get('fish_name') or 'Неизвестная рыба')
-            fish_id = int(fish.get('id') or 0)
+        async def _render_trophy_add() -> None:
             try:
-                fish_weight = float(fish.get('weight') or 0)
-            except (TypeError, ValueError):
-                fish_weight = 0.0
-            try:
-                fish_length = float(fish.get('length') or 0)
-            except (TypeError, ValueError):
-                fish_length = 0.0
-
-            button_text = f"🐟 {fish_name} ({fish_weight:.2f} кг, {fish_length:.1f} см)"
-            keyboard.append([
-                InlineKeyboardButton(button_text, callback_data=f"inv_trophy_make_{fish_id}_{user_id}")
-            ])
-
-        if total_pages > 1:
-            nav_buttons = []
-            if safe_page > 0:
-                nav_buttons.append(
-                    InlineKeyboardButton("⬅️", callback_data=f"inv_trophy_add_page_{safe_page - 1}_{user_id}")
+                player, caught_fish = await asyncio.gather(
+                    _run_sync(db.get_player, user_id, chat_id),
+                    _run_sync(db.get_caught_fish, user_id, chat_id),
                 )
-            nav_buttons.append(InlineKeyboardButton(f"{safe_page + 1}/{total_pages}", callback_data="noop"))
-            if safe_page < total_pages - 1:
-                nav_buttons.append(
-                    InlineKeyboardButton("➡️", callback_data=f"inv_trophy_add_page_{safe_page + 1}_{user_id}")
+                balance = int(player.get('coins', 0)) if player else 0
+
+                candidates = [
+                    fish for fish in caught_fish
+                    if fish.get('sold', 0) == 0 and not bool(fish.get('is_trash'))
+                ]
+                candidates.sort(key=lambda item: float(item.get('weight') or 0), reverse=True)
+
+                keyboard = []
+                if not candidates:
+                    keyboard.append([InlineKeyboardButton("◀️ К трофеям", callback_data=f"inv_trophies_{user_id}")])
+                    await query.edit_message_text(
+                        "➕ Добавить трофей\n\n"
+                        "У вас нет рыбы для создания трофея.\n"
+                        "Поймайте рыбу и попробуйте снова.",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                    )
+                    return
+
+                page_size = TROPHY_ADD_PAGE_SIZE
+                total = len(candidates)
+                total_pages = max(1, (total + page_size - 1) // page_size)
+                safe_page = max(0, min(page, total_pages - 1))
+                start = safe_page * page_size
+                end = start + page_size
+                page_items = candidates[start:end]
+
+                for fish in page_items:
+                    fish_name = str(fish.get('fish_name') or 'Неизвестная рыба')
+                    fish_id = int(fish.get('id') or 0)
+                    try:
+                        fish_weight = float(fish.get('weight') or 0)
+                    except (TypeError, ValueError):
+                        fish_weight = 0.0
+                    try:
+                        fish_length = float(fish.get('length') or 0)
+                    except (TypeError, ValueError):
+                        fish_length = 0.0
+
+                    button_text = f"🐟 {fish_name} ({fish_weight:.2f} кг, {fish_length:.1f} см)"
+                    keyboard.append([
+                        InlineKeyboardButton(button_text, callback_data=f"inv_trophy_make_{fish_id}_{user_id}")
+                    ])
+
+                if total_pages > 1:
+                    nav_buttons = []
+                    if safe_page > 0:
+                        nav_buttons.append(
+                            InlineKeyboardButton("⬅️", callback_data=f"inv_trophy_add_page_{safe_page - 1}_{user_id}")
+                        )
+                    nav_buttons.append(InlineKeyboardButton(f"{safe_page + 1}/{total_pages}", callback_data="noop"))
+                    if safe_page < total_pages - 1:
+                        nav_buttons.append(
+                            InlineKeyboardButton("➡️", callback_data=f"inv_trophy_add_page_{safe_page + 1}_{user_id}")
+                        )
+                    keyboard.append(nav_buttons)
+
+                keyboard.append([InlineKeyboardButton("◀️ К трофеям", callback_data=f"inv_trophies_{user_id}")])
+
+                message = (
+                    "➕ Добавить трофей\n\n"
+                    f"Стоимость создания: {TROPHY_CREATE_COST_COINS} 🪙\n"
+                    f"Ваш баланс: {balance} 🪙\n"
+                    f"Доступно рыбы: {total}\n\n"
+                    "Выберите рыбу для превращения в трофей:"
                 )
-            keyboard.append(nav_buttons)
+                await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+            except Exception:
+                logger.exception("handle_inventory_trophy_add failed for user=%s chat=%s", user_id, chat_id)
+                try:
+                    await query.edit_message_text("❌ Не удалось открыть трофеи. Попробуйте позже.")
+                except Exception:
+                    pass
 
-        keyboard.append([InlineKeyboardButton("◀️ К трофеям", callback_data=f"inv_trophies_{user_id}")])
-
-        message = (
-            "➕ Добавить трофей\n\n"
-            f"Стоимость создания: {TROPHY_CREATE_COST_COINS} 🪙\n"
-            f"Ваш баланс: {balance} 🪙\n"
-            f"Доступно рыбы: {total}\n\n"
-            "Выберите рыбу для превращения в трофей:"
-        )
-        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+        asyncio.create_task(_render_trophy_add())
+        return
 
     async def handle_inventory_trophy_make(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Конвертировать выбранную рыбу в трофей за монеты."""
@@ -10477,26 +10457,26 @@ class FishBot:
             chunks.append(chunk)
         return " ".join(chunks)
 
-    def _maybe_trigger_boat_storm(self, user_id: int, result: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    async def _maybe_trigger_boat_storm(self, user_id: int, result: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Независимая проверка шторма на активной лодке."""
         # Шторм — отдельное событие, не привязанное к рыбнадзору.
         if result and result.get('fish_inspector'):
             return None
 
-        is_on_boat_trip = bool((result or {}).get('is_on_boat')) or db.is_user_on_boat_trip(user_id)
+        is_on_boat_trip = bool((result or {}).get('is_on_boat')) or await _run_sync(db.is_user_on_boat_trip, user_id)
         if not is_on_boat_trip:
             return None
 
         if random.random() >= STORM_EVENT_CHANCE_ON_BOAT:
             return None
 
-        storm_result = db.sink_active_boat_by_storm(user_id, cooldown_hours=STORM_EVENT_COOLDOWN_HOURS)
+        storm_result = await _run_sync(db.sink_active_boat_by_storm, user_id, cooldown_hours=STORM_EVENT_COOLDOWN_HOURS)
         if not storm_result or not storm_result.get('applied'):
             return None
 
         try:
             # После сильного шторма можно получить морскую болезнь.
-            db.apply_seasick_event(user_id)
+            await _run_sync(db.apply_seasick_event, user_id)
         except Exception:
             logger.exception("Failed to apply seasick after storm for user=%s", user_id)
 
@@ -11096,12 +11076,6 @@ class FishBot:
         await self._execute_dynamite_blast(user_id, chat_id, guaranteed=False, reply_to_message_id=update.effective_message.message_id if update.effective_message else None)
     
     async def handle_fish_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.info(
-            "text update received: user=%s chat=%s text=%r",
-            getattr(update.effective_user, "id", None),
-            getattr(update.effective_chat, "id", None),
-            (getattr(update.effective_message, "text", "") or "")[:80],
-        )
         """Обработка сообщения 'рыбалка' и других текстовых сообщений"""
         # Игнорируем сообщения, отправленные ДО запуска бота (старые рыбалки не срабатывают)
         if update.message and update.message.date:
@@ -11252,7 +11226,7 @@ class FishBot:
                 return
 
             fish_name = data.get('fish_name')
-            caught_fish = db.get_caught_fish(user_id, chat_id)
+            caught_fish = await _run_sync(db.get_caught_fish, user_id, chat_id)
             species_fish = [
                 f for f in caught_fish
                 if f['fish_name'] == fish_name and f.get('sold', 0) == 0 and not bool(f.get('is_trash'))
@@ -11289,12 +11263,12 @@ class FishBot:
 
             fish_ids = [f['id'] for f in species_fish[:qty]]
             total_value = sum(f['price'] for f in species_fish[:qty])
-            player = db.get_player(user_id, chat_id)
-            db.mark_fish_as_sold(fish_ids)
-            db.update_player(user_id, chat_id, coins=player['coins'] + total_value)
+            player = await _run_sync(db.get_player, user_id, chat_id)
+            await _run_sync(db.mark_fish_as_sold, fish_ids)
+            await _run_sync(db.update_player, user_id, chat_id, coins=player['coins'] + total_value)
 
             xp_earned, base_xp, rarity_bonus, weight_bonus, total_weight = calculate_sale_summary(species_fish[:qty])
-            level_info = db.add_player_xp(user_id, chat_id, xp_earned)
+            level_info = await _run_sync(db.add_player_xp, user_id, chat_id, xp_earned)
             progress_line = format_level_progress(level_info)
             total_xp_now = level_info.get('xp_total', 0)
 
@@ -11330,21 +11304,43 @@ class FishBot:
         if not message or not message.text:
             return
         message_text = message.text.lower()
-        if re.match(r"^\s*меню\b", message_text):
-            await self.show_fishing_menu(update, context)
+        has_active_text_flow = any(
+            key in context.user_data
+            for key in (
+                'raf_draft',
+                'new_tour',
+                'waiting_bait_selection',
+                'waiting_sell_selection',
+                'waiting_sell_quantity',
+                'waiting_bait_quantity',
+            )
+        )
+        if not has_active_text_flow and not FISH_MESSAGE_TRIGGER_RE.match(message.text or ""):
             return
-        if re.match(r"^\s*(фиш|fish)\b", message_text):
-            await self.fish_command(update, context)
-            return
-        if re.match(r"^\s*(погода|weather)\b", message_text):
-            await self.weather_command(update, context)
-            return
-        if re.match(r"^\s*сеть\b", message_text):
-            await self.net_command(update, context)
-            return
-        if re.match(r"^\s*(динамит|диномит|dynamite)\b", message_text):
-            await self.dynamite_command(update, context)
-            return
+
+        async def _dispatch_triggered_action() -> None:
+            try:
+                await message.reply_text("⏳ Обрабатываю...")
+                if re.match(r"^\s*меню\b", message_text):
+                    await self.show_fishing_menu(update, context)
+                    return
+                if re.match(r"^\s*(фиш|fish)\b", message_text):
+                    await self.fish_command(update, context)
+                    return
+                if re.match(r"^\s*(погода|weather)\b", message_text):
+                    await self.weather_command(update, context)
+                    return
+                if re.match(r"^\s*сеть\b", message_text):
+                    await self.net_command(update, context)
+                    return
+                if re.match(r"^\s*(динамит|диномит|dynamite)\b", message_text):
+                    await self.dynamite_command(update, context)
+                    return
+            except Exception:
+                logger.exception("handle_fish_message trigger failed for user=%s chat=%s", getattr(update.effective_user, "id", None), getattr(update.effective_chat, "id", None))
+
+        asyncio.create_task(_dispatch_triggered_action())
+        return
     
     async def weather_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка команды /weather и слова 'погода'"""
@@ -11449,18 +11445,22 @@ class FishBot:
             return
         
         await query.answer()
-        
-        player = db.get_player(user_id, chat_id)
-        
-        if not player:
-            await query.edit_message_text("Сначала создайте профиль командой /start")
-            return
-        
-        stats = db.get_player_stats(user_id, chat_id)
-        total_species = db.get_total_fish_species()
-        caught_fish = db.get_caught_fish(user_id, chat_id)
-        
-        message = f"""
+
+        await query.edit_message_text("⏳ Обрабатываю...")
+
+        async def _render_stats() -> None:
+            try:
+                player, stats, total_species = await asyncio.gather(
+                    _run_sync(db.get_player, user_id, chat_id),
+                    _run_sync(db.get_player_stats, user_id, chat_id),
+                    _run_sync(db.get_total_fish_species),
+                )
+
+                if not player:
+                    await query.edit_message_text("Сначала создайте профиль командой /start")
+                    return
+
+                message = f"""
 📊 Ваша статистика
 
 🎣 Всего поймано рыбы: {stats['total_fish']}
@@ -11474,12 +11474,20 @@ class FishBot:
 🎣 Текущая удочка: {player['current_rod']}
 📍 Текущая локация: {player['current_location']}
 🪱 Текущая наживка: {player['current_bait']}
-        """
-        
-        keyboard = [[InlineKeyboardButton("🔙 В меню", callback_data=f"back_to_menu_{user_id}")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+                """
 
-        await query.edit_message_text(message, reply_markup=reply_markup)
+                keyboard = [[InlineKeyboardButton("🔙 В меню", callback_data=f"back_to_menu_{user_id}")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(message, reply_markup=reply_markup)
+            except Exception:
+                logger.exception("handle_stats_callback failed for user=%s chat=%s", user_id, chat_id)
+                try:
+                    await query.edit_message_text("❌ Не удалось загрузить статистику. Попробуйте позже.")
+                except Exception:
+                    pass
+
+        asyncio.create_task(_render_stats())
+        return
     
     async def handle_leaderboard_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка кнопки таблицы лидеров"""
@@ -11547,7 +11555,7 @@ class FishBot:
         # Начинаем рыбалку на текущей локации
         result = await _run_sync(game.fish, user_id, chat_id, player['current_location'])
 
-        storm_result = self._maybe_trigger_boat_storm(user_id, result=result)
+        storm_result = await self._maybe_trigger_boat_storm(user_id, result=result)
         if storm_result and storm_result.get('applied'):
             await query.edit_message_text(self._format_storm_event_message(storm_result))
             return
@@ -14018,7 +14026,7 @@ def main():
     application.add_handler(MessageHandler(filters.Sticker.ALL, bot_instance.handle_sticker))
     
     # Обработчик возврата платежей (использует refunded_payment)
-    application.add_handler(MessageHandler(filters.ALL, bot_instance.refunded_payment_callback))
+    application.add_handler(MessageHandler(REFUNDED_PAYMENT_FILTER, bot_instance.refunded_payment_callback))
     
     # Обработчики callback
     application.add_handler(CallbackQueryHandler(bot_instance.handle_noop, pattern=r"^noop$"))

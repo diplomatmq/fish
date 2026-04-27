@@ -1141,6 +1141,17 @@ class Database:
             ''', (user_id,))
             conn.commit()
         return True
+
+    def apply_seasick_event(self, user_id: int, duration_minutes: int = 18 * 60) -> bool:
+        """Наложить морскую болезнь на пользователя после шторма."""
+        self._ensure_user_effects_table()
+        return self.apply_timed_effect(
+            user_id,
+            'seasick',
+            duration_minutes=max(1, int(duration_minutes or 0)),
+            replace_existing=True,
+        )
+
     def return_boat_trip_and_split_catch(self, user_id: int) -> tuple:
         """Возврат лодки: делит улов между участниками, добавляет в caught_fish, возвращает (results, boat_id). Может вызвать любой участник лодки."""
         self._ensure_boat_tables()
