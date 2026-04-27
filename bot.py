@@ -2586,6 +2586,76 @@ class FishBot:
             prices=[{"label": "Вход", "amount": 1}],
         )
 
+    async def _build_guaranteed_invoice_markup(self, user_id: int, chat_id: int) -> Optional[InlineKeyboardMarkup]:
+        """Собрать inline-кнопку со ссылкой на оплату гарантированного улова."""
+        try:
+            invoice_url = await self._create_guaranteed_invoice_url(user_id, chat_id)
+        except Exception as e:
+            logger.error(f"[INVOICE] Failed to create guaranteed invoice link: {e}")
+            return None
+
+        if not invoice_url:
+            return None
+
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"⭐ Оплатить {GUARANTEED_CATCH_COST} Telegram Stars", url=invoice_url)]
+        ])
+
+    async def _create_skip_boat_cd_invoice_url(self, user_id: int, chat_id: int) -> Optional[str]:
+        """Создать ссылку инвойса для сброса КД лодки."""
+        from config import BOT_TOKEN, STAR_NAME
+        tg_api = TelegramBotAPI(BOT_TOKEN)
+        return await tg_api.create_invoice_link(
+            title="Сброс КД лодки",
+            description=f"Мгновенный сброс КД лодки (20 {STAR_NAME})",
+            payload=f"skip_boat_cd_{user_id}_{chat_id}_{int(datetime.now().timestamp())}",
+            currency="XTR",
+            prices=[{"label": "Сброс КД", "amount": 20}],
+        )
+
+    async def _build_skip_boat_cd_invoice_markup(self, user_id: int, chat_id: int) -> Optional[InlineKeyboardMarkup]:
+        """Собрать inline-кнопку со ссылкой на оплату сброса КД."""
+        try:
+            invoice_url = await self._create_skip_boat_cd_invoice_url(user_id, chat_id)
+        except Exception as e:
+            logger.error(f"[INVOICE] Failed to create boat cd skip invoice: {e}")
+            return None
+        if not invoice_url:
+            return None
+        return InlineKeyboardMarkup([[InlineKeyboardButton("⭐ Сбросить КД за 20 Stars", url=invoice_url)]])
+
+    async def handle_pay_invoice_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        if not query:
+            return
+
+        data = str(query.data or "")
+        parts = data.split(":")
+        if len(parts) != 3:
+            await query.answer("Некорректная кнопка", show_alert=True)
+            return
+
+        _, owner_id, invoice_id = parts
+        user_id = update.effective_user.id
+        if str(user_id) != owner_id:
+            await query.answer("Эта кнопка только для вас!", show_alert=True)
+            return
+
+        invoice_info = self.active_invoices.get(int(owner_id))
+        if not invoice_info or invoice_info.get('invoice_id') != invoice_id:
+            await query.answer("Инвойс уже неактивен", show_alert=True)
+            return
+
+        invoice_url = invoice_info.get('invoice_url')
+        await query.answer()
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        if invoice_url:
+            await query.message.reply_text(f"Откройте ссылку для оплаты: {invoice_url}")
+        del self.active_invoices[int(owner_id)]
+
     def __init__(self):
         self.is_global_stopped = False
         self.scheduler = None  # Будет создан в main() с asyncio loop
