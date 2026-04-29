@@ -235,7 +235,14 @@ class FishingGame:
         """Основная функция ловли рыбы"""
         # Проверка на арест рыбнадзором
         player = db.get_player(user_id, chat_id)
-        if player and player.get('is_banned'):
+        if not player:
+            return {
+                "success": False,
+                "message": "Профиль не найден. Используйте /start в этом чате.",
+                "location": location
+            }
+
+        if player.get('is_banned'):
             ban_until = player.get('ban_until')
             if ban_until:
                 now = datetime.now()
@@ -256,13 +263,6 @@ class FishingGame:
             if not can_fish:
                 return {"success": False, "message": message}
 
-        player = db.get_player(user_id, chat_id)
-        if not player:
-            return {
-                "success": False,
-                "message": "Профиль не найден. Используйте /start в этом чате.",
-                "location": location
-            }
         if player.get('current_rod') == 'Гарпун':
             db.init_player_rod(user_id, BAMBOO_ROD, chat_id)
             db.update_player(user_id, chat_id, current_rod=BAMBOO_ROD)
@@ -373,6 +373,8 @@ class FishingGame:
 
         # Применяем штраф популяции (снижаем roll за перелов на одной локации)
         population_penalty = db.get_population_penalty(user_id)
+        consecutive_casts = db.get_consecutive_casts(user_id)
+        
         penalty_points = int((population_penalty / 100) * ROLL_MAX)  # Конвертируем % в points
         adjusted_roll = adjusted_roll - penalty_points
         adjusted_roll = max(0, min(ROLL_MAX - 1, adjusted_roll))  # Ограничиваем до 14999 для обычных расчетов
@@ -436,7 +438,9 @@ class FishingGame:
                 "message": random.choice(no_bite_messages),
                 "location": location,
                 "no_bite": True,
-                "is_on_boat": is_on_boat
+                "is_on_boat": is_on_boat,
+                "population_penalty": population_penalty,
+                "consecutive_casts": consecutive_casts
             }
         if force_trash_only or (not force_legendary and adjusted_roll <= TRASH_MAX):  # 3750-7499
             logger.info("   📊 Result: TRASH (adjusted roll in range 3750-7499)")
@@ -573,7 +577,9 @@ class FishingGame:
                     "reward_multiplier": reward_multiplier,
                     "temp_rod_broken": temp_rod_result.get("broken", False),
                     "treasure_caught": treasure_caught,
-                    "treasure_name": treasure_name
+                    "treasure_name": treasure_name,
+                    "population_penalty": population_penalty,
+                    "consecutive_casts": consecutive_casts
                 }
 
             db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
@@ -841,7 +847,9 @@ class FishingGame:
             "max_durability": max_dur,
             "is_on_boat": is_on_boat,
             "temp_rod_broken": temp_rod_result.get("broken", False),
-            "target_rarity": target_rarity
+            "target_rarity": target_rarity,
+            "population_penalty": population_penalty,
+            "consecutive_casts": consecutive_casts
         }
     
     def _guaranteed_catch(
@@ -1213,7 +1221,9 @@ class FishingGame:
             "current_durability": current_dur,
             "max_durability": max_dur,
             "temp_rod_broken": temp_rod_result.get("broken", False),
-            "target_rarity": target_rarity
+            "target_rarity": target_rarity,
+            "population_penalty": population_penalty,
+            "consecutive_casts": consecutive_casts
         }
 
     def finalize_fight_catch(

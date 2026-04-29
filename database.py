@@ -1208,6 +1208,9 @@ class Database:
                     WHERE id = ?
                 ''', (cd_until.isoformat(), boat_id))
                 _mark_boat_return_time(boat_owner_id)
+                # Удаляем морскую болезнь у всех участников при крушении
+                for uid in members:
+                    cursor.execute("DELETE FROM user_effects WHERE user_id = ? AND effect_type = 'seasick'", (uid,))
                 conn.commit()
                 logger.info(f"[boat] Крушение лодки {boat_id}, весь улов утерян.")
                 return [], boat_id, 'sunk'
@@ -1238,6 +1241,9 @@ class Database:
                     WHERE id = ?
                 ''', (cd_until.isoformat(), boat_id))
                 _mark_boat_return_time(boat_owner_id)
+                # Удаляем морскую болезнь у всех участников при пустом улове
+                for uid in members:
+                    cursor.execute("DELETE FROM user_effects WHERE user_id = ? AND effect_type = 'seasick'", (uid,))
                 conn.commit()
                 logger.info(f"[boat] Нет улова в лодке {boat_id} при возврате.")
                 return [], boat_id, 'empty'
@@ -1341,6 +1347,9 @@ class Database:
                 WHERE id = ?
             ''', (cd_until.isoformat(), boat_id))
             _mark_boat_return_time(boat_owner_id)
+            # Удаляем морскую болезнь у всех участников при успешном возврате
+            for uid in members:
+                cursor.execute("DELETE FROM user_effects WHERE user_id = ? AND effect_type = 'seasick'", (uid,))
             conn.commit()
             logger.info(
                 "[boat] Возврат лодки %s завершён. assigned=%s inserted_to_caught_fish=%s skipped=%s results=%s",
@@ -1424,7 +1433,7 @@ class Database:
                 boat_id, capacity = row
                 
                 # Посчитать текущих участников
-                cursor.execute('SELECT COUNT(*) FROM boat_members WHERE boat_id = ?', (boat_id,))
+                cursor.execute('SELECT COUNT(DISTINCT user_id) FROM boat_members WHERE boat_id = ?', (boat_id,))
                 current_members = cursor.fetchone()[0]
                 if current_members >= capacity:
                     # Принудительно отклоняем, так как лодка полна
@@ -4097,6 +4106,12 @@ class Database:
                     FOREIGN KEY(boat_id) REFERENCES boats(id)
                 )
             ''')
+            # Создаем уникальный индекс для предотвращения дублей участников
+            try:
+                cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_boat_members_boat_user ON boat_members (boat_id, user_id)')
+            except Exception:
+                # Если индекс не удается создать из-за существующих дублей, попробуем почистить
+                pass
             conn.commit()
 
     def _ensure_boat_catch_table(self):
@@ -8355,11 +8370,11 @@ class Database:
             conn.commit()
 
     def get_boat_members_count(self, boat_id: int) -> int:
-        """Количество участников лодки."""
+        """Количество участников лодки (уникальных)."""
         self._ensure_boat_tables()
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) FROM boat_members WHERE boat_id = ?', (int(boat_id),))
+            cursor.execute('SELECT COUNT(DISTINCT user_id) FROM boat_members WHERE boat_id = ?', (int(boat_id),))
             row = cursor.fetchone()
             return int(row[0] or 0) if row else 0
 

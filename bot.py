@@ -62,7 +62,7 @@ SLOW_OPERATION_SECONDS = float(os.getenv("SLOW_OPERATION_SECONDS", "2.0"))
 def get_send_semaphore() -> asyncio.Semaphore:
     global _SEND_SEMAPHORE
     if _SEND_SEMAPHORE is None:
-        _SEND_SEMAPHORE = asyncio.Semaphore(int(os.getenv("TG_SEND_SEMAPHORE_LIMIT", "50")))
+        _SEND_SEMAPHORE = asyncio.Semaphore(int(os.getenv("TG_SEND_SEMAPHORE_LIMIT", "100")))
     return _SEND_SEMAPHORE
 
 
@@ -568,7 +568,10 @@ class EmojiBot(ExtBot):
         last_exc = None
         for attempt in range(self.API_CALL_RETRIES + 1):
             try:
-                return await asyncio.wait_for(coro_factory(), timeout=self.API_CALL_TIMEOUT)
+                # Ограничиваем количество одновременных сетевых запросов
+                async with get_send_semaphore():
+                    coro = coro_factory()
+                    return await asyncio.wait_for(coro, timeout=self.API_CALL_TIMEOUT)
             except RetryAfter as exc:
                 last_exc = exc
                 wait = float(getattr(exc, 'retry_after', 1) or 1)
@@ -796,12 +799,38 @@ class FishBot:
     async def cure_seasick_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /cure_seasick — вылечить морскую болезнь за звёзды."""
         user_id = update.effective_user.id
-        price = 10  # Цена лечения (пример)
-        ok = await _run_sync(db.cure_seasick, user_id, price)
-        if ok:
-            await update.message.reply_text(f"🚑 Морская болезнь вылечена за {price} ⭐!")
-        else:
-            await update.message.reply_text("❌ Не удалось вылечить морскую болезнь. Возможно, нет болезни или не хватает звёзд.")
+        chat_id = update.effective_chat.id
+        
+        if not await _run_sync(db.is_user_seasick, user_id):
+            await update.message.reply_text("❌ У вас нет морской болезни.")
+            return
+
+        price = 15  # Цена лечения 15 звезд
+        
+        try:
+            from bot import TelegramBotAPI as _TelegramBotAPI
+            tg_api = _TelegramBotAPI(BOT_TOKEN)
+            invoice_url = await tg_api.create_invoice_link(
+                title="Лечение морской болезни",
+                description=f"Мгновенное излечение от морской болезни ({price} {STAR_NAME})",
+                payload=f"cure_seasick_{user_id}",
+                currency="XTR",
+                prices=[{"label": "Лечение", "amount": price}]
+            )
+            
+            if invoice_url:
+                await self.send_invoice_url_button(
+                    chat_id=chat_id,
+                    invoice_url=invoice_url,
+                    text=f"🚑 Вас сильно укачало? Оплатите {price} {STAR_NAME}, чтобы мгновенно прийти в себя и продолжить рыбалку!",
+                    user_id=user_id,
+                    reply_to_message_id=update.effective_message.message_id if update.effective_message else None
+                )
+            else:
+                await update.message.reply_text("❌ Не удалось создать ссылку на оплату. Попробуйте позже.")
+        except Exception as e:
+            logger.error(f"[INVOICE] Failed to create cure_seasick invoice: {e}")
+            await update.message.reply_text("❌ Ошибка при создании инвойса.")
 
     async def buy_paid_boat_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /buy_boat — купить платную лодку за звёзды."""
@@ -1251,9 +1280,23 @@ class FishBot:
             lines.append(
                 f"{chat_title}\nВсего звёзд: {stars_total}\nЗвёзд старше 21 дня: {matured_stars_total}\nРефаунды: {refunds_total}\nВаш процент: {percent_sum}\nДоступно к выводу: {available_stars}\nУже выведено: {withdrawn_stars}"
             )
-        keyboard = [[InlineKeyboardButton("💸 Вывод", callback_data=f"withdraw_stars_{user_id}")]]
+        keyboard = [
+            [InlineKeyboardButton("💸 Вывод", callback_data=f"withdraw_stars_{user_id}")],
+            [InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_ref_{user_id}")]
+        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("\n\n".join(lines), reply_markup=reply_markup)
+
+    async def handle_cancel_ref_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка нажатия на кнопку Отмена в /ref"""
+        query = update.callback_query
+        user_id = update.effective_user.id
+        if not query.data.endswith(f"_{user_id}"):
+            await query.answer("Эта кнопка не для вас", show_alert=True)
+            return
+        await query.answer("Отменено")
+        await query.edit_message_text("❌ Просмотр дохода отменен.")
+        context.user_data.pop('waiting_withdraw_stars', None)
 
     async def handle_withdraw_stars_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка нажатия на кнопку вывода звёзд"""
@@ -1264,7 +1307,8 @@ class FishBot:
             return
         await query.answer()
         context.user_data['waiting_withdraw_stars'] = True
-        await query.message.reply_text("Введите количество звёзд для вывода:")
+        keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_ref_{user_id}")]]
+        await query.message.reply_text("Введите количество звёзд для вывода:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def handle_withdraw_stars_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка ввода количества звёзд для вывода"""
@@ -1276,6 +1320,8 @@ class FishBot:
         except Exception:
             await update.message.reply_text("Ошибка: введите число.")
             return
+
+        context.user_data.pop('waiting_withdraw_stars', None)
 
         allowed_chats = await _run_sync(db.get_ref_access_chats, user_id)
         available_stars = sum(await _run_sync(db.get_available_stars_for_withdraw, user_id, chat_id) for chat_id in allowed_chats)
@@ -4451,11 +4497,21 @@ class FishBot:
             return
 
         if await _run_sync(db.is_user_seasick, user_id):
-            await update.message.reply_text(
-                "🤢 Вас укачало в плавании. Ловить сейчас нельзя.\n"
-                "Используйте /cure_seasick или кнопку лечения в меню лодки."
-            )
-            return
+            # Проверяем, на лодке ли человек. Если нет - морская болезнь должна пройти.
+            boat = await _run_sync(db.get_user_boat, user_id)
+            if not boat or not boat.get('is_active'):
+                await _run_sync(db.clear_timed_effect, user_id, 'seasick')
+            else:
+                remaining_seconds = await _run_sync(db.get_effect_remaining_seconds, user_id, 'seasick')
+                minutes = remaining_seconds // 60
+                seconds = remaining_seconds % 60
+                time_str = f"{minutes} мин {seconds} сек" if minutes > 0 else f"{seconds} сек"
+                await update.message.reply_text(
+                    f"🤢 Вас укачало в плавании. Ловить сейчас нельзя.\n"
+                    f"Осталось: {time_str}\n\n"
+                    "Используйте /cure_seasick или кнопку лечения в меню лодки."
+                )
+                return
 
         antibot_active_block = await _run_sync(self._get_antibot_active_block, user_id, update)
         if antibot_active_block:
@@ -4693,23 +4749,20 @@ class FishBot:
 {tickets_line}
                     """
 
-                    sticker_message = await self._send_catch_image(
+                    # Отправляем параллельно
+                    sticker_task = asyncio.create_task(self._send_catch_image(
                         chat_id=update.effective_chat.id,
                         item_name=treasure_name,
                         item_type="treasure",
                         reply_to_message_id=update.message.message_id
-                    )
+                    ))
                     
-                    if sticker_message:
-                        await update.message.reply_text(
-                            treasure_message_text,
-                            reply_to_message_id=sticker_message.message_id
-                        )
-                    else:
-                        await update.message.reply_text(
-                            treasure_message_text,
-                            reply_to_message_id=update.message.message_id
-                        )
+                    message_task = asyncio.create_task(update.message.reply_text(
+                        treasure_message_text,
+                        reply_to_message_id=update.message.message_id
+                    ))
+                    
+                    await asyncio.gather(sticker_task, message_task)
 
                     if result.get('temp_rod_broken'):
                         await update.message.reply_text(
@@ -4762,19 +4815,23 @@ class FishBot:
 {xp_line}{progress_line}{eco_line}{bonus_line}{storage_line}{tickets_line}
                 """
 
-                sticker_message = await self._send_catch_image(
+                # Отправляем параллельно
+                sticker_task = asyncio.create_task(self._send_catch_image(
                     chat_id=update.effective_chat.id,
                     item_name=trash.get('name', ''),
                     item_type="trash",
                     reply_to_message_id=update.message.message_id
-                )
+                ))
+                
+                message_task = asyncio.create_task(update.message.reply_text(
+                    message,
+                    reply_to_message_id=update.message.message_id
+                ))
+                
+                sticker_message, text_message = await asyncio.gather(sticker_task, message_task)
+                
                 if sticker_message:
                     context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
-
-                if sticker_message:
-                    await update.message.reply_text(message, reply_to_message_id=sticker_message.message_id)
-                else:
-                    await update.message.reply_text(message, reply_to_message_id=update.message.message_id)
 
                 # Если на лодке — доп проверки
                 if result.get('is_on_boat'):
@@ -4895,25 +4952,30 @@ class FishBot:
                         message += f"\n\n⚠️ <b>ВНИМАНИЕ!</b> Лодка почти полна. Осталось места: {left:.1f} кг"
 
             # Добавляем примечание о популяции (дебафф при частых забросах на одной локации)
-            try:
-                population_penalty = await _run_sync(db.get_population_penalty, user_id)
-                consecutive_casts_count = await _run_sync(db.get_consecutive_casts, user_id)
-                if consecutive_casts_count >= 30 and population_penalty > 0:
-                    penalty_info = (
-                        f"\n⚠️ Популяция рыб снижена на {int(population_penalty)}%\n"
-                        f"Забросов подряд: {consecutive_casts_count}/∞"
-                    )
-                    message += penalty_info
-            except Exception:
-                logger.exception("Failed to append population penalty info for user=%s", user_id)
+            population_penalty = result.get('population_penalty', 0)
+            consecutive_casts_count = result.get('consecutive_casts', 0)
+            if consecutive_casts_count >= 30 and population_penalty > 0:
+                penalty_info = (
+                    f"\n⚠️ Популяция рыб снижена на {int(population_penalty)}%\n"
+                    f"Забросов подряд: {consecutive_casts_count}/∞"
+                )
+                message += penalty_info
             
-            # Отправляем изображение рыбы
-            sticker_message = await self._send_catch_image(
+            # Отправляем изображение рыбы и текст ПАРАЛЛЕЛЬНО для ускорения реакции
+            sticker_task = asyncio.create_task(self._send_catch_image(
                 chat_id=update.effective_chat.id,
                 item_name=fish['name'],
                 item_type="fish",
                 reply_to_message_id=update.message.message_id
-            )
+            ))
+            
+            message_task = asyncio.create_task(update.message.reply_text(
+                message,
+                reply_to_message_id=update.message.message_id
+            ))
+            
+            sticker_message, text_message = await asyncio.gather(sticker_task, message_task)
+            
             if sticker_message:
                 context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
                 context.bot_data.setdefault("sticker_fish_map", {})[sticker_message.message_id] = {
@@ -4923,11 +4985,6 @@ class FishBot:
                     "location": result['location'],
                     "rarity": fish['rarity']
                 }
-            
-            await update.message.reply_text(
-                message,
-                reply_to_message_id=sticker_message.message_id if sticker_message else update.message.message_id
-            )
 
             try:
                 await self._maybe_process_duel_catch(
@@ -5211,9 +5268,6 @@ class FishBot:
             keyboard.insert(0, [
                 InlineKeyboardButton(f"▶️ Выплыть ({members_count}/{capacity})", callback_data=f"boat_start_{user_id}")
             ])
-        # Если есть морская болезнь — кнопка лечения
-        if await _run_sync(db.is_user_seasick, user_id):
-            keyboard.insert(1, [InlineKeyboardButton("🚑 Вылечить морскую болезнь (10⭐)", callback_data=f"cure_seasick_{user_id}")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         if update.message:
@@ -5242,18 +5296,39 @@ class FishBot:
         """Обработка лечения морской болезни по кнопке в меню."""
         query = update.callback_query
         user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
         if not query or not str(query.data or "").endswith(f"_{user_id}"):
             if query:
                 await query.answer("Эта кнопка не для вас", show_alert=True)
             return
 
-        price = 10  # Цена лечения (пример)
-        ok = await _run_sync(db.cure_seasick, user_id, price)
-        if ok:
-            await update.callback_query.answer(f"🚑 Морская болезнь вылечена за {price} ⭐!", show_alert=True)
-            await self.show_fishing_menu(update, context)
-        else:
-            await update.callback_query.answer("❌ Не удалось вылечить морскую болезнь. Возможно, нет болезни или не хватает звёзд.", show_alert=True)
+        price = 15  # Цена лечения 15 звезд
+        
+        try:
+            from bot import TelegramBotAPI as _TelegramBotAPI
+            tg_api = _TelegramBotAPI(BOT_TOKEN)
+            invoice_url = await tg_api.create_invoice_link(
+                title="Лечение морской болезни",
+                description=f"Мгновенное излечение от морской болезни ({price} {STAR_NAME})",
+                payload=f"cure_seasick_{user_id}",
+                currency="XTR",
+                prices=[{"label": "Лечение", "amount": price}]
+            )
+            
+            if invoice_url:
+                await query.answer()
+                await self.send_invoice_url_button(
+                    chat_id=chat_id,
+                    invoice_url=invoice_url,
+                    text=f"🚑 Вас сильно укачало? Оплатите {price} {STAR_NAME}, чтобы мгновенно прийти в себя и продолжить рыбалку!",
+                    user_id=user_id,
+                    reply_to_message_id=query.message.message_id
+                )
+            else:
+                await query.answer("❌ Не удалось создать ссылку на оплату.", show_alert=True)
+        except Exception as e:
+            logger.error(f"[INVOICE] Failed to create cure_seasick invoice from menu: {e}")
+            await query.answer("❌ Ошибка при создании инвойса.", show_alert=True)
 
     async def _build_menu_reply(self, update, menu_text, reply_markup):
         if update.message:
@@ -7371,6 +7446,10 @@ class FishBot:
         if qty < 1 or qty > max_qty:
             await update.message.reply_text(f"❌ Количество должно быть от 1 до {max_qty}!")
             return
+            
+        # --- PREVENT ABUSE / SPAM RACE CONDITION ---
+        # Удаляем состояние ввода ДО любых асинхронных запросов к БД!
+        context.user_data.pop('waiting_bait_quantity', None)
         
         chat_id = update.effective_chat.id
         player = await _run_sync(db.get_player, user_id, chat_id)
@@ -10672,6 +10751,10 @@ class FishBot:
         clothing_bonus_percent = self._get_clothing_bonus_percent(user_id)
         beer_bonus_percent = self._get_active_beer_bonus_percent(user_id)
 
+        # Предзагрузка данных для оптимизации Dynamite (чтобы не ходить в БД 12 раз)
+        available_fish_all = await _run_sync(db.get_fish_by_location, location, season, min_level=player_level)
+        available_trash_all = await _run_sync(db.get_trash_by_location, location)
+        
         # Любой динамитный заброс учитываем в системе восстановления штрафа популяции.
         try:
             await _run_sync(db.update_population_state, user_id, location)
@@ -10774,7 +10857,7 @@ class FishBot:
                 continue
 
             if adjusted_roll <= trash_max:
-                trash = await _run_sync(db.get_random_trash, location)
+                trash = random.choice(available_trash_all) if available_trash_all else None
                 if trash:
                     trash_name = trash.get('name', 'Мусор')
                     trash_price = int(trash.get('price', 0) or 0)
@@ -10838,7 +10921,10 @@ class FishBot:
                 # Для динамита NFT отключен: верхний ролл тоже считается мификом.
                 target_rarity = "Мифическая"
 
-            fish = self._pick_dynamite_fish(location, season, player_level, target_rarity)
+            # Оптимизированный выбор рыбы из предзагруженного списка
+            same_rarity = [f for f in available_fish_all if f.get('rarity') == target_rarity]
+            fish = random.choice(same_rarity if same_rarity else available_fish_all) if available_fish_all else None
+            
             if not fish:
                 fail_count += 1
                 total_tickets_base += int(self.TICKET_POINTS['no_bite'])
@@ -10852,11 +10938,10 @@ class FishBot:
             rarity_idx = rarity_order.index(target_rarity) if target_rarity in rarity_order else 0
             found = False
             search_rarity = target_rarity
-            search_attempts = 0
             fish_candidate = fish
+            
             while not found and rarity_idx >= 0:
-                available_fish = await _run_sync(db.get_fish_by_location, location, season, min_level=player_level)
-                pool = [f for f in available_fish if f.get('rarity') == search_rarity and float(f.get('max_weight', 0)) <= max_fish_weight and float(f.get('min_weight', 0)) <= max_fish_weight]
+                pool = [f for f in available_fish_all if f.get('rarity') == search_rarity and float(f.get('max_weight', 0)) <= max_fish_weight and float(f.get('min_weight', 0)) <= max_fish_weight]
                 if pool:
                     fish_candidate = random.choice(pool)
                     weight = round(random.uniform(float(fish_candidate['min_weight']), min(float(fish_candidate['max_weight']), max_fish_weight)), 2)
@@ -11018,10 +11103,7 @@ class FishBot:
             ]
             message += "\n\n💎 Итог по драгоценностям:\n" + "\n".join(treasure_lines)
         # Добавляем информацию о дебаффах (популяция и динамит), если есть
-        try:
-            population_penalty = await _run_sync(db.get_population_penalty, user_id)
-        except Exception:
-            population_penalty = 0.0
+        # population_penalty уже получен в начале функции
         try:
             dynamite_penalty = await _run_sync(db.get_dynamite_penalty, user_id)
         except Exception:
@@ -11036,16 +11118,18 @@ class FishBot:
         if penalty_lines:
             message += "\n\n" + "\n".join(penalty_lines)
 
-        await self._safe_send_sticker(
-            chat_id=chat_id,
-            sticker=dynamite_sticker_file_id,
-            reply_to_message_id=reply_to_message_id,
-        )
-
-        await self._safe_send_message(
-            chat_id=chat_id,
-            text=message,
-            reply_to_message_id=reply_to_message_id,
+        # Отправляем стикер и сообщение ПАРАЛЛЕЛЬНО для ускорения реакции
+        await asyncio.gather(
+            self._safe_send_sticker(
+                chat_id=chat_id,
+                sticker=dynamite_sticker_file_id,
+                reply_to_message_id=reply_to_message_id,
+            ),
+            self._safe_send_message(
+                chat_id=chat_id,
+                text=message,
+                reply_to_message_id=reply_to_message_id,
+            )
         )
 
     async def dynamite_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -11222,6 +11306,10 @@ class FishBot:
                 await update.message.reply_text("Номера вне диапазона списка.")
                 return
 
+            # --- PREVENT ABUSE / SPAM RACE CONDITION ---
+            context.user_data.pop('waiting_sell_selection', None)
+            context.user_data.pop('waiting_sell_quantity', None)
+
             selected = [items[idx - 1] for idx in indices]
             fish_ids = [f['id'] for f in selected]
             total_value = sum(f['price'] for f in selected)
@@ -11233,9 +11321,6 @@ class FishBot:
             level_info = await _run_sync(db.add_player_xp, user_id, chat_id, xp_earned)
             progress_line = format_level_progress(level_info)
             total_xp_now = level_info.get('xp_total', 0)
-
-            context.user_data.pop('waiting_sell_selection', None)
-            context.user_data.pop('waiting_sell_quantity', None)
 
             keyboard = [
                 [InlineKeyboardButton("🐟 Назад в лавку", callback_data=f"sell_fish_{user_id}")],
@@ -11285,6 +11370,11 @@ class FishBot:
                     f"Введите число от 1 до {max_qty} или слово 'все'."
                 )
                 return
+
+            # --- PREVENT ABUSE / SPAM RACE CONDITION ---
+            # Как только мы получили валидное число, стираем состояние ожидающего запроса!
+            # Это гарантирует, что 20 одинаковых сообщений от спамера не проскочат дальше и не продадут рыбу 20 раз
+            context.user_data.pop('waiting_sell_quantity', None)
 
             fish_name = data.get('fish_name')
             caught_fish = await _run_sync(db.get_caught_fish, user_id, chat_id, True)
@@ -12446,6 +12536,24 @@ class FishBot:
                 reply_to_message_id=fine_reply_id,
             )
             return
+        elif payload and payload.startswith("cure_seasick_"):
+            # Снятие морской болезни
+            cure_reply_id = None
+            if user_id in self.active_invoices:
+                cure_reply_id = (
+                    self.active_invoices[user_id].get('group_message_id')
+                    or self.active_invoices[user_id].get('message_id')
+                    or self.active_invoices[user_id].get('msg_id')
+                )
+                del self.active_invoices[user_id]
+            
+            await _run_sync(db.clear_timed_effect, user_id, 'seasick')
+            await self._safe_send_message(
+                chat_id=accounting_chat_id,
+                text="✅ Вы успешно вылечились от морской болезни! Теперь вы снова полны сил для рыбалки. 🚑",
+                reply_to_message_id=cure_reply_id,
+            )
+            return
         elif payload and payload.startswith("repair_rod_"):
             # Обработка восстановления удочки
             rod_name = payload.replace("repair_rod_", "")
@@ -13462,9 +13570,14 @@ def main():
     original_process_update = application.process_update
     async def process_update_with_lock(update: Update, *args, **kwargs):
         user = getattr(update, 'effective_user', None)
-        if user and hasattr(user, 'id'):
+        # Блокируем ТОЛЬКО нажатия на инлайн-кнопки (callback_query). 
+        # Это спасет от двойных продаж рыбы (двойных кликов по кнопке) и багов с гонкой, гарантируя последовательную обработку кнопок.
+        # А обычные текстовые сообщения (например спам ловлей рыбы) пойдут параллельно и моментально без блокировок, никаких сообщений-ошибок.
+        if user and hasattr(user, 'id') and update.callback_query:
             async with _action_locks[user.id]:
                 return await original_process_update(update, *args, **kwargs)
+                
+        # Текстовые сообщения и все прочее пропускаем как есть
         return await original_process_update(update, *args, **kwargs)
     application.process_update = process_update_with_lock
     # --- PATCH END ---
@@ -14187,6 +14300,7 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_invoice_cancelled_callback, pattern="^invoice_cancelled$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_pay_telegram_star_callback, pattern="^pay_telegram_star_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_invoice_sent_callback, pattern="^invoice_sent$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_cancel_ref_callback, pattern="^cancel_ref_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_withdraw_stars_callback, pattern="^withdraw_stars_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_approve_withdraw_callback, pattern="^approve_withdraw_"))
     
