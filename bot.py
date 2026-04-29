@@ -6618,8 +6618,7 @@ class FishBot:
             await query.answer("Эта кнопка не для вас", show_alert=True)
             return
 
-        if 'waiting_bait_quantity' in context.user_data:
-            del context.user_data['waiting_bait_quantity']
+        context.user_data.pop('waiting_bait_quantity', None)
         
         await query.answer()
         
@@ -6665,8 +6664,7 @@ class FishBot:
             await query.answer("Эта кнопка не для вас", show_alert=True)
             return
 
-        if 'waiting_bait_quantity' in context.user_data:
-            del context.user_data['waiting_bait_quantity']
+        context.user_data.pop('waiting_bait_quantity', None)
         
         # Получаем название локации по индексу
         locations = await _run_sync(db.get_locations)
@@ -7419,7 +7417,10 @@ class FishBot:
             return
         
         # Получаем данные из context
-        bait_data = context.user_data['waiting_bait_quantity']
+        bait_data = context.user_data.get('waiting_bait_quantity')
+        if not bait_data:
+            return
+        
         bait_name = bait_data['bait_name']
         price = bait_data['price']
         max_qty = bait_data['max_qty']
@@ -7468,8 +7469,8 @@ class FishBot:
         
         new_balance = player['coins'] - total_cost
         
-        # Очищаем состояние
-        del context.user_data['waiting_bait_quantity']
+        # Очищаем состояние (уже удалено через pop выше, del не нужен)
+        # del context.user_data['waiting_bait_quantity']
         
         await update.message.reply_text(
             f"✅ Куплено: {bait_name} x{qty}\n"
@@ -11239,7 +11240,9 @@ class FishBot:
                 return
 
         if 'waiting_bait_selection' in context.user_data:
-            data = context.user_data['waiting_bait_selection']
+            data = context.user_data.get('waiting_bait_selection')
+            if not data:
+                return
             user_id = update.effective_user.id
             chat_id = update.effective_chat.id
             if data.get('user_id') != user_id:
@@ -11281,7 +11284,9 @@ class FishBot:
             return
 
         if 'waiting_sell_selection' in context.user_data:
-            data = context.user_data['waiting_sell_selection']
+            data = context.user_data.get('waiting_sell_selection')
+            if not data:
+                return
             user_id = update.effective_user.id
             chat_id = update.effective_chat.id
             if data.get('user_id') != user_id:
@@ -11343,7 +11348,9 @@ class FishBot:
             return
 
         if 'waiting_sell_quantity' in context.user_data:
-            data = context.user_data['waiting_sell_quantity']
+            data = context.user_data.get('waiting_sell_quantity')
+            if not data:
+                return
             user_id = update.effective_user.id
             chat_id = update.effective_chat.id
             if data.get('user_id') != user_id:
@@ -12955,7 +12962,11 @@ class FishBot:
         try:
             # Гарантированный фиш-заброс тоже должен засчитываться для снятия штрафа популяции.
             try:
-                await _run_sync(db.update_population_state, user_id, location)
+                location_changed, consecutive_casts, show_warning = await _run_sync(
+                    db.update_population_state,
+                    user_id,
+                    location
+                )
             except Exception:
                 logger.exception("Failed to update population state from guaranteed catch for user=%s location=%s", user_id, location)
 
@@ -13089,17 +13100,23 @@ class FishBot:
             length
         )
 
+        # Добавляем примечание о популяции (дебафф при частых забросах на одной локации)
+        population_penalty = result.get('population_penalty', 0)
+        consecutive_casts_count = result.get('consecutive_casts', 0)
+        
         # Отправляем сообщение с характеристиками рыбы
         fish_name_display = format_fish_name(fish['name'])
-        message = f"""
-🐟 {fish_name_display}
+        message = f"🐟 {fish_name_display}\n\n" + \
+                  f"📏 Размер: {length}см | Вес: {weight} кг\n" + \
+                  f"💰 Стоимость: {fish['price']} 🪙\n" + \
+                  f"📍 Место: {result['location']}\n" + \
+                  f"⭐ Редкость: {fish['rarity']}\n" + \
+                  f"{tickets_line}"
+        
+        # Если было сформировано примечание о популяции, добавляем его
+        if consecutive_casts_count >= 30 and population_penalty > 0:
+             message += f"\n\n⚠️ Популяция рыб снижена на {int(population_penalty)}%\nЗабросов подряд: {consecutive_casts_count}/∞"
 
-📏 Размер: {length}см | Вес: {weight} кг
-💰 Стоимость: {fish['price']} 🪙
-📍 Место: {result['location']}
-⭐ Редкость: {fish['rarity']}
-{tickets_line}
-        """
 
         # Получаем информацию о сообщении с кнопкой (уже получена выше перед удалением из active_invoices)
         logger.info(f"Using group_message_id for user {user_id}: {group_message_id}")
