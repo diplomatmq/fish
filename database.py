@@ -4106,13 +4106,37 @@ class Database:
                     FOREIGN KEY(boat_id) REFERENCES boats(id)
                 )
             ''')
-            # Создаем уникальный индекс для предотвращения дублей участников
+            # Для Postgres обеспечиваем автоинкремент id
             try:
-                cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_boat_members_boat_user ON boat_members (boat_id, user_id)')
+                ensure_serial_pk(conn, 'boats', 'id')
+                ensure_serial_pk(conn, 'boat_members', 'id')
             except Exception:
-                # Если индекс не удается создать из-за существующих дублей, попробуем почистить
                 pass
             conn.commit()
+
+        # Очистка дублей и создание индекса в отдельных транзакциях, чтобы ошибки не блокировали всё
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    DELETE FROM boat_members 
+                    WHERE id NOT IN (
+                        SELECT MIN(id) 
+                        FROM boat_members 
+                        GROUP BY boat_id, user_id
+                    )
+                ''')
+                conn.commit()
+        except Exception:
+            pass
+
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_boat_members_boat_user ON boat_members (boat_id, user_id)')
+                conn.commit()
+        except Exception:
+            pass
 
     def _ensure_boat_catch_table(self):
         """Создать таблицу общего улова лодки, если её еще нет."""
@@ -4132,6 +4156,11 @@ class Database:
                     FOREIGN KEY(boat_id) REFERENCES boats(id)
                 )
             ''')
+            # Для Postgres обеспечиваем автоинкремент id
+            try:
+                ensure_serial_pk(conn, 'boat_catch', 'id')
+            except Exception:
+                pass
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_boat_catch_boat
                 ON boat_catch (boat_id, id DESC)
