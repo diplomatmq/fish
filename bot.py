@@ -12966,6 +12966,11 @@ class FishBot:
             )
             return
 
+        # Инициализируем переменные состояния популяции значениями по умолчанию
+        location_changed = False
+        consecutive_casts = 0
+        show_warning = False
+
         try:
             # Гарантированный фиш-заброс тоже должен засчитываться для снятия штрафа популяции.
             try:
