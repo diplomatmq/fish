@@ -11511,12 +11511,19 @@ class FishBot:
         
         location = player['current_location']
         weather = await _run_sync(db.get_or_update_weather, location)
+        eco = await _run_sync(db.get_active_ecological_disaster, location)
         
         season = get_current_season()
         weather_info = weather_system.get_weather_info(weather['condition'], weather['temperature'], season)
         weather_desc = weather_system.get_weather_description(weather['condition'])
         bonus = weather_system.get_weather_bonus(weather['condition'])
         
+        eco_line = ""
+        if eco:
+            reward_type = "опыт" if eco.get('reward_type') == 'xp' else "монеты"
+            multiplier = eco.get('reward_multiplier', 1)
+            eco_line = f"\n\n🌪️ <b>Эко-катастрофа в этой локации!</b>\nКлюёт только мусор, но награда за него увеличена: <b>x{multiplier} на {reward_type}</b>!"
+
         message = f"""🌍 Погода в локации {location}
 
 {weather_info}
@@ -11524,7 +11531,7 @@ class FishBot:
 
 {weather_desc}
 
-💡 Влияние на клёв: {bonus:+d}%
+💡 Влияние на клёв: {bonus:+d}%{eco_line}
 
 Погода обновляется несколько раз в день."""
         
