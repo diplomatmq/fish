@@ -880,6 +880,8 @@ class FishingGame:
         penalty_points = int((population_penalty / 100) * ROLL_MAX)  # Конвертируем % в points
         adjusted_roll = adjusted_roll - penalty_points
         adjusted_roll = max(0, adjusted_roll)  # Не может быть меньше 0
+        # Текущее количество подряд выполненных забросов на этой локации
+        consecutive_casts = db.get_consecutive_casts(user_id)
         
         logger.info(
             f"   🎲 Guaranteed roll: {roll}/{ROLL_MAX} "
