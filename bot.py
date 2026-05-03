@@ -62,7 +62,7 @@ SLOW_OPERATION_SECONDS = float(os.getenv("SLOW_OPERATION_SECONDS", "2.0"))
 def get_send_semaphore() -> asyncio.Semaphore:
     global _SEND_SEMAPHORE
     if _SEND_SEMAPHORE is None:
-        _SEND_SEMAPHORE = asyncio.Semaphore(int(os.getenv("TG_SEND_SEMAPHORE_LIMIT", "100")))
+        _SEND_SEMAPHORE = asyncio.Semaphore(int(os.getenv("TG_SEND_SEMAPHORE_LIMIT", "256")))
     return _SEND_SEMAPHORE
 
 
@@ -71,8 +71,8 @@ async def get_http_session() -> aiohttp.ClientSession:
     if HTTP_SESSION is None or HTTP_SESSION.closed:
         timeout = aiohttp.ClientTimeout(total=90, connect=30, sock_read=60, sock_connect=30)
         connector = aiohttp.TCPConnector(
-            limit=int(os.getenv("AIOHTTP_LIMIT", "256")),
-            limit_per_host=int(os.getenv("AIOHTTP_LIMIT_PER_HOST", "128")),
+            limit=int(os.getenv("AIOHTTP_LIMIT", "512")),
+            limit_per_host=int(os.getenv("AIOHTTP_LIMIT_PER_HOST", "256")),
             ttl_dns_cache=300,
             enable_cleanup_closed=True,
         )
@@ -530,7 +530,7 @@ def format_percent_value(value: float) -> str:
 
 # Thread pool for blocking DB / game logic so the asyncio event loop stays responsive
 from concurrent.futures import ThreadPoolExecutor
-_DB_WORKERS = max(4, int(os.getenv('TG_DB_WORKERS', '100')))
+_DB_WORKERS = max(4, int(os.getenv('TG_DB_WORKERS', '300')))
 _db_executor = ThreadPoolExecutor(max_workers=_DB_WORKERS, thread_name_prefix="db_worker")
 
 _action_locks = collections.defaultdict(asyncio.Lock)
@@ -3921,7 +3921,16 @@ class FishBot:
                 logger.warning("RetryAfter on send_message, waiting %s sec (attempt %s)", wait, attempt + 1)
                 await asyncio.sleep(float(wait) + 1)
             except Exception as e:
-                logger.warning("_safe_send_message: unexpected error (chat_id=%s, attempt %s): %s", kwargs.get('chat_id'), attempt + 1, e)
+                # Log full error details to help debug network/timeout issues
+                import traceback
+                error_details = f"{type(e).__name__}: {str(e)}"
+                logger.warning("_safe_send_message: unexpected error (chat_id=%s, attempt %s): %s", 
+                               kwargs.get('chat_id'), attempt + 1, error_details)
+                
+                # If it's a timeout or network error, wait a bit before retrying
+                if any(x in error_details.lower() for x in ("timeout", "network", "connection", "reached")):
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                
                 if attempt >= 2:
                     return None
         logger.error("_safe_send_message: failed after retries args=%s", kwargs)
@@ -3996,7 +4005,11 @@ class FishBot:
                 logger.warning("RetryAfter on send_document, waiting %s sec (attempt %s)", wait, attempt + 1)
                 await asyncio.sleep(float(wait) + 1)
             except Exception as e:
-                logger.warning("_safe_send_document: unexpected error (attempt %s): %s", attempt + 1, e)
+                error_details = f"{type(e).__name__}: {str(e)}"
+                logger.warning("_safe_send_document: unexpected error (chat_id=%s, attempt %s): %s", 
+                               kwargs.get('chat_id'), attempt + 1, error_details)
+                if any(x in error_details.lower() for x in ("timeout", "network", "connection", "reached")):
+                    await asyncio.sleep(0.5 * (attempt + 1))
                 if attempt >= 2:
                     return None
         logger.error("_safe_send_document: failed after retries args=%s", kwargs)
@@ -4018,7 +4031,11 @@ class FishBot:
                 logger.warning("RetryAfter on send_sticker, waiting %s sec (attempt %s)", wait, attempt + 1)
                 await asyncio.sleep(float(wait) + 1)
             except Exception as e:
-                logger.warning("_safe_send_sticker: unexpected error (chat_id=%s, attempt %s): %s", kwargs.get('chat_id'), attempt + 1, e)
+                error_details = f"{type(e).__name__}: {str(e)}"
+                logger.warning("_safe_send_sticker: unexpected error (chat_id=%s, attempt %s): %s", 
+                               kwargs.get('chat_id'), attempt + 1, error_details)
+                if any(x in error_details.lower() for x in ("timeout", "network", "connection", "reached")):
+                    await asyncio.sleep(0.5 * (attempt + 1))
                 if attempt >= 2:
                     return None
         logger.error("_safe_send_sticker: failed after retries args=%s", kwargs)
@@ -4038,7 +4055,10 @@ class FishBot:
                 logger.warning("RetryAfter on edit_message_text, waiting %s sec (attempt %s)", wait, attempt + 1)
                 await asyncio.sleep(float(wait) + 1)
             except Exception as e:
-                logger.warning("_safe_edit_message_text: unexpected error (attempt %s): %s", attempt + 1, e)
+                error_details = f"{type(e).__name__}: {str(e)}"
+                logger.warning("_safe_edit_message_text: unexpected error (attempt %s): %s", attempt + 1, error_details)
+                if any(x in error_details.lower() for x in ("timeout", "network", "connection", "reached")):
+                    await asyncio.sleep(0.5 * (attempt + 1))
                 if attempt >= 2:
                     return None
         logger.error("_safe_edit_message_text: failed after retries args=%s", kwargs)
@@ -4059,7 +4079,10 @@ class FishBot:
                 logger.warning("RetryAfter on send_invoice, waiting %s sec (attempt %s)", wait, attempt + 1)
                 await asyncio.sleep(float(wait) + 1)
             except Exception as e:
-                logger.warning("_safe_send_invoice: unexpected error (attempt %s): %s", attempt + 1, e)
+                error_details = f"{type(e).__name__}: {str(e)}"
+                logger.warning("_safe_send_invoice: unexpected error (attempt %s): %s", attempt + 1, error_details)
+                if any(x in error_details.lower() for x in ("timeout", "network", "connection", "reached")):
+                    await asyncio.sleep(0.5 * (attempt + 1))
                 if attempt >= 2:
                     return None
         logger.error("_safe_send_invoice: failed after retries args=%s", kwargs)
@@ -4475,7 +4498,13 @@ class FishBot:
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         current_username = update.effective_user.username or update.effective_user.first_name or str(user_id)
-        player = await _run_sync(db.get_player, user_id, chat_id)
+        
+        # Получаем весь контекст за один запрос к БД
+        context_data = await _run_sync(db.get_fishing_context, user_id, chat_id)
+        player = context_data.get('player')
+        effects = context_data.get('effects', {})
+        active_boat = context_data.get('active_boat')
+        antibot_active_block = context_data.get('antibot_block')
 
         if not player:
             # Автоматически создаём профиль в этом чате при первом использовании /fish
@@ -4492,17 +4521,18 @@ class FishBot:
 
         await _run_sync(self._sync_player_username_if_changed, user_id, chat_id, player, current_username)
 
-        if await _run_sync(self._is_user_beer_drunk, user_id):
+        # Проверка на алкогольное опьянение
+        if 'beer' in effects:
             await update.message.reply_text(self._generate_drunk_gibberish())
             return
 
-        if await _run_sync(db.is_user_seasick, user_id):
+        # Проверка на морскую болезнь
+        if 'seasick' in effects:
             # Проверяем, на лодке ли человек. Если нет - морская болезнь должна пройти.
-            boat = await _run_sync(db.get_user_boat, user_id)
-            if not boat or not boat.get('is_active'):
+            if not active_boat:
                 await _run_sync(db.clear_timed_effect, user_id, 'seasick')
             else:
-                remaining_seconds = await _run_sync(db.get_effect_remaining_seconds, user_id, 'seasick')
+                remaining_seconds = int(effects['seasick'])
                 minutes = remaining_seconds // 60
                 seconds = remaining_seconds % 60
                 time_str = f"{minutes} мин {seconds} сек" if minutes > 0 else f"{seconds} сек"
@@ -4513,7 +4543,6 @@ class FishBot:
                 )
                 return
 
-        antibot_active_block = await _run_sync(self._get_antibot_active_block, user_id, update)
         if antibot_active_block:
             await self._send_antibot_block_to_user(update, antibot_active_block)
             return
@@ -13563,7 +13592,7 @@ def main():
         write_timeout=_write_timeout,
         connect_timeout=_connect_timeout,
         pool_timeout=_pool_timeout,
-        connection_pool_size=int(os.getenv('TG_CONNECTION_POOL_SIZE', '256')),
+        connection_pool_size=int(os.getenv('TG_CONNECTION_POOL_SIZE', '512')),
     )
     emoji_bot = EmojiBot(token=BOT_TOKEN, defaults=defaults, request=_request)
 
@@ -13583,7 +13612,7 @@ def main():
     application = (
         Application.builder()
         .bot(emoji_bot)
-        .concurrent_updates(max(1, int(os.getenv('TG_CONCURRENT_UPDATES', '256'))))
+        .concurrent_updates(max(1, int(os.getenv('TG_CONCURRENT_UPDATES', '512'))))
         .post_init(_post_init)
         .post_shutdown(_post_shutdown)
         .build()

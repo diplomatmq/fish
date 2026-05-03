@@ -6143,6 +6143,64 @@ class Database:
             ''')
             conn.commit()
     
+    def get_fishing_context(self, user_id: int, chat_id: int) -> Dict[str, Any]:
+        """Получить полный контекст для рыбалки (игрок, эффекты, состояние) за один запрос."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            
+            # 1. Получаем игрока
+            cursor.execute("PRAGMA table_info(players)")
+            cols = [c[1] for c in cursor.fetchall()]
+            if 'chat_id' in cols:
+                cursor.execute('SELECT * FROM players WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) LIMIT 1', (user_id,))
+                row = cursor.fetchone()
+                if not row:
+                    cursor.execute('SELECT * FROM players WHERE user_id = ? AND chat_id = ? LIMIT 1', (user_id, chat_id))
+                    row = cursor.fetchone()
+            else:
+                cursor.execute('SELECT * FROM players WHERE user_id = ? ORDER BY created_at DESC LIMIT 1', (user_id,))
+                row = cursor.fetchone()
+            
+            if not row:
+                return {'player': None}
+                
+            columns = [description[0] for description in cursor.description]
+            player = dict(zip(columns, row))
+            
+            # 2. Проверяем эффекты (пьянство, морская болезнь)
+            cursor.execute("SELECT effect_type, expires_at FROM user_effects WHERE user_id = ?", (user_id,))
+            effects_rows = cursor.fetchall()
+            effects = {}
+            now = datetime.now(timezone.utc)
+            for etype, exp_at in effects_rows:
+                if exp_at:
+                    try:
+                        exp_dt = datetime.fromisoformat(exp_at)
+                        if exp_dt > now:
+                            effects[etype] = (exp_dt - now).total_seconds()
+                    except Exception:
+                        pass
+                else:
+                    effects[etype] = 0 # No expiry
+            
+            # 3. Проверяем наличие активной лодки
+            cursor.execute('SELECT id, is_active FROM boats WHERE user_id = ? AND is_active = 1 LIMIT 1', (user_id,))
+            boat_row = cursor.fetchone()
+            active_boat = dict(zip(['id', 'is_active'], boat_row)) if boat_row else None
+
+            # 4. Проверяем антибот (активный блок)
+            cursor.execute("SELECT expires_at FROM antibot_blocks WHERE user_id = ? AND expires_at > ? LIMIT 1", 
+                           (user_id, now.isoformat()))
+            ab_row = cursor.fetchone()
+            antibot_block = ab_row[0] if ab_row else None
+
+            return {
+                'player': player,
+                'effects': effects,
+                'active_boat': active_boat,
+                'antibot_block': antibot_block
+            }
+
     def get_player(self, user_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
         """Получить данные игрока (единый профиль на все чаты)"""
         with self._connect() as conn:
