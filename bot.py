@@ -4504,7 +4504,7 @@ class FishBot:
         player = context_data.get('player')
         effects = context_data.get('effects', {})
         active_boat = context_data.get('active_boat')
-        antibot_active_block = context_data.get('antibot_block')
+        has_antibot_block = context_data.get('has_antibot_block')
 
         if not player:
             # Автоматически создаём профиль в этом чате при первом использовании /fish
@@ -4543,9 +4543,12 @@ class FishBot:
                 )
                 return
 
-        if antibot_active_block:
-            await self._send_antibot_block_to_user(update, antibot_active_block)
-            return
+        if has_antibot_block:
+            # Если в БД есть подозрение на блок, получаем полный объект блока (с текстом и кнопками)
+            antibot_active_block = await _run_sync(self._get_antibot_active_block, user_id, update)
+            if antibot_active_block:
+                await self._send_antibot_block_to_user(update, antibot_active_block)
+                return
 
         # Проверяем кулдаун
         can_fish, message = await _run_sync(game.can_fish, user_id, chat_id)

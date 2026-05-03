@@ -6188,17 +6188,17 @@ class Database:
             boat_row = cursor.fetchone()
             active_boat = dict(zip(['id', 'is_active'], boat_row)) if boat_row else None
 
-            # 4. Проверяем антибот (активный блок)
-            cursor.execute("SELECT expires_at FROM antibot_blocks WHERE user_id = ? AND expires_at > ? LIMIT 1", 
-                           (user_id, now.isoformat()))
+            # 4. Проверяем антибот (активный блок или ожидание капчи)
+            cursor.execute("SELECT 1 FROM anti_abuse_captcha WHERE user_id = ? AND (penalty_until > ? OR active_expires_at > ?) LIMIT 1", 
+                           (user_id, now.isoformat(), now.isoformat()))
             ab_row = cursor.fetchone()
-            antibot_block = ab_row[0] if ab_row else None
+            has_antibot_block = bool(ab_row)
 
             return {
                 'player': player,
                 'effects': effects,
                 'active_boat': active_boat,
-                'antibot_block': antibot_block
+                'has_antibot_block': has_antibot_block
             }
 
     def get_player(self, user_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
