@@ -530,7 +530,7 @@ def format_percent_value(value: float) -> str:
 
 # Thread pool for blocking DB / game logic so the asyncio event loop stays responsive
 from concurrent.futures import ThreadPoolExecutor
-_DB_WORKERS = max(4, int(os.getenv('TG_DB_WORKERS', '14')))
+_DB_WORKERS = max(4, int(os.getenv('TG_DB_WORKERS', '100')))
 _db_executor = ThreadPoolExecutor(max_workers=_DB_WORKERS, thread_name_prefix="db_worker")
 
 _action_locks = collections.defaultdict(asyncio.Lock)
@@ -13583,7 +13583,7 @@ def main():
     application = (
         Application.builder()
         .bot(emoji_bot)
-        .concurrent_updates(max(1, int(os.getenv('TG_CONCURRENT_UPDATES', '64'))))
+        .concurrent_updates(max(1, int(os.getenv('TG_CONCURRENT_UPDATES', '256'))))
         .post_init(_post_init)
         .post_shutdown(_post_shutdown)
         .build()

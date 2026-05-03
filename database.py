@@ -1178,6 +1178,16 @@ class Database:
             except (TypeError, ValueError):
                 boat_capacity = 1
 
+            # Сразу получаем список участников, чтобы избежать UnboundLocalError при крушении
+            cursor.execute('''
+                SELECT user_id FROM boat_members WHERE boat_id = ?
+            ''', (boat_id,))
+            members = [r[0] for r in cursor.fetchall()]
+            logger.info(f"[boat] Участники лодки {boat_id}: {members}")
+            if not members:
+                logger.warning(f"[boat] Нет участников в лодке {boat_id} при возврате.")
+                return [], boat_id, 'no_members'
+
             def _mark_boat_return_time(owner_id: int):
                 """Фиксирует время завершения плавания в профиле игрока."""
                 from datetime import datetime, timezone
@@ -1214,15 +1224,6 @@ class Database:
                 conn.commit()
                 logger.info(f"[boat] Крушение лодки {boat_id}, весь улов утерян.")
                 return [], boat_id, 'sunk'
-            # Получить участников
-            cursor.execute('''
-                SELECT user_id FROM boat_members WHERE boat_id = ?
-            ''', (boat_id,))
-            members = [r[0] for r in cursor.fetchall()]
-            logger.info(f"[boat] Участники лодки {boat_id}: {members}")
-            if not members:
-                logger.warning(f"[boat] Нет участников в лодке {boat_id} при возврате.")
-                return [], boat_id, 'no_members'
             # Получить улов
             cursor.execute('''
                 SELECT fish_id, weight, chat_id, location, caught_at, item_name FROM boat_catch WHERE boat_id = ?
@@ -4499,12 +4500,12 @@ class Database:
             import psycopg2.pool
             try:
                 self._pool = psycopg2.pool.ThreadedConnectionPool(
-                    1, 20, 
+                    1, 100, 
                     dsn=self._get_db_url(),
                     connect_timeout=5,
                     options='-c statement_timeout=30000'
                 )
-                logger.info("Database connection pool initialized")
+                logger.info("Database connection pool initialized with max 100 connections")
             except Exception as e:
                 logger.error(f"Failed to initialize connection pool: {e}")
                 # Fallback to direct connection if pool fails
