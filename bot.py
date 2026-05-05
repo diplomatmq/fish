@@ -5211,12 +5211,13 @@ class FishBot:
     async def menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /menu - показать меню рыбалки"""
         # Команда работает только в группах/каналах, не в личных чатах
-        if update.effective_chat.type == 'private':
+        if update.effective_chat and update.effective_chat.type == 'private':
             await update.message.reply_text("Команда /menu работает только в чатах с группой. Для платежей проверьте входящие инвойсы.")
             return
         
+        user_id = update.effective_user.id
         chat_id = update.effective_chat.id
-        player = await _run_sync(db.get_player, update.effective_user.id, chat_id)
+        player = await _run_sync(db.get_player, user_id, chat_id)
         
         if not player:
             await update.message.reply_text("Сначала создайте профиль командой /start")
