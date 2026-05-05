@@ -88,7 +88,7 @@ export const FISH_DATA: FishData[] = [
 // ─────────────────────────────────────────────────────────────────────────────
 export const TABS: TabConfig[] = [
   { id: 'home',       icon: '🧭', label: 'Главная'   },
-  { id: 'adventures', icon: '📦', label: 'Мини-игры' },
+  { id: 'shop',       icon: '🧺', label: 'Лавка'     },
   { id: 'friends',    icon: '👤', label: 'Друзья'    },
   { id: 'guilds',     icon: '🔱', label: 'Артели'    },
   { id: 'book',       icon: '📖', label: 'Книга'     },

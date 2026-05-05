@@ -31,6 +31,9 @@ from urllib.request import Request as UrlRequest, urlopen
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
+import fish_stickers
+from fish_stickers import FISH_STICKERS as fish_stickers_dict
+
 
 
 
@@ -590,24 +593,27 @@ def inventory():
 		with db._connect() as conn:
 			cursor = conn.cursor()
 			cursor.execute('''
-				SELECT id, fish_name, weight, length, location, rarity, price 
-				FROM caught_fish 
-				JOIN fish ON caught_fish.fish_name = fish.name
-				WHERE user_id = ? AND sold = 0
-				ORDER BY caught_at DESC
+				SELECT cf.id, cf.fish_name, cf.weight, cf.length, cf.location, f.rarity, f.price, f.sticker_id
+				FROM caught_fish cf
+				JOIN fish f ON cf.fish_name = f.name
+				WHERE cf.user_id = ? AND cf.sold = 0
+				ORDER BY cf.caught_at DESC
 			''', (user_id,))
 			rows = cursor.fetchall()
 			
 			items = []
 			for r in rows:
+				fish_name = r[1]
+				image_file = r[7] or fish_stickers_dict.get(fish_name) or 'fishdef.webp'
 				items.append({
 					"id": r[0],
-					"name": r[1],
+					"name": fish_name,
 					"weight": r[2],
 					"length": r[3],
 					"location": r[4],
 					"rarity": r[5],
-					"price": r[6]
+					"price": r[6],
+					"image_url": f"/api/fish-image/{image_file}"
 				})
 			return jsonify({"ok": True, "items": items})
 	except Exception as e:
@@ -707,18 +713,30 @@ def trophies_list():
 	try:
 		with db._connect() as conn:
 			cursor = conn.cursor()
-			cursor.execute('SELECT id, fish_name, weight, length, location, is_active FROM player_trophies WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
+			cursor.execute('''
+				SELECT pt.id, pt.fish_name, pt.weight, pt.length, pt.location, pt.is_active, f.rarity, f.sticker_id, pt.image_file
+				FROM player_trophies pt
+				LEFT JOIN fish f ON pt.fish_name = f.name
+				WHERE pt.user_id = ?
+				ORDER BY pt.created_at DESC
+			''', (user_id,))
 			rows = cursor.fetchall()
 			
 			items = []
 			for r in rows:
+				fish_name = r[1]
+				# Приоритет: pt.image_file -> f.sticker_id -> dictionary -> default
+				image_file = r[8] or r[7] or fish_stickers_dict.get(fish_name) or 'fishdef.webp'
+				
 				items.append({
 					"id": r[0],
-					"name": r[1],
+					"name": fish_name,
 					"weight": r[2],
 					"length": r[3],
 					"location": r[4],
-					"is_active": bool(r[5])
+					"is_active": bool(r[5]),
+					"rarity": r[6] or "Обычная",
+					"image_url": f"/api/fish-image/{image_file}"
 				})
 			return jsonify({"ok": True, "items": items})
 	except Exception as e:

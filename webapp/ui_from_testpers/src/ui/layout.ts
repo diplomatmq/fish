@@ -55,8 +55,17 @@ export function buildLayout(): HTMLElement {
         </div>
       </section>
 
-      <!-- ADVENTURES -->
-      ${emptyScreen('adventures', '🗺️', 'Приключения', 'Мини-игры и приключения\nскоро появятся!')}
+      <!-- SHOP -->
+      <section id="screen-shop" class="screen" role="main" aria-label="Лавка">
+        <h1 class="page-title">ЛАВКА</h1>
+        <div class="glass shop-container">
+          <div class="shop-empty">
+            <div class="shop-soon-icon">${getIcon('shop')}</div>
+            <h3>Лавка скоро откроется!</h3>
+            <p>Здесь вы сможете продавать рыбу и покупать снаряжение прямо в приложении.</p>
+          </div>
+        </div>
+      </section>
 
       <!-- FRIENDS -->
       <section id="screen-friends" class="screen" role="main" aria-label="Друзья"></section>
@@ -113,7 +122,7 @@ export function hideEntryOverlay(overlay: HTMLElement, delay = 1600): void {
 }
 
 // ── Quick action bounce helper ──────────────────────────────────────────────
-export function bindQuickActions(): void {
+export function bindQuickActions(onShopClick?: () => void): void {
   const achievementsBtn = document.getElementById('btn-achievements');
   const ratingBtn       = document.getElementById('btn-rating');
 

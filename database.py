@@ -494,145 +494,6 @@ class Database:
             return int(CLAN_MEMBER_LIMITS[lvl])
         return int(CLAN_MEMBER_LIMITS[max(CLAN_MEMBER_LIMITS.keys())])
 
-    def get_active_ecological_disaster(self, location: str) -> Optional[Dict[str, Any]]:
-        """Вернуть активную эко-катастрофу на локации, если она есть."""
-        loc = str(location or '').strip()
-        if not loc:
-            return None
-
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                UPDATE ecological_disasters
-                SET is_active = 0
-                WHERE is_active = 1 AND ends_at <= CURRENT_TIMESTAMP
-                '''
-            )
-            cursor.execute(
-                '''
-                SELECT id, location, reward_type, reward_multiplier, started_at, ends_at, is_active
-                FROM ecological_disasters
-                WHERE LOWER(TRIM(location)) = LOWER(TRIM(?))
-                  AND is_active = 1
-                  AND ends_at > CURRENT_TIMESTAMP
-                ORDER BY ends_at DESC
-                LIMIT 1
-                ''',
-                (loc,),
-            )
-            row = cursor.fetchone()
-            conn.commit()
-
-        if not row:
-            return None
-
-        return {
-            'id': int(row[0]),
-            'location': row[1],
-            'reward_type': str(row[2] or 'xp'),
-            'reward_multiplier': int(row[3] or 5),
-            'started_at': row[4],
-            'ends_at': row[5],
-            'is_active': int(row[6] or 0),
-        }
-
-    def start_ecological_disaster(
-        self,
-        location: str,
-        reward_type: str = 'xp',
-        duration_minutes: int = 60,
-        reward_multiplier: int = 5,
-    ) -> Optional[Dict[str, Any]]:
-        """Запустить эко-катастрофу на локации."""
-        loc = str(location or '').strip()
-        if not loc:
-            return None
-
-        safe_reward_type = str(reward_type or 'xp').strip().lower()
-        if safe_reward_type not in ('xp', 'coins'):
-            safe_reward_type = 'xp'
-
-        safe_minutes = max(1, int(duration_minutes or 60))
-        safe_multiplier = max(2, int(reward_multiplier or 5))
-        now_dt = datetime.utcnow()
-        ends_dt = now_dt + timedelta(minutes=safe_minutes)
-
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                UPDATE ecological_disasters
-                SET is_active = 0
-                WHERE LOWER(TRIM(location)) = LOWER(TRIM(?))
-                  AND is_active = 1
-                ''',
-                (loc,),
-            )
-            cursor.execute(
-                '''
-                INSERT INTO ecological_disasters
-                    (location, reward_type, reward_multiplier, started_at, ends_at, is_active)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, 1)
-                RETURNING id, location, reward_type, reward_multiplier, started_at, ends_at, is_active
-                ''',
-                (loc, safe_reward_type, safe_multiplier, ends_dt.isoformat()),
-            )
-            row = cursor.fetchone()
-            conn.commit()
-
-        if not row:
-            return None
-
-        return {
-            'id': int(row[0]),
-            'location': row[1],
-            'reward_type': str(row[2] or 'xp'),
-            'reward_multiplier': int(row[3] or safe_multiplier),
-            'started_at': row[4],
-            'ends_at': row[5],
-            'is_active': int(row[6] or 0),
-        }
-
-    def stop_ecological_disaster(self, location: str) -> bool:
-        loc = str(location or '').strip()
-        if not loc:
-            return False
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                UPDATE ecological_disasters
-                SET is_active = 0
-                WHERE LOWER(TRIM(location)) = LOWER(TRIM(?))
-                  AND is_active = 1
-                ''',
-                (loc,),
-            )
-            changed = int(cursor.rowcount or 0)
-            conn.commit()
-        return changed > 0
-
-    def maybe_start_ecological_disaster(self, location: str) -> Optional[Dict[str, Any]]:
-        """С небольшим шансом запускает катастрофу (по умолчанию только в городском пруду)."""
-        loc = str(location or '').strip()
-        if self._normalize_item_name(loc) != self._normalize_item_name('Городской пруд'):
-            return None
-        if self.get_active_ecological_disaster(loc):
-            return None
-
-        # Примерно 1.5% шанс на запуск за попытку заброса.
-        if random.random() > 0.015:
-            return None
-
-        reward_type = 'xp' if random.random() < 0.5 else 'coins'
-        return self.start_ecological_disaster(
-            location=loc,
-            reward_type=reward_type,
-            duration_minutes=60,
-            reward_multiplier=5,
-        )
-
     def set_daily_market_offer(
         self,
         fish_name: str,
@@ -2048,7 +1909,7 @@ class Database:
         return {str(k): int(v) for k, v in requirements.items()}
 
     def get_active_ecological_disaster(self, location: str) -> Optional[Dict[str, Any]]:
-        now_iso = datetime.utcnow().isoformat()
+        now = datetime.utcnow()
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -2057,17 +1918,17 @@ class Database:
                 SET is_active = 0
                 WHERE is_active = 1 AND ends_at <= ?
                 ''',
-                (now_iso,),
+                (now,),
             )
             cursor.execute(
                 '''
                 SELECT id, location, reward_type, reward_multiplier, started_at, ends_at, is_active
                 FROM ecological_disasters
-                WHERE location = ? AND is_active = 1 AND ends_at > ?
+                WHERE LOWER(TRIM(location)) = LOWER(TRIM(?)) AND is_active = 1 AND ends_at > ?
                 ORDER BY started_at DESC
                 LIMIT 1
                 ''',
-                (location, now_iso),
+                (location, now),
             )
             row = cursor.fetchone()
             if not row:
@@ -2097,9 +1958,8 @@ class Database:
                 '''
                 UPDATE ecological_disasters
                 SET is_active = 0
-                WHERE location = ? AND is_active = 1
-                ''',
-                (location,),
+                WHERE is_active = 1
+                '''
             )
             cursor.execute(
                 '''
@@ -2109,7 +1969,7 @@ class Database:
                 VALUES (?, ?, ?, ?, ?, 1)
                 RETURNING id, location, reward_type, reward_multiplier, started_at, ends_at, is_active
                 ''',
-                (location, normalized_type, multiplier, now.isoformat(), ends_at.isoformat()),
+                (location, normalized_type, multiplier, now, ends_at),
             )
             row = cursor.fetchone()
             columns = [d[0] for d in cursor.description] if cursor.description else []
@@ -2123,7 +1983,7 @@ class Database:
                 '''
                 UPDATE ecological_disasters
                 SET is_active = 0
-                WHERE location = ? AND is_active = 1
+                WHERE LOWER(TRIM(location)) = LOWER(TRIM(?)) AND is_active = 1
                 ''',
                 (location,),
             )
@@ -2131,23 +1991,65 @@ class Database:
             conn.commit()
             return changed > 0
 
-    def maybe_start_ecological_disaster(self, location: str, chance: float = 0.03) -> Optional[Dict[str, Any]]:
-        if self._normalize_item_name(location) != self._normalize_item_name('Городской пруд'):
+    def get_any_active_ecological_disaster(self) -> Optional[Dict[str, Any]]:
+        """Проверить, есть ли активная эко-катастрофа на любой из локаций."""
+        now = datetime.utcnow()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, location, reward_type, reward_multiplier, started_at, ends_at, is_active
+                FROM ecological_disasters
+                WHERE is_active = 1 AND ends_at > ?
+                ORDER BY started_at DESC
+                LIMIT 1
+                ''',
+                (now,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            columns = [d[0] for d in cursor.description]
+            return dict(zip(columns, row))
+
+    def maybe_start_ecological_disaster(self, location: str, chance: float = 0.0005) -> Optional[Dict[str, Any]]:
+        """Попытка начать эко-катастрофу (редко, макс. одна на все локации, длительность 1-2 часа, КД 3 часа)."""
+        # 1. Проверяем, есть ли УЖЕ активная катастрофа ГДЕ-ЛИБО
+        active_anywhere = self.get_any_active_ecological_disaster()
+        if active_anywhere:
+            # Если катастрофа активна на любой локации, новую начинать нельзя.
+            # Если текущая локация совпадает с активной — возвращаем её.
+            if self._normalize_item_name(active_anywhere['location']) == self._normalize_item_name(location):
+                return active_anywhere
             return None
 
-        active = self.get_active_ecological_disaster(location)
-        if active:
-            return active
+        # 1.1 Проверяем КД (минимум 3 часа с момента окончания последней катастрофы)
+        now = datetime.utcnow()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT ends_at FROM ecological_disasters ORDER BY ends_at DESC LIMIT 1')
+            last_end = cursor.fetchone()
+            if last_end:
+                last_end_dt = last_end[0]
+                if isinstance(last_end_dt, str):
+                    last_end_dt = datetime.fromisoformat(last_end_dt)
+                if now < last_end_dt + timedelta(hours=3):
+                    return None
 
-        if random.random() > max(0.0, min(1.0, float(chance or 0.0))):
+        # 2. Шанс срабатывания
+        if random.random() > float(chance):
             return None
 
+        # 3. Начинаем новую катастрофу (длительность 60-120 минут)
+        duration = random.randint(60, 120)
         reward_type = random.choice(['xp', 'coins'])
+        multiplier = random.randint(3, 7)
+        
         return self.start_ecological_disaster(
             location=location,
             reward_type=reward_type,
-            reward_multiplier=5,
-            duration_minutes=60,
+            reward_multiplier=multiplier,
+            duration_minutes=duration
         )
 
     def _pick_daily_market_fish(self) -> Optional[str]:
@@ -4477,6 +4379,7 @@ class Database:
     def __init__(self):
         self._pool = None
         self._db_url = None
+        self.is_postgres = os.getenv('DATABASE_URL') is not None or os.getenv('DB_HOST') is not None
 
     def _get_db_url(self):
         if self._db_url:
@@ -4571,6 +4474,12 @@ class Database:
             ''')
 
             # Таблица игроков
+            # Enable WAL mode for better concurrency in SQLite
+            if not self.is_postgres:
+                cursor.execute('PRAGMA journal_mode=WAL')
+                cursor.execute('PRAGMA synchronous=NORMAL')
+                cursor.execute('PRAGMA cache_size=-64000')  # 64MB cache
+            
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS players (
                     user_id INTEGER PRIMARY KEY,
@@ -6122,12 +6031,30 @@ class Database:
                         'UPDATE players SET xp = ?, level = ? WHERE user_id = ?',
                         (new_xp, new_level, user_id)
                     )
-
                 cursor.execute(
                     "INSERT INTO system_flags (key, value) VALUES (?, ?)",
                     ('xp_levels_migrated_20260208', '1')
                 )
-            
+
+            # Синхронизация sticker_id для всех рыб из справочника (2026-05-05)
+            try:
+                from fish_stickers import FISH_STICKERS
+                for fish_name, sticker_id in FISH_STICKERS.items():
+                    cursor.execute(
+                        "UPDATE fish SET sticker_id = ? WHERE name = ? AND (sticker_id IS NULL OR sticker_id = '')",
+                        (sticker_id, fish_name)
+                    )
+                
+                # Также для мусора
+                from trash_stickers import TRASH_STICKERS
+                for trash_name, sticker_id in TRASH_STICKERS.items():
+                    cursor.execute(
+                        "UPDATE trash SET sticker_id = ? WHERE name = ? AND (sticker_id IS NULL OR sticker_id = '')",
+                        (sticker_id, trash_name)
+                    )
+            except Exception as e:
+                logger.warning("Failed to sync sticker_ids: %s", e)
+
             conn.commit()
             
             # Миграция существующих игроков - добавляем недостающие поля
