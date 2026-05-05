@@ -12,13 +12,12 @@ export const ICONS: Record<string, string> = {
       <path d="M12 15L12 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
     </svg>
   `, // Stylized Bobber (Поплавок)
-  adventures: `
+  shop: `
     <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M16 7C16 7 15 3 12 3C9 3 8 7 8 7C8 10 11 12 11 15C11 17 9 18 7 18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-      <circle cx="7" cy="19" r="1" fill="currentColor"/>
-      <path d="M16 7L18 9L21 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M3 9H21L19 21H5L3 9Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M9 12V6C9 4.34315 10.3431 3 12 3C13.6569 3 15 4.34315 15 6V12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
-  `, // Fishing Hook (Крючок)
+  `, // Shop Bag (Сумка)
   friends: `
     <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M4 8C6 9 8 7 10 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>

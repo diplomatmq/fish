@@ -2729,7 +2729,9 @@ class FishBot:
         self._tour_cache_ttl = float(os.getenv("TOUR_CACHE_TTL_SECONDS", "10"))
         self._telegram_document_file_id_cache = {}
         self.OWNER_ID = 793216884
-        self.webapp_url = (os.getenv("WEBAPP_URL") or "https://fish.monkeysdynasty.website").strip()
+        raw_url = (os.getenv("WEBAPP_URL") or "https://fish.monkeysdynasty.website").strip()
+        # Удаляем возможные кавычки, пробелы и другие лишние символы
+        self.webapp_url = re.sub(r"[`'\" ]", "", raw_url)
         # Множество уже оплаченных payload'ов — защита от двойной оплаты одного инвойса
         # Ограничено 5000 записями — при переполнении удаляем половину (старые записи)
         self.paid_payloads: set = set()
@@ -5286,7 +5288,6 @@ class FishBot:
 
         # Проверяем количество рыбы
         fish_count = await _run_sync(db.count_caught_fish, user_id)
-        webapp_url = os.getenv("WEBAPP_URL", "https://fish.monkeysdynasty.website")
 
         # Кнопки Лавка/Магазин/Инвентарь/Статистика
         keyboard.append([
@@ -5299,9 +5300,6 @@ class FishBot:
         ])
         keyboard.append([InlineKeyboardButton("🏆 Трофеи", callback_data=f"inv_trophies_{user_id}")])
         
-        # Кнопка Mini App
-        keyboard.append([InlineKeyboardButton("📱 Открыть Mini App", web_app=WebAppInfo(url=webapp_url))])
-
         if fish_count > 15:
             menu_text += f"\n\n⚠️ У вас много рыбы ({fish_count} шт). Для удобного управления используйте Mini App!"
 
