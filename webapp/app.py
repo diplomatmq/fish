@@ -469,19 +469,28 @@ def _get_verified_user_from_request() -> tuple[Optional[dict], Optional[str]]:
 
 
 @app.get("/")
-
 def index():
-
 	captcha_mode = request.args.get("captcha_mode")
-
 	if captcha_mode:
-
 		return render_template("index.html", captcha_mode=captcha_mode)
+	
+	# Priority 1: Check for index.html in dist
+	dist_index = TRANSFERRED_UI_DIST / "index.html"
+	if dist_index.exists():
+		return send_from_directory(str(TRANSFERRED_UI_DIST), "index.html")
+	
+	# Priority 2: Fallback to development template
+	return render_template("index_testpers.html")
 
-	return send_from_directory(str(TRANSFERRED_UI_DIST), "index.html")
+
+@app.get("/src/<path:filename>")
+def transferred_src(filename: str):
+	return send_from_directory(str(BASE_DIR / "ui_from_testpers" / "src"), filename)
 
 
-
+@app.get("/<path:filename>.css")
+def transferred_css(filename: str):
+	return send_from_directory(str(BASE_DIR / "ui_from_testpers" / "src"), filename if filename.endswith(".css") else f"{filename}.css")
 
 
 @app.get("/assets/<path:filename>")
