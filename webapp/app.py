@@ -574,6 +574,158 @@ def fish_image(filename: str):
 
 
 
+@app.get("/api/inventory")
+def inventory():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+	
+	user_id = int(auth_user["id"])
+	db = _get_fish_db()
+	if db is None:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+	
+	try:
+		# Получаем список непроданной рыбы
+		with db._connect() as conn:
+			cursor = conn.cursor()
+			cursor.execute('''
+				SELECT id, fish_name, weight, length, location, rarity, price 
+				FROM caught_fish 
+				JOIN fish ON caught_fish.fish_name = fish.name
+				WHERE user_id = ? AND sold = 0
+				ORDER BY caught_at DESC
+			''', (user_id,))
+			rows = cursor.fetchall()
+			
+			items = []
+			for r in rows:
+				items.append({
+					"id": r[0],
+					"name": r[1],
+					"weight": r[2],
+					"length": r[3],
+					"location": r[4],
+					"rarity": r[5],
+					"price": r[6]
+				})
+			return jsonify({"ok": True, "items": items})
+	except Exception as e:
+		logger.exception("API inventory failed")
+		return jsonify({"ok": False, "error": "internal_error"}), 500
+
+@app.post("/api/sell-fish")
+def sell_fish():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+	
+	user_id = int(auth_user["id"])
+	data = request.json or {}
+	fish_id = data.get("id")
+	
+	db = _get_fish_db()
+	if db is None:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+	
+	try:
+		with db._connect() as conn:
+			cursor = conn.cursor()
+			# Проверяем владельца и цену
+			cursor.execute('''
+				SELECT price FROM caught_fish 
+				JOIN fish ON caught_fish.fish_name = fish.name
+				WHERE caught_fish.id = ? AND user_id = ? AND sold = 0
+			''', (fish_id, user_id))
+			row = cursor.fetchone()
+			if not row:
+				return jsonify({"ok": False, "error": "fish_not_found"}), 404
+			
+			price = row[0]
+			
+			# Продаем
+			cursor.execute('UPDATE caught_fish SET sold = 1, sold_at = CURRENT_TIMESTAMP WHERE id = ?', (fish_id,))
+			cursor.execute('UPDATE players SET coins = coins + ? WHERE user_id = ?', (price, user_id))
+			conn.commit()
+			
+			return jsonify({"ok": True, "earned": price})
+	except Exception as e:
+		logger.exception("API sell-fish failed")
+		return jsonify({"ok": False, "error": "internal_error"}), 500
+
+@app.post("/api/make-trophy")
+def make_trophy():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+	
+	user_id = int(auth_user["id"])
+	data = request.json or {}
+	fish_id = data.get("id")
+	
+	db = _get_fish_db()
+	if db is None:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+	
+	try:
+		with db._connect() as conn:
+			cursor = conn.cursor()
+			# Проверяем рыбу
+			cursor.execute('SELECT fish_name, weight, length, location FROM caught_fish WHERE id = ? AND user_id = ? AND sold = 0', (fish_id, user_id))
+			row = cursor.fetchone()
+			if not row:
+				return jsonify({"ok": False, "error": "fish_not_found"}), 404
+			
+			fish_name, weight, length, location = row
+			
+			# Создаем трофей (по логике бота это перенос из caught_fish в player_trophies)
+			cursor.execute('''
+				INSERT INTO player_trophies (user_id, fish_name, weight, length, location)
+				VALUES (?, ?, ?, ?, ?)
+			''', (user_id, fish_name, weight, length, location))
+			
+			# Удаляем из инвентаря
+			cursor.execute('DELETE FROM caught_fish WHERE id = ?', (fish_id,))
+			conn.commit()
+			
+			return jsonify({"ok": True})
+	except Exception as e:
+		logger.exception("API make-trophy failed")
+		return jsonify({"ok": False, "error": "internal_error"}), 500
+
+@app.get("/api/trophies")
+def trophies_list():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+	
+	user_id = int(auth_user["id"])
+	db = _get_fish_db()
+	if db is None:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+	
+	try:
+		with db._connect() as conn:
+			cursor = conn.cursor()
+			cursor.execute('SELECT id, fish_name, weight, length, location, is_active FROM player_trophies WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
+			rows = cursor.fetchall()
+			
+			items = []
+			for r in rows:
+				items.append({
+					"id": r[0],
+					"name": r[1],
+					"weight": r[2],
+					"length": r[3],
+					"location": r[4],
+					"is_active": bool(r[5])
+				})
+			return jsonify({"ok": True, "items": items})
+	except Exception as e:
+		logger.exception("API trophies failed")
+		return jsonify({"ok": False, "error": "internal_error"}), 500
+
+
 @app.get("/api/profile")
 
 def profile():

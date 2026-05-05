@@ -62,6 +62,13 @@ const friendsList = document.getElementById("friendsList");
 const friendsStatus = document.getElementById("friendsStatus");
 const friendInput = document.getElementById("friendInput");
 const friendAddButton = document.getElementById("friendAddButton");
+const managementBtn = document.getElementById("managementBtn");
+const managementModal = document.getElementById("managementModal");
+const closeManagementModal = document.getElementById("closeManagementModal");
+const btnShop = document.getElementById("btn-shop");
+const btnInventory = document.getElementById("btn-inventory");
+const btnTrophies = document.getElementById("btn-trophies");
+const managementContent = document.getElementById("managementContent");
 
 let currentProfile = null;
 let telegramAuthContext = null;
@@ -997,6 +1004,76 @@ async function submitCaptchaAnswer() {
   setCaptchaStatus("Verification passed. Return to chat and continue fishing.", "ok");
 }
 
+async function loadManagementData(type) {
+  if (!managementContent) return;
+  managementContent.innerHTML = "<p class='status'>⏳ Загрузка...</p>";
+  
+  try {
+    const endpoint = type === 'trophies' ? '/api/trophies' : '/api/inventory';
+    const response = await fetch(endpoint, { headers: getAuthHeaders() });
+    const data = await response.json();
+    
+    if (!data.ok) throw new Error(data.error);
+    
+    if (!data.items || data.items.length === 0) {
+      managementContent.innerHTML = "<p class='status'>Пусто</p>";
+      return;
+    }
+    
+    managementContent.innerHTML = "";
+    data.items.forEach(item => {
+      const div = document.createElement("div");
+      div.className = "fish-item";
+      
+      let actions = "";
+      if (type === 'shop') {
+        actions = `<button class="btn-action btn-sell" onclick="handleManagementAction('sell', ${item.id})">💰 Продать (${item.price})</button>`;
+      } else if (type === 'inventory') {
+        actions = `<button class="btn-action btn-trophy" onclick="handleManagementAction('trophy', ${item.id})">🏆 В трофеи</button>`;
+      } else if (type === 'trophies') {
+        actions = `<span class="status ${item.is_active ? 'ok' : ''}">${item.is_active ? 'Активен' : ''}</span>`;
+      }
+      
+      div.innerHTML = `
+        <div class="fish-info">
+          <h4>🐟 ${item.name}</h4>
+          <p>${item.weight.toFixed(2)} кг • ${item.length.toFixed(1)} см</p>
+          <p>${item.location} • ${item.rarity || ''}</p>
+        </div>
+        <div class="fish-actions">
+          ${actions}
+        </div>
+      `;
+      managementContent.appendChild(div);
+    });
+  } catch (error) {
+    console.error(error);
+    managementContent.innerHTML = "<p class='status error'>Ошибка загрузки</p>";
+  }
+}
+
+window.handleManagementAction = async function(action, id) {
+  try {
+    const endpoint = action === 'sell' ? '/api/sell-fish' : '/api/make-trophy';
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    });
+    const data = await response.json();
+    if (data.ok) {
+      const currentType = btnShop.classList.contains('btn-primary') ? 'shop' : 'inventory';
+      loadManagementData(currentType);
+      loadProfile(); // Обновить монеты
+    } else {
+      alert("Ошибка: " + data.error);
+    }
+  } catch (error) {
+    console.error(error);
+    alert("Ошибка сети");
+  }
+};
+
 function bindUi() {
   tabButtons.forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1004,6 +1081,49 @@ function bindUi() {
       setActiveTab(tab);
     });
   });
+
+  if (managementBtn) {
+    managementBtn.addEventListener("click", () => {
+      managementModal.hidden = false;
+      loadManagementData('shop');
+      btnShop.className = "btn btn-primary";
+      btnInventory.className = "btn btn-secondary";
+      btnTrophies.className = "btn btn-secondary";
+    });
+  }
+
+  if (closeManagementModal) {
+    closeManagementModal.addEventListener("click", () => {
+      managementModal.hidden = true;
+    });
+  }
+
+  if (btnShop) {
+    btnShop.addEventListener("click", () => {
+      loadManagementData('shop');
+      btnShop.className = "btn btn-primary";
+      btnInventory.className = "btn btn-secondary";
+      btnTrophies.className = "btn btn-secondary";
+    });
+  }
+
+  if (btnInventory) {
+    btnInventory.addEventListener("click", () => {
+      loadManagementData('inventory');
+      btnShop.className = "btn btn-secondary";
+      btnInventory.className = "btn btn-primary";
+      btnTrophies.className = "btn btn-secondary";
+    });
+  }
+
+  if (btnTrophies) {
+    btnTrophies.addEventListener("click", () => {
+      loadManagementData('trophies');
+      btnShop.className = "btn btn-secondary";
+      btnInventory.className = "btn btn-secondary";
+      btnTrophies.className = "btn btn-primary";
+    });
+  }
 
   if (captchaSubmit) {
     captchaSubmit.addEventListener("click", () => {

@@ -5282,10 +5282,19 @@ class FishBot:
             [InlineKeyboardButton("🎣 Начать рыбалку", callback_data=f"start_fishing_{user_id}")],
             [InlineKeyboardButton("📍 Сменить локацию", callback_data=f"change_location_{user_id}")],
             [InlineKeyboardButton("🪱 Сменить наживку", callback_data=f"change_bait_{user_id}")],
-            [InlineKeyboardButton("🧺 Лавка", callback_data=f"sell_fish_{user_id}"), InlineKeyboardButton("🛒 Магазин", callback_data=f"shop_{user_id}")],
-            [InlineKeyboardButton("📊 Статистика", callback_data=f"stats_{user_id}"), InlineKeyboardButton("🎒 Инвентарь", callback_data=f"inventory_{user_id}")],
-            [InlineKeyboardButton("🏆 Трофеи", callback_data=f"inv_trophies_{user_id}")]
         ]
+
+        # Проверяем количество рыбы
+        fish_count = await _run_sync(db.count_caught_fish, user_id)
+        webapp_url = os.getenv("WEBAPP_URL", "https://fish.monkeysdynasty.website")
+
+        if fish_count > 15:
+            keyboard.append([InlineKeyboardButton("📱 Управление (Лавка/Инвентарь)", web_app=WebAppInfo(url=webapp_url))])
+            menu_text += f"\n\n⚠️ У вас много рыбы ({fish_count} шт). Для продажи и управления инвентарем используйте наше Mini App!"
+        else:
+            keyboard.append([InlineKeyboardButton("🧺 Лавка", callback_data=f"sell_fish_{user_id}"), InlineKeyboardButton("🛒 Магазин", callback_data=f"shop_{user_id}")])
+            keyboard.append([InlineKeyboardButton("📊 Статистика", callback_data=f"stats_{user_id}"), InlineKeyboardButton("🎒 Инвентарь", callback_data=f"inventory_{user_id}")])
+            keyboard.append([InlineKeyboardButton("🏆 Трофеи", callback_data=f"inv_trophies_{user_id}")])
         # Кнопки лодки
         if is_active:
             # В плавании

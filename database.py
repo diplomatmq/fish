@@ -6201,6 +6201,14 @@ class Database:
                 'has_antibot_block': has_antibot_block
             }
 
+    def count_caught_fish(self, user_id: int) -> int:
+        """Подсчитать количество непроданной рыбы у игрока."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM caught_fish WHERE user_id = ? AND sold = 0', (user_id,))
+            row = cursor.fetchone()
+            return row[0] if row else 0
+
     def get_player(self, user_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
         """Получить данные игрока (единый профиль на все чаты)"""
         with self._connect() as conn:

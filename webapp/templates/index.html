@@ -253,10 +253,30 @@
       <nav id="appTabbar" class="app-tabbar glass" aria-label="Навигация">
         <button type="button" class="tab-btn active" data-tab="profile">🏠 Профиль</button>
         <button type="button" class="tab-btn" data-tab="book">📖 Книга</button>
+        <button type="button" class="tab-btn" id="managementBtn">🎮 Управление</button>
         <button type="button" class="tab-btn" data-tab="adventures">🧭 Приключения</button>
         <button type="button" class="tab-btn" data-tab="guilds">🏰 Артели</button>
-        <button type="button" class="tab-btn" data-tab="friends">🤝 Друзья</button>
       </nav>
+
+      <!-- Модальное окно управления -->
+      <div id="managementModal" class="modal-overlay" hidden>
+        <div class="modal-content glass">
+          <header class="modal-header">
+            <button id="closeManagementModal" class="btn-back">⬅️ Назад</button>
+            <h3>🎮 Управление</h3>
+          </header>
+          <div class="modal-body">
+            <div class="management-grid">
+              <button id="btn-shop" class="btn btn-primary">🧺 Лавка</button>
+              <button id="btn-inventory" class="btn btn-secondary">🎒 Инвентарь</button>
+              <button id="btn-trophies" class="btn btn-secondary">🏆 Трофеи</button>
+            </div>
+            <div id="managementContent" class="management-content">
+              <!-- Сюда будет подгружаться содержимое -->
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
