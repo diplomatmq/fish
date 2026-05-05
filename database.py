@@ -7267,44 +7267,53 @@ class Database:
         with self._connect() as conn:
             cursor = conn.cursor()
             
-            # Общая статистика
+            # Общая статистика (caught_fish + player_trophies)
             cursor.execute('''
-                SELECT COUNT(*) as total_fish, 
-                       SUM(weight) as total_weight,
-                       COUNT(DISTINCT fish_name) as unique_fish
-                FROM caught_fish cf
-                JOIN fish f ON TRIM(cf.fish_name) = f.name
-                WHERE cf.user_id = ?
-            ''', (user_id,))
+                WITH all_catches AS (
+                    SELECT fish_name, weight, sold FROM caught_fish WHERE user_id = ?
+                    UNION ALL
+                    SELECT fish_name, weight, 0 as sold FROM player_trophies WHERE user_id = ?
+                )
+                SELECT 
+                    COUNT(*) as total_fish, 
+                    COALESCE(SUM(weight), 0) as total_weight,
+                    COUNT(DISTINCT LOWER(TRIM(fish_name))) as unique_fish
+                FROM all_catches ac
+                JOIN fish f ON LOWER(TRIM(ac.fish_name)) = LOWER(TRIM(f.name))
+            ''', (user_id, user_id))
             
             stats = cursor.fetchone()
 
             cursor.execute('''
-                SELECT COALESCE(SUM(cf.weight), 0) as trash_weight
+                SELECT COALESCE(SUM(weight), 0) as trash_weight
                 FROM caught_fish cf
-                LEFT JOIN fish f ON TRIM(cf.fish_name) = f.name
+                LEFT JOIN fish f ON LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(f.name))
                 WHERE cf.user_id = ? AND f.name IS NULL
             ''', (user_id,))
             trash_weight_row = cursor.fetchone()
             trash_weight = trash_weight_row[0] if trash_weight_row else 0
 
             cursor.execute('''
-                SELECT COUNT(*), COALESCE(SUM(cf.weight), 0)
+                SELECT COUNT(*), COALESCE(SUM(weight), 0)
                 FROM caught_fish cf
-                JOIN fish f ON TRIM(cf.fish_name) = f.name
+                JOIN fish f ON LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(f.name))
                 WHERE cf.user_id = ? AND cf.sold = 1
             ''', (user_id,))
             sold_row = cursor.fetchone()
             sold_count = sold_row[0] if sold_row else 0
             sold_weight = sold_row[1] if sold_row else 0
             
-            # Самая большая рыба
+            # Самая большая рыба (с учетом трофеев)
             cursor.execute('''
-                SELECT fish_name, weight FROM caught_fish 
-                                WHERE user_id = ?
-                                    AND TRIM(fish_name) IN (SELECT name FROM fish)
-                                ORDER BY weight DESC LIMIT 1
-                        ''', (user_id,))
+                WITH all_valid_catches AS (
+                    SELECT fish_name, weight FROM caught_fish WHERE user_id = ?
+                    UNION ALL
+                    SELECT fish_name, weight FROM player_trophies WHERE user_id = ?
+                )
+                SELECT fish_name, weight FROM all_valid_catches 
+                WHERE LOWER(TRIM(fish_name)) IN (SELECT LOWER(TRIM(name)) FROM fish)
+                ORDER BY weight DESC LIMIT 1
+            ''', (user_id, user_id))
             
             biggest = cursor.fetchone()
             
@@ -9846,6 +9855,7 @@ class Database:
         if safe_user_id > 0:
             with self._connect() as conn:
                 cursor = conn.cursor()
+                # 1. Рыбы из таблицы caught_fish (включая проданные)
                 cursor.execute(
                     '''
                     SELECT DISTINCT LOWER(TRIM(fish_name))
@@ -9859,6 +9869,7 @@ class Database:
                     if row and row[0]:
                         caught_name_set.add(str(row[0]))
 
+                # 2. Рыбы из таблицы player_trophies (трофеи)
                 cursor.execute(
                     '''
                     SELECT DISTINCT LOWER(TRIM(fish_name))
@@ -9871,6 +9882,23 @@ class Database:
                 for row in rows_trophies:
                     if row and row[0]:
                         caught_name_set.add(str(row[0]))
+
+                # 3. Рыбы из таблицы user_fish_stats (историческая статистика, если есть)
+                try:
+                    cursor.execute(
+                        '''
+                        SELECT DISTINCT LOWER(TRIM(fish_name))
+                        FROM user_fish_stats
+                        WHERE user_id = ?
+                        ''',
+                        (safe_user_id,),
+                    )
+                    rows_stats = cursor.fetchall() or []
+                    for row in rows_stats:
+                        if row and row[0]:
+                            caught_name_set.add(str(row[0]))
+                except Exception:
+                    pass
 
         with self._connect() as conn:
             cursor = conn.cursor()
