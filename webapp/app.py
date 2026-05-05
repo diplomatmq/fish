@@ -100,7 +100,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 PROJECT_ROOT = BASE_DIR.parent
 
-TRANSFERRED_UI_DIST = BASE_DIR / "ui_from_testpers" / "dist_old"
+TRANSFERRED_UI_DIST = BASE_DIR / "ui_from_testpers" / "dist"
 
 TROPHY_ID_PREFIX = "trophy_"
 
