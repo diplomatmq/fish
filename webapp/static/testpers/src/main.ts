@@ -15,7 +15,7 @@ import { FishCarousel }   from './ui/carousel';
 import { TrophyModal }    from './ui/modal';
 import { TabBar }         from './ui/tabbar';
 import { BookScreen }     from './ui/bookScreen';
-import { AdventuresScreen } from './ui/adventuresScreen';
+import { ShopScreen }     from './ui/shopScreen';
 import { GuildsScreen } from './ui/guildsScreen';
 import { FriendsScreen } from './ui/friendsScreen';
 import { ParticleSystem } from './animations/particles';
@@ -144,12 +144,12 @@ const oldBookPlaceholder = document.getElementById('screen-book');
 if (oldBookPlaceholder) oldBookPlaceholder.replaceWith(bookScreenEl);
 else screensWrap.appendChild(bookScreenEl);
 
-// ── Adventures screen ─────────────────────────────────────────────────────────
-const advScreen = new AdventuresScreen();
-const advScreenEl = advScreen.getElement();
-const oldAdvPlaceholder = document.getElementById('screen-adventures');
-if (oldAdvPlaceholder) oldAdvPlaceholder.replaceWith(advScreenEl);
-else screensWrap.appendChild(advScreenEl);
+// ── Shop screen ───────────────────────────────────────────────────────────────
+const shopScreen = new ShopScreen();
+const shopScreenEl = shopScreen.getElement();
+const oldShopPlaceholder = document.getElementById('screen-shop');
+if (oldShopPlaceholder) oldShopPlaceholder.replaceWith(shopScreenEl);
+else screensWrap.appendChild(shopScreenEl);
 
 // ── Guilds screen ─────────────────────────────────────────────────────────────
 const guildsScreen = new GuildsScreen();
@@ -166,7 +166,7 @@ if (oldFriendsPlaceholder) oldFriendsPlaceholder.replaceWith(friendsScreenEl);
 else screensWrap.appendChild(friendsScreenEl);
 
 let bookInitialized = false;
-let advInitialized = false;
+let shopInitialized = false;
 let guildsInitialized = false;
 let friendsInitialized = false;
 
@@ -180,9 +180,9 @@ tabBar.onChange((_prev, next) => {
     bookScreen.init();
     bookInitialized = true;
   }
-  if (next === 'adventures' && !advInitialized) {
-    advScreen.init();
-    advInitialized = true;
+  if (next === 'shop' && !shopInitialized) {
+    shopScreen.init();
+    shopInitialized = true;
   }
   if (next === 'guilds' && !guildsInitialized) {
     guildsScreen.init();

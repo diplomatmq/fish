@@ -5252,6 +5252,7 @@ class FishBot:
             else:
                 await _run_sync(db.init_player_rod, user_id, rod_name, chat_id)
                 player_rod = await _run_sync(db.get_player_rod, user_id, rod_name, chat_id)
+
         durability_line = ""
         if player_rod and rod_name == BAMBOO_ROD:
             durability_line = f"🔧 Прочность: {player_rod['current_durability']}/{player_rod['max_durability']}\n"
@@ -5259,17 +5260,15 @@ class FishBot:
         diamond_count = player.get('diamonds', 0)
         tickets_count = player.get('tickets', 0)
         menu_text = f"""
-    {FISHING_EMOJI_TAG} Меню рыбалки
+{FISHING_EMOJI_TAG} <b>Меню рыбалки</b>
 
-    {COIN_EMOJI_TAG} Монеты: {html.escape(str(player['coins']))} {html.escape(COIN_NAME)}
-    {DIAMOND_EMOJI_TAG} Бриллианты: {html.escape(str(diamond_count))}
-    🎟 Билеты: {html.escape(str(tickets_count))}
-    {FISHING_EMOJI_TAG} Удочка: {html.escape(str(player['current_rod']))}
-    {LOCATION_EMOJI_TAG} Локация: {html.escape(str(player['current_location']))}
-    {WORM_EMOJI_TAG} Наживка: {html.escape(str(player['current_bait']))}
-    {durability_line}
-        """
-
+{COIN_EMOJI_TAG} Монеты: {html.escape(str(player['coins']))} {html.escape(COIN_NAME)}
+{DIAMOND_EMOJI_TAG} Бриллианты: {html.escape(str(diamond_count))}
+🎟 Билеты: {html.escape(str(tickets_count))}
+{FISHING_EMOJI_TAG} Удочка: {html.escape(str(player['current_rod']))}
+{LOCATION_EMOJI_TAG} Локация: {html.escape(str(player['current_location']))}
+{WORM_EMOJI_TAG} Наживка: {html.escape(str(player['current_bait']))}
+{durability_line}"""
 
         # --- ЛОДОЧНОЕ МЕНЮ ---
         boat = await _run_sync(db.get_user_boat, user_id)
@@ -5289,27 +5288,31 @@ class FishBot:
         fish_count = await _run_sync(db.count_caught_fish, user_id)
         webapp_url = os.getenv("WEBAPP_URL", "https://fish.monkeysdynasty.website")
 
+        # Кнопки Лавка/Магазин/Инвентарь/Статистика
+        keyboard.append([
+            InlineKeyboardButton("🧺 Лавка", callback_data=f"sell_fish_{user_id}"),
+            InlineKeyboardButton("🛒 Магазин", callback_data=f"shop_{user_id}")
+        ])
+        keyboard.append([
+            InlineKeyboardButton("📊 Статистика", callback_data=f"stats_{user_id}"),
+            InlineKeyboardButton("🎒 Инвентарь", callback_data=f"inventory_{user_id}")
+        ])
+        keyboard.append([InlineKeyboardButton("🏆 Трофеи", callback_data=f"inv_trophies_{user_id}")])
+        
+        # Кнопка Mini App
+        keyboard.append([InlineKeyboardButton("📱 Открыть Mini App", web_app=WebAppInfo(url=webapp_url))])
+
         if fish_count > 15:
-            keyboard.append([InlineKeyboardButton("📱 Управление (Лавка/Инвентарь)", web_app=WebAppInfo(url=webapp_url))])
-            menu_text += f"\n\n⚠️ У вас много рыбы ({fish_count} шт). Для продажи и управления инвентарем используйте наше Mini App!"
-        else:
-            keyboard.append([InlineKeyboardButton("🧺 Лавка", callback_data=f"sell_fish_{user_id}"), InlineKeyboardButton("🛒 Магазин", callback_data=f"shop_{user_id}")])
-            keyboard.append([InlineKeyboardButton("📊 Статистика", callback_data=f"stats_{user_id}"), InlineKeyboardButton("🎒 Инвентарь", callback_data=f"inventory_{user_id}")])
-            keyboard.append([InlineKeyboardButton("🏆 Трофеи", callback_data=f"inv_trophies_{user_id}")])
+            menu_text += f"\n\n⚠️ У вас много рыбы ({fish_count} шт). Для удобного управления используйте Mini App!"
+
         # Кнопки лодки
         if is_active:
-            # В плавании
             if boat and boat.get('user_id') == user_id:
-                keyboard.insert(0, [
-                    InlineKeyboardButton("⏹️ Вернуться", callback_data=f"boat_return_{user_id}")
-                ])
+                keyboard.insert(0, [InlineKeyboardButton("⏹️ Вернуться", callback_data=f"boat_return_{user_id}")])
             else:
                 keyboard.insert(0, [InlineKeyboardButton("⛵ В плавании", callback_data=f"boat_in_trip_{user_id}")])
         else:
-            # Не плывёт: кнопка выплыть
-            keyboard.insert(0, [
-                InlineKeyboardButton(f"▶️ Выплыть ({members_count}/{capacity})", callback_data=f"boat_start_{user_id}")
-            ])
+            keyboard.insert(0, [InlineKeyboardButton(f"▶️ Выплыть ({members_count}/{capacity})", callback_data=f"boat_start_{user_id}")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         if update.message:

@@ -55,8 +55,19 @@ export function buildLayout(): HTMLElement {
         </div>
       </section>
 
-      <!-- ADVENTURES -->
-      ${emptyScreen('adventures', '🗺️', 'Приключения', 'Мини-игры и приключения\nскоро появятся!')}
+      <!-- SHOP -->
+      <section id="screen-shop" class="screen shop-screen" role="main" aria-label="Лавка">
+        <h1 class="page-title">ЛАВКА</h1>
+        <div class="shop-container">
+          <div class="shop-tabs">
+            <button class="shop-tab-btn is-active" data-tab="inventory">ИНВЕНТАРЬ</button>
+            <button class="shop-tab-btn" data-tab="market">РЫНОК (SOON)</button>
+          </div>
+          <div id="shop-content" class="shop-content">
+            <div class="loader-wrap"><div class="loader"></div></div>
+          </div>
+        </div>
+      </section>
 
       <!-- FRIENDS -->
       <section id="screen-friends" class="screen" role="main" aria-label="Друзья"></section>
