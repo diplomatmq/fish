@@ -13574,7 +13574,12 @@ def main():
     if not _acquire_single_instance_lock():
         print("⚠️ Уже запущен другой инстанс бота с этим токеном. Завершаю текущий процесс.")
         return
-    
+
+    try:
+        db.init_db()
+    except Exception:
+        logger.exception("DB init failed during startup")
+
     # Создаем экземпляр бота
     bot_instance = FishBot()
 

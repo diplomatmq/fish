@@ -25,7 +25,8 @@ except Exception as e:
     sys.exit(2)
 
 try:
-    Database()
+    db = Database()
+    db.init_db()
     print('Database initialized / migrations applied (if any).')
 except Exception as e:
     print('Error while applying migrations:', repr(e))

@@ -48,15 +48,28 @@ fish_db = None
 
 fish_db_import_error: Exception | None = None
 
+_fish_db_initialized = False
 
 
 
 
 def _get_fish_db():
 
-	global fish_db, fish_db_import_error
+	global fish_db, fish_db_import_error, _fish_db_initialized
 
 	if fish_db is not None:
+
+		if not _fish_db_initialized:
+
+			try:
+
+				fish_db.init_db()
+
+				_fish_db_initialized = True
+
+			except Exception:
+
+				logger.exception("WebApp DB init failed")
 
 		return fish_db
 
@@ -79,6 +92,16 @@ def _get_fish_db():
 		fish_db = imported_db
 
 		fish_db_import_error = None
+
+		try:
+
+			fish_db.init_db()
+
+			_fish_db_initialized = True
+
+		except Exception:
+
+			logger.exception("WebApp DB init failed")
 
 	except Exception as exc:
 
@@ -481,6 +504,8 @@ def index():
 
 @app.get("/src/<path:filename>")
 def transferred_src(filename: str):
+	if filename.lower().endswith('.ts'):
+		return send_from_directory(str(BASE_DIR / "ui_from_testpers" / "src"), filename, mimetype='application/javascript')
 	return send_from_directory(str(BASE_DIR / "ui_from_testpers" / "src"), filename)
 
 
