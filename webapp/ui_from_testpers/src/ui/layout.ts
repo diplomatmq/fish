@@ -122,7 +122,7 @@ export function hideEntryOverlay(overlay: HTMLElement, delay = 1600): void {
 }
 
 // ── Quick action bounce helper ──────────────────────────────────────────────
-export function bindQuickActions(onShopClick?: () => void): void {
+export function bindQuickActions(): void {
   const achievementsBtn = document.getElementById('btn-achievements');
   const ratingBtn       = document.getElementById('btn-rating');
 

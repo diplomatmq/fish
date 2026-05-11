@@ -497,9 +497,12 @@ def index():
 	if captcha_mode:
 		return render_template("index.html", captcha_mode=captcha_mode)
 	
-	# Force fallback to development template to reflect src changes immediately
-	# Priority 2: Fallback to development template
-	return render_template("index_testpers.html")
+	# Priority 2: Serve built Vite application from ui_from_testpers/dist
+	if (TRANSFERRED_UI_DIST / "index.html").exists():
+		return send_from_directory(str(TRANSFERRED_UI_DIST), "index.html")
+		
+	# Fallback if not built
+	return render_template("index.html")
 
 
 @app.get("/src/<path:filename>")
