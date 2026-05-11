@@ -4982,17 +4982,17 @@ class Database:
             self._ensure_extended_gameplay_tables()
             self._ensure_webapp_ui_tables()
 
-            conn.commit()
-        
-        # Ensure integer PK columns have sequences/defaults (Postgres)
-        try:
-            ensure_all_serial_pks(conn)
-        except Exception:
-            logger.exception('ensure_all_serial_pks call failed during init_db')
+            # Ensure integer PK columns have sequences/defaults (Postgres)
             try:
-                conn.rollback()
+                ensure_all_serial_pks(conn)
             except Exception:
-                pass
+                logger.exception('ensure_all_serial_pks call failed during init_db')
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+            conn.commit()
 
         # Миграции - добавляем колонки если их нет
         self._run_migrations()
