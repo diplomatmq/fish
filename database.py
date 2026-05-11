@@ -4487,6 +4487,7 @@ class Database:
                     coins INTEGER DEFAULT 100,
                     stars INTEGER DEFAULT 0,
                     tickets INTEGER DEFAULT 0,
+                    gold_tickets INTEGER DEFAULT 0,
                     diamonds INTEGER DEFAULT 0,
                     xp INTEGER DEFAULT 0,
                     level INTEGER DEFAULT 0,
@@ -4622,6 +4623,7 @@ class Database:
                     source_ref TEXT,
                     amount INTEGER NOT NULL DEFAULT 0,
                     jackpot_amount INTEGER NOT NULL DEFAULT 0,
+                    ticket_type TEXT NOT NULL DEFAULT 'normal',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES players (user_id)
                 )
@@ -4640,6 +4642,7 @@ class Database:
                     username TEXT NOT NULL,
                     source_type TEXT NOT NULL,
                     source_ref TEXT,
+                    ticket_type TEXT NOT NULL DEFAULT 'normal',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (award_id) REFERENCES ticket_awards (id),
                     FOREIGN KEY (user_id) REFERENCES players (user_id)
@@ -4652,6 +4655,41 @@ class Database:
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_ticket_items_code
                 ON ticket_items (ticket_code)
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ticket_draw_runs (
+                    id SERIAL PRIMARY KEY,
+                    ticket_type TEXT NOT NULL DEFAULT 'normal',
+                    start_at TIMESTAMP NOT NULL,
+                    end_at TIMESTAMP NOT NULL,
+                    requested_count INTEGER NOT NULL DEFAULT 1,
+                    created_by BIGINT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ticket_draw_items (
+                    id SERIAL PRIMARY KEY,
+                    run_id INTEGER NOT NULL,
+                    ticket_code TEXT NOT NULL,
+                    award_id INTEGER NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    username TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_ref TEXT,
+                    ticket_type TEXT NOT NULL DEFAULT 'normal',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (run_id) REFERENCES ticket_draw_runs (id)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_ticket_draw_runs_type_created
+                ON ticket_draw_runs (ticket_type, created_at)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_ticket_draw_items_run
+                ON ticket_draw_items (run_id)
             ''')
 
             # Backfill legacy `players.tickets` balances into the new per-ticket ledger once.
@@ -5169,6 +5207,7 @@ class Database:
             ensure_column('players', 'last_boat_return_time', 'TEXT')
             ensure_column('players', 'diamonds', 'INTEGER DEFAULT 0')
             ensure_column('players', 'tickets', 'INTEGER DEFAULT 0')
+            ensure_column('players', 'gold_tickets', 'INTEGER DEFAULT 0')
             ensure_column('players', 'dynamite_ban_until', 'TEXT')
             ensure_column('players', 'dynamite_upgrade_level', 'INTEGER DEFAULT 1')
             ensure_column('raf_events', 'creator_username', 'TEXT')
@@ -5177,6 +5216,19 @@ class Database:
             ensure_column('player_trophies', 'image_file', 'TEXT')
             ensure_column('player_trophies', 'is_active', 'INTEGER DEFAULT 0')
             ensure_column('player_trophies', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+            ensure_column('ticket_awards', 'ticket_type', "TEXT NOT NULL DEFAULT 'normal'")
+            ensure_column('ticket_items', 'ticket_type', "TEXT NOT NULL DEFAULT 'normal'")
+
+            try:
+                cursor.execute("UPDATE ticket_awards SET ticket_type = 'normal' WHERE ticket_type IS NULL OR ticket_type = ''")
+                cursor.execute("UPDATE ticket_items SET ticket_type = 'normal' WHERE ticket_type IS NULL OR ticket_type = ''")
+                cursor.execute("UPDATE players SET gold_tickets = COALESCE(gold_tickets, 0)")
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
             # Ensure unique index for ON CONFLICT targets that expect (user_id, chat_id)
             try:
@@ -7723,6 +7775,7 @@ class Database:
         source_type: str,
         source_ref: Optional[str] = None,
         jackpot_amount: int = 0,
+        ticket_type: str = 'normal',
     ) -> Dict[str, Any]:
         """Записать выдачу билетов и создать отдельную запись на каждый билет."""
         delta = int(amount or 0)
@@ -7730,57 +7783,62 @@ class Database:
             return {
                 'award_id': None,
                 'ticket_codes': [],
-                'tickets_total': self.get_user_tickets(user_id),
+                'tickets_total': self.get_user_tickets(user_id, ticket_type=ticket_type),
             }
 
         safe_username = str(username or 'Неизвестно').strip() or 'Неизвестно'
         safe_source_type = str(source_type or 'unknown').strip() or 'unknown'
         safe_source_ref = str(source_ref or '').strip() or None
         safe_jackpot_amount = int(jackpot_amount or 0)
+        safe_ticket_type = str(ticket_type or 'normal').strip().lower()
+        if safe_ticket_type not in ('normal', 'gold'):
+            safe_ticket_type = 'normal'
 
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 '''
-                INSERT INTO ticket_awards (user_id, username, source_type, source_ref, amount, jackpot_amount)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO ticket_awards (user_id, username, source_type, source_ref, amount, jackpot_amount, ticket_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
                 ''',
-                (int(user_id), safe_username, safe_source_type, safe_source_ref, delta, safe_jackpot_amount),
+                (int(user_id), safe_username, safe_source_type, safe_source_ref, delta, safe_jackpot_amount, safe_ticket_type),
             )
             award_row = cursor.fetchone()
             award_id = int(award_row[0]) if award_row else None
 
             ticket_codes: List[str] = []
             if award_id:
+                code_prefix = 'g' if safe_ticket_type == 'gold' else 'b'
                 for ticket_index in range(1, delta + 1):
-                    ticket_code = f"b{award_id}-{ticket_index}"
+                    ticket_code = f"{code_prefix}{award_id}-{ticket_index}"
                     cursor.execute(
                         '''
-                        INSERT INTO ticket_items (ticket_code, award_id, user_id, username, source_type, source_ref)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        INSERT INTO ticket_items (ticket_code, award_id, user_id, username, source_type, source_ref, ticket_type)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         ''',
-                        (ticket_code, award_id, int(user_id), safe_username, safe_source_type, safe_source_ref),
+                        (ticket_code, award_id, int(user_id), safe_username, safe_source_type, safe_source_ref, safe_ticket_type),
                     )
                     ticket_codes.append(ticket_code)
 
             cursor.execute("PRAGMA table_info(players)")
             columns = [col[1] for col in cursor.fetchall()]
             uses_chat = 'chat_id' in columns
+            ticket_column = 'gold_tickets' if safe_ticket_type == 'gold' else 'tickets'
 
             if uses_chat:
                 cursor.execute(
-                    'UPDATE players SET tickets = COALESCE(tickets, 0) + ? WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1)',
+                    f'UPDATE players SET {ticket_column} = COALESCE({ticket_column}, 0) + ? WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1)',
                     (delta, user_id),
                 )
                 if cursor.rowcount == 0:
                     cursor.execute(
-                        'UPDATE players SET tickets = COALESCE(tickets, 0) + ? WHERE user_id = ?',
+                        f'UPDATE players SET {ticket_column} = COALESCE({ticket_column}, 0) + ? WHERE user_id = ?',
                         (delta, user_id),
                     )
             else:
                 cursor.execute(
-                    'UPDATE players SET tickets = COALESCE(tickets, 0) + ? WHERE user_id = ?',
+                    f'UPDATE players SET {ticket_column} = COALESCE({ticket_column}, 0) + ? WHERE user_id = ?',
                     (delta, user_id),
                 )
             conn.commit()
@@ -7788,7 +7846,7 @@ class Database:
         return {
             'award_id': award_id,
             'ticket_codes': ticket_codes,
-            'tickets_total': self.get_user_tickets(user_id),
+            'tickets_total': self.get_user_tickets(user_id, ticket_type=safe_ticket_type),
         }
 
     def add_tickets(
@@ -7799,6 +7857,7 @@ class Database:
         source_type: str = 'unknown',
         source_ref: Optional[str] = None,
         jackpot_amount: int = 0,
+        ticket_type: str = 'normal',
     ) -> int:
         """Начислить билеты пользователю и вернуть новый баланс билетов."""
         resolved_username = str(username or '').strip()
@@ -7816,41 +7875,81 @@ class Database:
             source_type=source_type,
             source_ref=source_ref,
             jackpot_amount=jackpot_amount,
+            ticket_type=ticket_type,
         )
         return int(result.get('tickets_total') or 0)
 
-    def get_user_tickets(self, user_id: int) -> int:
+    def get_user_tickets(self, user_id: int, ticket_type: Optional[str] = None) -> int:
         """Текущее количество билетов пользователя (глобально по user_id)."""
+        safe_ticket_type = str(ticket_type or '').strip().lower() if ticket_type else None
+        if safe_ticket_type not in (None, 'normal', 'gold'):
+            safe_ticket_type = None
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) FROM ticket_items WHERE user_id = ?', (user_id,))
+            if safe_ticket_type:
+                cursor.execute(
+                    'SELECT COUNT(*) FROM ticket_items WHERE user_id = ? AND ticket_type = ?',
+                    (user_id, safe_ticket_type),
+                )
+            else:
+                cursor.execute('SELECT COUNT(*) FROM ticket_items WHERE user_id = ?', (user_id,))
             row = cursor.fetchone()
             if row is not None:
                 return int(row[0] or 0)
-            cursor.execute(
-                'SELECT COALESCE(MAX(tickets), 0) FROM players WHERE user_id = ?',
-                (user_id,),
-            )
+            if safe_ticket_type == 'gold':
+                cursor.execute(
+                    'SELECT COALESCE(MAX(gold_tickets), 0) FROM players WHERE user_id = ?',
+                    (user_id,),
+                )
+            elif safe_ticket_type == 'normal':
+                cursor.execute(
+                    'SELECT COALESCE(MAX(tickets), 0) FROM players WHERE user_id = ?',
+                    (user_id,),
+                )
+            else:
+                cursor.execute(
+                    'SELECT COALESCE(MAX(tickets), 0) + COALESCE(MAX(gold_tickets), 0) FROM players WHERE user_id = ?',
+                    (user_id,),
+                )
             row = cursor.fetchone()
             return int(row[0] or 0) if row else 0
 
-    def get_tickets_leaderboard(self, limit: int = 3) -> List[Dict[str, Any]]:
+    def get_tickets_leaderboard(self, limit: int = 3, ticket_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """Топ пользователей по билетам (глобально)."""
+        safe_ticket_type = str(ticket_type or '').strip().lower() if ticket_type else None
+        if safe_ticket_type not in (None, 'normal', 'gold'):
+            safe_ticket_type = None
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT
-                    user_id,
-                    COALESCE(MAX(username), 'Неизвестно') AS username,
-                    COUNT(*) AS tickets
-                FROM ticket_items
-                GROUP BY user_id
-                ORDER BY tickets DESC, user_id ASC
-                LIMIT ?
-                ''',
-                (limit,),
-            )
+            if safe_ticket_type:
+                cursor.execute(
+                    '''
+                    SELECT
+                        user_id,
+                        COALESCE(MAX(username), 'Неизвестно') AS username,
+                        COUNT(*) AS tickets
+                    FROM ticket_items
+                    WHERE ticket_type = ?
+                    GROUP BY user_id
+                    ORDER BY tickets DESC, user_id ASC
+                    LIMIT ?
+                    ''',
+                    (safe_ticket_type, limit),
+                )
+            else:
+                cursor.execute(
+                    '''
+                    SELECT
+                        user_id,
+                        COALESCE(MAX(username), 'Неизвестно') AS username,
+                        COUNT(*) AS tickets
+                    FROM ticket_items
+                    GROUP BY user_id
+                    ORDER BY tickets DESC, user_id ASC
+                    LIMIT ?
+                    ''',
+                    (limit,),
+                )
             rows = cursor.fetchall()
             return [
                 {
@@ -7861,18 +7960,33 @@ class Database:
                 for row in rows
             ]
 
-    def get_user_tickets_rank(self, user_id: int) -> Dict[str, int]:
+    def get_user_tickets_rank(self, user_id: int, ticket_type: Optional[str] = None) -> Dict[str, int]:
         """Вернуть место пользователя в глобальном рейтинге билетов и его билеты."""
+        safe_ticket_type = str(ticket_type or '').strip().lower() if ticket_type else None
+        if safe_ticket_type not in (None, 'normal', 'gold'):
+            safe_ticket_type = None
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT user_id, COUNT(*) AS tickets
-                FROM ticket_items
-                GROUP BY user_id
-                ORDER BY tickets DESC, user_id ASC
-                '''
-            )
+            if safe_ticket_type:
+                cursor.execute(
+                    '''
+                    SELECT user_id, COUNT(*) AS tickets
+                    FROM ticket_items
+                    WHERE ticket_type = ?
+                    GROUP BY user_id
+                    ORDER BY tickets DESC, user_id ASC
+                    ''',
+                    (safe_ticket_type,),
+                )
+            else:
+                cursor.execute(
+                    '''
+                    SELECT user_id, COUNT(*) AS tickets
+                    FROM ticket_items
+                    GROUP BY user_id
+                    ORDER BY tickets DESC, user_id ASC
+                    '''
+                )
             rows = cursor.fetchall()
 
         rank = 0
@@ -7887,7 +8001,7 @@ class Database:
                 break
 
         if rank == 0:
-            tickets = self.get_user_tickets(user_id)
+            tickets = self.get_user_tickets(user_id, ticket_type=safe_ticket_type)
             rank = total_users + 1 if total_users > 0 else 1
 
         return {
@@ -7896,18 +8010,33 @@ class Database:
             'total_users': total_users,
         }
 
-    def get_random_ticket(self) -> Optional[Dict[str, Any]]:
+    def get_random_ticket(self, ticket_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Получить случайный билет из общего пула."""
+        safe_ticket_type = str(ticket_type or '').strip().lower() if ticket_type else None
+        if safe_ticket_type not in (None, 'normal', 'gold'):
+            safe_ticket_type = None
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT ticket_code, award_id, user_id, username, source_type, source_ref, created_at
-                FROM ticket_items
-                ORDER BY RANDOM()
-                LIMIT 1
-                '''
-            )
+            if safe_ticket_type:
+                cursor.execute(
+                    '''
+                    SELECT ticket_code, award_id, user_id, username, source_type, source_ref, created_at, ticket_type
+                    FROM ticket_items
+                    WHERE ticket_type = ?
+                    ORDER BY RANDOM()
+                    LIMIT 1
+                    ''',
+                    (safe_ticket_type,),
+                )
+            else:
+                cursor.execute(
+                    '''
+                    SELECT ticket_code, award_id, user_id, username, source_type, source_ref, created_at, ticket_type
+                    FROM ticket_items
+                    ORDER BY RANDOM()
+                    LIMIT 1
+                    '''
+                )
             row = cursor.fetchone()
             if not row:
                 return None
@@ -7919,25 +8048,46 @@ class Database:
         start_at: datetime,
         end_at: datetime,
         limit: int = 1,
+        ticket_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Получить случайные билеты из диапазона дат."""
         safe_limit = max(1, int(limit or 1))
+        safe_ticket_type = str(ticket_type or '').strip().lower() if ticket_type else None
+        if safe_ticket_type not in (None, 'normal', 'gold'):
+            safe_ticket_type = None
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT ticket_code, award_id, user_id, username, source_type, source_ref, created_at
-                FROM ticket_items
-                WHERE created_at >= ? AND created_at <= ?
-                ORDER BY RANDOM()
-                LIMIT ?
-                ''',
-                (
-                    start_at.strftime('%Y-%m-%d %H:%M:%S'),
-                    end_at.strftime('%Y-%m-%d %H:%M:%S'),
-                    safe_limit,
-                ),
-            )
+            if safe_ticket_type:
+                cursor.execute(
+                    '''
+                    SELECT ticket_code, award_id, user_id, username, source_type, source_ref, created_at, ticket_type
+                    FROM ticket_items
+                    WHERE created_at >= ? AND created_at <= ? AND ticket_type = ?
+                    ORDER BY RANDOM()
+                    LIMIT ?
+                    ''',
+                    (
+                        start_at.strftime('%Y-%m-%d %H:%M:%S'),
+                        end_at.strftime('%Y-%m-%d %H:%M:%S'),
+                        safe_ticket_type,
+                        safe_limit,
+                    ),
+                )
+            else:
+                cursor.execute(
+                    '''
+                    SELECT ticket_code, award_id, user_id, username, source_type, source_ref, created_at, ticket_type
+                    FROM ticket_items
+                    WHERE created_at >= ? AND created_at <= ?
+                    ORDER BY RANDOM()
+                    LIMIT ?
+                    ''',
+                    (
+                        start_at.strftime('%Y-%m-%d %H:%M:%S'),
+                        end_at.strftime('%Y-%m-%d %H:%M:%S'),
+                        safe_limit,
+                    ),
+                )
             rows = cursor.fetchall()
             columns = [description[0] for description in cursor.description] if cursor.description else []
             return [dict(zip(columns, row)) for row in rows]
@@ -7947,27 +8097,47 @@ class Database:
         user_ids: List[int],
         start_at: datetime,
         end_at: datetime,
+        ticket_type: Optional[str] = None,
     ) -> Dict[int, int]:
         """Получить число билетов каждого пользователя в указанном диапазоне дат."""
         if not user_ids:
             return {}
+        safe_ticket_type = str(ticket_type or '').strip().lower() if ticket_type else None
+        if safe_ticket_type not in (None, 'normal', 'gold'):
+            safe_ticket_type = None
 
         with self._connect() as conn:
             cursor = conn.cursor()
             placeholders = ','.join(['?'] * len(user_ids))
-            cursor.execute(
-                f'''
-                SELECT user_id, COUNT(*) AS tickets
-                FROM ticket_items
-                WHERE created_at >= ? AND created_at <= ? AND user_id IN ({placeholders})
-                GROUP BY user_id
-                ''',
-                [
-                    start_at.strftime('%Y-%m-%d %H:%M:%S'),
-                    end_at.strftime('%Y-%m-%d %H:%M:%S'),
-                    *[int(user_id) for user_id in user_ids],
-                ],
-            )
+            if safe_ticket_type:
+                cursor.execute(
+                    f'''
+                    SELECT user_id, COUNT(*) AS tickets
+                    FROM ticket_items
+                    WHERE created_at >= ? AND created_at <= ? AND ticket_type = ? AND user_id IN ({placeholders})
+                    GROUP BY user_id
+                    ''',
+                    [
+                        start_at.strftime('%Y-%m-%d %H:%M:%S'),
+                        end_at.strftime('%Y-%m-%d %H:%M:%S'),
+                        safe_ticket_type,
+                        *[int(user_id) for user_id in user_ids],
+                    ],
+                )
+            else:
+                cursor.execute(
+                    f'''
+                    SELECT user_id, COUNT(*) AS tickets
+                    FROM ticket_items
+                    WHERE created_at >= ? AND created_at <= ? AND user_id IN ({placeholders})
+                    GROUP BY user_id
+                    ''',
+                    [
+                        start_at.strftime('%Y-%m-%d %H:%M:%S'),
+                        end_at.strftime('%Y-%m-%d %H:%M:%S'),
+                        *[int(user_id) for user_id in user_ids],
+                    ],
+                )
             rows = cursor.fetchall()
 
         result: Dict[int, int] = {}
@@ -7977,6 +8147,131 @@ class Database:
             except Exception:
                 continue
         return result
+
+    def create_ticket_draw_results(
+        self,
+        ticket_type: str,
+        start_at: datetime,
+        end_at: datetime,
+        requested_count: int,
+        created_by: int,
+    ) -> Dict[str, Any]:
+        safe_ticket_type = str(ticket_type or 'normal').strip().lower()
+        if safe_ticket_type not in ('normal', 'gold'):
+            safe_ticket_type = 'normal'
+
+        draws = self.get_random_tickets_in_period(
+            start_at=start_at,
+            end_at=end_at,
+            limit=requested_count,
+            ticket_type=safe_ticket_type,
+        )
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO ticket_draw_runs (ticket_type, start_at, end_at, requested_count, created_by)
+                VALUES (?, ?, ?, ?, ?)
+                RETURNING id
+                ''',
+                (
+                    safe_ticket_type,
+                    start_at.strftime('%Y-%m-%d %H:%M:%S'),
+                    end_at.strftime('%Y-%m-%d %H:%M:%S'),
+                    int(requested_count or 1),
+                    int(created_by),
+                ),
+            )
+            run_row = cursor.fetchone()
+            run_id = int(run_row[0]) if run_row else None
+
+            stored_items: List[Dict[str, Any]] = []
+            if run_id:
+                for row in draws:
+                    cursor.execute(
+                        '''
+                        INSERT INTO ticket_draw_items (
+                            run_id,
+                            ticket_code,
+                            award_id,
+                            user_id,
+                            username,
+                            source_type,
+                            source_ref,
+                            ticket_type,
+                            created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''',
+                        (
+                            run_id,
+                            row.get('ticket_code'),
+                            int(row.get('award_id') or 0),
+                            int(row.get('user_id') or 0),
+                            str(row.get('username') or 'Неизвестно'),
+                            str(row.get('source_type') or ''),
+                            str(row.get('source_ref') or '') if row.get('source_ref') is not None else None,
+                            safe_ticket_type,
+                            row.get('created_at'),
+                        ),
+                    )
+                    stored_items.append(row)
+            conn.commit()
+
+        return {
+            'run_id': run_id,
+            'items': stored_items,
+            'ticket_type': safe_ticket_type,
+            'start_at': start_at,
+            'end_at': end_at,
+        }
+
+    def get_latest_ticket_draw_results(self, ticket_type: str) -> Optional[Dict[str, Any]]:
+        safe_ticket_type = str(ticket_type or 'normal').strip().lower()
+        if safe_ticket_type not in ('normal', 'gold'):
+            safe_ticket_type = 'normal'
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, start_at, end_at, requested_count, created_by, created_at
+                FROM ticket_draw_runs
+                WHERE ticket_type = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                ''',
+                (safe_ticket_type,),
+            )
+            run_row = cursor.fetchone()
+            if not run_row:
+                return None
+
+            run_id = int(run_row[0])
+            cursor.execute(
+                '''
+                SELECT ticket_code, award_id, user_id, username, source_type, source_ref, created_at, ticket_type
+                FROM ticket_draw_items
+                WHERE run_id = ?
+                ORDER BY id ASC
+                ''',
+                (run_id,),
+            )
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description] if cursor.description else []
+            items = [dict(zip(columns, row)) for row in rows]
+
+        return {
+            'run_id': run_id,
+            'ticket_type': safe_ticket_type,
+            'start_at': run_row[1],
+            'end_at': run_row[2],
+            'requested_count': int(run_row[3] or 0),
+            'created_by': int(run_row[4] or 0),
+            'created_at': run_row[5],
+            'items': items,
+        }
 
     def get_chat_leaderboard_period(self, chat_id: int, limit: int = 10, since: Optional[datetime] = None, until: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """Получить топ по общему весу улова в конкретном чате за период.

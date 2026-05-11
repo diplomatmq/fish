@@ -474,11 +474,7 @@ def index():
 	if captcha_mode:
 		return render_template("index.html", captcha_mode=captcha_mode)
 	
-	# Priority 1: Check for index.html in dist
-	dist_index = TRANSFERRED_UI_DIST / "index.html"
-	if dist_index.exists():
-		return send_from_directory(str(TRANSFERRED_UI_DIST), "index.html")
-	
+	# Force fallback to development template to reflect src changes immediately
 	# Priority 2: Fallback to development template
 	return render_template("index_testpers.html")
 
@@ -882,6 +878,12 @@ def profile():
 
 
 	level = int(player.get("level") or 0)
+	try:
+		tickets_total = db.get_user_tickets(user_id, ticket_type='normal')
+		gold_tickets_total = db.get_user_tickets(user_id, ticket_type='gold')
+	except Exception:
+		tickets_total = int(player.get('tickets') or 0)
+		gold_tickets_total = int(player.get('gold_tickets') or 0)
 
 	payload = {
 
@@ -898,6 +900,10 @@ def profile():
 		"coins": int(player.get("coins") or 0),
 
 		"stars": int(player.get("stars") or 0),
+
+		"tickets": int(tickets_total or 0),
+
+		"gold_tickets": int(gold_tickets_total or 0),
 
 		"title": _build_title(level),
 
@@ -1450,6 +1456,10 @@ def tickets_rating():
 
 	limit = max(1, min(limit, 100))
 
+	ticket_type = str(request.args.get("ticket_type") or "normal").strip().lower()
+	if ticket_type not in ("normal", "gold"):
+		ticket_type = "normal"
+
 
 
 	db = _get_fish_db()
@@ -1466,9 +1476,9 @@ def tickets_rating():
 
 	try:
 
-		rows = db.get_tickets_leaderboard(limit=limit)
+		rows = db.get_tickets_leaderboard(limit=limit, ticket_type=ticket_type)
 
-		my_rank = db.get_user_tickets_rank(user_id)
+		my_rank = db.get_user_tickets_rank(user_id, ticket_type=ticket_type)
 
 	except Exception:
 
@@ -1506,6 +1516,8 @@ def tickets_rating():
 
 		"limit": limit,
 
+		"ticket_type": ticket_type,
+
 	})
 
 
@@ -1542,6 +1554,10 @@ def tickets_draw():
 
 	count = max(1, min(count, 100))
 
+	ticket_type = str(data.get("ticket_type") or "normal").strip().lower()
+	if ticket_type not in ("normal", "gold"):
+		ticket_type = "normal"
+
 
 
 	if not start_date or not end_date:
@@ -1568,7 +1584,15 @@ def tickets_draw():
 
 	try:
 
-		draws = db.get_random_tickets_in_period(start_date, end_date, limit=count)
+		result = db.create_ticket_draw_results(
+			ticket_type=ticket_type,
+			start_at=start_date,
+			end_at=end_date,
+			requested_count=count,
+			created_by=user_id,
+		)
+
+		draws = result.get('items') or []
 
 		user_counts = db.get_ticket_counts_for_users_in_period(
 
@@ -1577,6 +1601,8 @@ def tickets_draw():
 			start_date,
 
 			end_date,
+
+			ticket_type=ticket_type,
 
 		)
 
@@ -1595,6 +1621,8 @@ def tickets_draw():
 			"ok": True,
 
 			"items": [],
+
+			"ticket_type": ticket_type,
 
 			"period": {
 
@@ -1644,6 +1672,8 @@ def tickets_draw():
 
 		"items": items,
 
+		"ticket_type": ticket_type,
+
 		"period": {
 
 			"start_date": start_date.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1653,6 +1683,113 @@ def tickets_draw():
 			"count": len(items),
 
 		},
+
+	})
+
+
+
+
+@app.get("/api/tickets/results")
+
+def tickets_results():
+
+	auth_user, auth_error = _get_verified_user_from_request()
+
+	if auth_error:
+
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+
+
+	ticket_type = str(request.args.get("ticket_type") or "normal").strip().lower()
+	if ticket_type not in ("normal", "gold"):
+		ticket_type = "normal"
+
+
+
+	db = _get_fish_db()
+
+	if db is None:
+
+		if fish_db_import_error is not None:
+
+			logger.error("WebApp DB unavailable: %s", fish_db_import_error)
+
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+
+
+	try:
+
+		result = db.get_latest_ticket_draw_results(ticket_type=ticket_type)
+
+	except Exception:
+
+		logger.exception("WebApp ticket results read failed for type=%s", ticket_type)
+
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+
+
+	if not result:
+
+		return jsonify({
+
+			"ok": True,
+
+			"items": [],
+
+			"ticket_type": ticket_type,
+
+			"period": None,
+
+		})
+
+
+
+	items = []
+
+	for idx, row in enumerate(result.get('items') or [], start=1):
+
+		items.append({
+
+			"place": idx,
+
+			"ticket_code": row.get("ticket_code"),
+
+			"user_id": int(row.get("user_id") or 0),
+
+			"username": str(row.get("username") or "Неизвестно"),
+
+			"created_at": row.get("created_at"),
+
+			"source_type": row.get("source_type"),
+
+			"source_ref": row.get("source_ref"),
+
+		})
+
+
+
+	period = {
+
+		"start_date": str(result.get('start_at') or ''),
+
+		"end_date": str(result.get('end_at') or ''),
+
+		"count": len(items),
+
+	}
+
+	return jsonify({
+
+		"ok": True,
+
+		"items": items,
+
+		"ticket_type": ticket_type,
+
+		"period": period,
 
 	})
 
@@ -1684,9 +1821,13 @@ def tickets_random():
 
 
 
+	ticket_type = str(request.args.get("ticket_type") or "").strip().lower()
+	if ticket_type not in ("", "normal", "gold"):
+		ticket_type = ""
+
 	try:
 
-		row = db.get_random_ticket()
+		row = db.get_random_ticket(ticket_type=ticket_type or None)
 
 	except Exception:
 

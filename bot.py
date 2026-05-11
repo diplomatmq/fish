@@ -2876,21 +2876,16 @@ class FishBot:
         return self._normalize_raf_rarity(str(raw_rarity or ''))
 
     def _calculate_tickets_for_result(self, result: Dict[str, Any]) -> int:
-        if result.get('snap'):
-            return int(self.TICKET_POINTS['snap'])
-        if result.get('no_bite'):
-            return int(self.TICKET_POINTS['no_bite'])
-        if result.get('is_trash'):
-            return int(self.TICKET_POINTS['trash'])
+        if result.get('snap') or result.get('no_bite') or result.get('is_trash'):
+            return 0
 
         fish = result.get('fish') or {}
-        rarity = fish.get('rarity') or result.get('target_rarity')
-        if rarity in self.TICKET_POINTS:
-            return int(self.TICKET_POINTS[rarity])
+        if fish:
+            return 1
         return 0
 
     def _calculate_tickets_for_rarity(self, rarity: str) -> int:
-        return int(self.TICKET_POINTS.get(str(rarity or ''), 0))
+        return 1 if str(rarity or '').strip() else 0
 
     def _award_tickets(
         self,
@@ -2899,16 +2894,14 @@ class FishBot:
         username: str,
         source_type: str,
         source_ref: Optional[str] = None,
+        ticket_type: str = 'normal',
     ):
         base = int(base_tickets or 0)
         if base <= 0:
-            return 0, 0, db.get_user_tickets(user_id)
+            return 0, 0, db.get_user_tickets(user_id, ticket_type=ticket_type)
 
         jackpot = 0
-        if random.random() < self.TICKET_JACKPOT_CHANCE:
-            jackpot = random.randint(self.TICKET_JACKPOT_MIN, self.TICKET_JACKPOT_MAX)
-
-        total_awarded = base + jackpot
+        total_awarded = base
         new_total = db.add_tickets(
             user_id,
             total_awarded,
@@ -2916,15 +2909,18 @@ class FishBot:
             source_type=source_type,
             source_ref=source_ref,
             jackpot_amount=jackpot,
+            ticket_type=ticket_type,
         )
         return total_awarded, jackpot, new_total
 
-    def _format_tickets_award_line(self, awarded: int, jackpot: int, total_tickets: int) -> str:
+    def _format_tickets_award_line(self, awarded: int, jackpot: int, total_tickets: int, ticket_type: str = 'normal') -> str:
         if awarded <= 0:
             return ""
+        label = "🎟 Билеты" if ticket_type != 'gold' else "🌟 Золотые билеты"
+        total_label = "🎫 Всего билетов" if ticket_type != 'gold' else "✨ Всего золотых билетов"
         if jackpot > 0:
-            return f"\n🎟 Билеты: +{awarded} (джекпот +{jackpot})\n🎫 Всего билетов: {total_tickets}"
-        return f"\n🎟 Билеты: +{awarded}\n🎫 Всего билетов: {total_tickets}"
+            return f"\n{label}: +{awarded} (джекпот +{jackpot})\n{total_label}: {total_tickets}"
+        return f"\n{label}: +{awarded}\n{total_label}: {total_tickets}"
 
     def _get_market_offer_snapshot(self, create_if_missing: bool = False) -> Optional[Dict[str, Any]]:
         """Нормализованный снимок предложения рынка дня (с fallback на авто-генерацию)."""
@@ -5260,13 +5256,15 @@ class FishBot:
             durability_line = f"🔧 Прочность: {player_rod['current_durability']}/{player_rod['max_durability']}\n"
 
         diamond_count = player.get('diamonds', 0)
-        tickets_count = player.get('tickets', 0)
+        tickets_count = await _run_sync(db.get_user_tickets, user_id, 'normal')
+        gold_tickets_count = await _run_sync(db.get_user_tickets, user_id, 'gold')
         menu_text = f"""
 {FISHING_EMOJI_TAG} <b>Меню рыбалки</b>
 
 {COIN_EMOJI_TAG} Монеты: {html.escape(str(player['coins']))} {html.escape(COIN_NAME)}
 {DIAMOND_EMOJI_TAG} Бриллианты: {html.escape(str(diamond_count))}
-🎟 Билеты: {html.escape(str(tickets_count))}
+    🎟 Обычные билеты: {html.escape(str(tickets_count))}
+    🌟 Золотые билеты: {html.escape(str(gold_tickets_count))}
 {FISHING_EMOJI_TAG} Удочка: {html.escape(str(player['current_rod']))}
 {LOCATION_EMOJI_TAG} Локация: {html.escape(str(player['current_location']))}
 {WORM_EMOJI_TAG} Наживка: {html.escape(str(player['current_bait']))}
@@ -6094,7 +6092,6 @@ class FishBot:
                         'name': get_treasure_name(treasure_key),
                         'price': 0,
                     })
-                    net_tickets_base += int(self.TICKET_POINTS['trash'])
                     logger.info(
                         "Net catch (trash->treasure): user=%s chat_id=%s chat_title=%s trash=%s treasure=%s location=%s",
                         user_id,
@@ -6124,7 +6121,6 @@ class FishBot:
                         'price': trash['price']
                     })
                     total_value += trash['price']
-                    net_tickets_base += int(self.TICKET_POINTS['trash'])
             elif available_fish:
                 # Ловим рыбу — с весами по редкости (легенда/миф бьётся реже)
                 _RARITY_WEIGHTS = {
@@ -6166,7 +6162,7 @@ class FishBot:
                     'rarity': fish.get('rarity', 'Обычная'),
                 })
                 total_value += fish_price
-                net_tickets_base += self._calculate_tickets_for_rarity(fish.get('rarity', 'Обычная'))
+                net_tickets_base += 1
         
         # Используем сеть
         await _run_sync(db.use_net, user_id, net_name, chat_id)
@@ -10895,7 +10891,6 @@ class FishBot:
 
             if not guaranteed and adjusted_roll <= no_bite_max:
                 fail_count += 1
-                total_tickets_base += int(self.TICKET_POINTS['no_bite'])
                 result_lines.append(f"{idx}. Срыв")
                 logger.info("[DYNAMITE] roll=%s branch=NO_BITE threshold<=%s", idx, no_bite_max)
                 continue
@@ -10916,7 +10911,6 @@ class FishBot:
 
                         treasure_count += 1
                         treasure_totals[treasure_key] = int(treasure_totals.get(treasure_key, 0) or 0) + 1
-                        total_tickets_base += int(self.TICKET_POINTS['trash'])
                         result_lines.append(f"{idx}. {get_treasure_name(treasure_key)}")
                         logger.info(
                             "[DYNAMITE] roll=%s branch=TRASH_REPLACED_BY_TREASURE trash=%s treasure=%s",
@@ -10932,7 +10926,6 @@ class FishBot:
                         })
                         total_haul_coins += trash_price
                         trash_count += 1
-                        total_tickets_base += int(self.TICKET_POINTS['trash'])
                         result_lines.append(f"{idx}. {trash_name}")
                         logger.info(
                             "[DYNAMITE] roll=%s branch=TRASH name=%s weight=%skg price=%s",
@@ -10943,7 +10936,6 @@ class FishBot:
                         )
                 else:
                     fail_count += 1
-                    total_tickets_base += int(self.TICKET_POINTS['no_bite'])
                     result_lines.append(f"{idx}. Срыв")
                     logger.info("[DYNAMITE] roll=%s branch=TRASH but no trash in location -> NO_BITE", idx)
                 continue
@@ -10971,7 +10963,6 @@ class FishBot:
             
             if not fish:
                 fail_count += 1
-                total_tickets_base += int(self.TICKET_POINTS['no_bite'])
                 result_lines.append(f"{idx}. Срыв")
                 logger.info("[DYNAMITE] roll=%s branch=FISH rarity=%s but pool empty -> NO_BITE", idx, target_rarity)
                 continue
@@ -11010,7 +11001,7 @@ class FishBot:
                 fish_value = int(await _run_sync(db.calculate_fish_price, fish_candidate, weight, length))
                 total_haul_coins += fish_value
                 fish_count += 1
-                total_tickets_base += self._calculate_tickets_for_rarity(fish_candidate.get('rarity', target_rarity))
+                total_tickets_base += 1
                 result_lines.append(
                     f"{idx}. {rarity_circle} {format_fish_name(fish_candidate['name'])} ({length} см, {weight} кг)"
                 )
@@ -11026,7 +11017,6 @@ class FishBot:
                 )
             else:
                 fail_count += 1
-                total_tickets_base += int(self.TICKET_POINTS['no_bite'])
                 result_lines.append(f"{idx}. Срыв (нет подходящей рыбы)")
                 logger.info("[DYNAMITE] roll=%s branch=FISH no suitable fish found", idx)
 
@@ -11105,12 +11095,14 @@ class FishBot:
             coins=new_coins,
             last_dynamite_use_time=datetime.now().isoformat(),
         )
+        ticket_type = 'gold' if guaranteed else 'normal'
         tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(
             user_id,
             total_tickets_base,
             username=current_username,
             source_type='dynamite',
             source_ref=str(location),
+            ticket_type=ticket_type,
         )
 
         header = f"🧨 <b>Вы взорвали {dynamite_name.lower()}!</b>"
@@ -11132,11 +11124,7 @@ class FishBot:
         )
 
         if tickets_awarded > 0:
-            if tickets_jackpot > 0:
-                message += f"\n\n🎟 Билеты: +{tickets_awarded} (джекпот +{tickets_jackpot})"
-            else:
-                message += f"\n\n🎟 Билеты: +{tickets_awarded}"
-            message += f"\n🎫 Всего билетов: {tickets_total}"
+            message += self._format_tickets_award_line(tickets_awarded, tickets_jackpot, tickets_total, ticket_type=ticket_type)
 
         if treasure_totals:
             from treasures import get_treasure_name
@@ -13045,8 +13033,9 @@ class FishBot:
             username=update.effective_user.username or update.effective_user.first_name or str(user_id),
             source_type='guaranteed_fish',
             source_ref=str(location),
+            ticket_type='gold',
         )
-        tickets_line = self._format_tickets_award_line(tickets_awarded, tickets_jackpot, tickets_total)
+        tickets_line = self._format_tickets_award_line(tickets_awarded, tickets_jackpot, tickets_total, ticket_type='gold')
 
         try:
             raf_won = await self._process_raf_event_roll(

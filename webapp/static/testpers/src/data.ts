@@ -87,11 +87,11 @@ export const FISH_DATA: FishData[] = [
 // Tab bar config
 // ─────────────────────────────────────────────────────────────────────────────
 export const TABS: TabConfig[] = [
-  { id: 'home',       icon: '🧭', label: 'Главная'   },
-  { id: 'shop',       icon: '🧺', label: 'Лавка'     },
-  { id: 'friends',    icon: '👤', label: 'Друзья'    },
-  { id: 'guilds',     icon: '🔱', label: 'Артели'    },
-  { id: 'book',       icon: '📖', label: 'Книга'     },
+  { id: 'home',       icon: '🧭', label: 'ГЛАВНАЯ'   },
+  { id: 'shop',       icon: '🧺', label: 'ЛАВКА'     },
+  { id: 'friends',    icon: '👤', label: 'ДРУЗЬЯ'    },
+  { id: 'guilds',     icon: '🔱', label: 'АРТЕЛИ'    },
+  { id: 'book',       icon: '📖', label: 'КНИГА'     },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

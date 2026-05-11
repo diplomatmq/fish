@@ -3,6 +3,8 @@ const titleEl = document.getElementById("title");
 const levelEl = document.getElementById("level");
 const xpEl = document.getElementById("xp");
 const coinsEl = document.getElementById("coins");
+const ticketsEl = document.getElementById("tickets");
+const goldTicketsEl = document.getElementById("goldTickets");
 const xpFillEl = document.getElementById("xpFill");
 const xpInfoEl = document.getElementById("xpInfo");
 const trophyStatus = document.getElementById("trophyStatus");
@@ -14,14 +16,26 @@ const ticketRatingButton = document.getElementById("ticketRatingButton");
 const ticketRatingPanel = document.getElementById("ticketRatingPanel");
 const ticketRatingSummary = document.getElementById("ticketRatingSummary");
 const ticketRatingList = document.getElementById("ticketRatingList");
-const ticketDrawCard = document.getElementById("ticketDrawCard");
-const ticketDrawStart = document.getElementById("ticketDrawStart");
-const ticketDrawEnd = document.getElementById("ticketDrawEnd");
-const ticketDrawCount = document.getElementById("ticketDrawCount");
-const ticketDrawButton = document.getElementById("ticketDrawButton");
-const ticketDrawPanel = document.getElementById("ticketDrawPanel");
-const ticketDrawSummary = document.getElementById("ticketDrawSummary");
-const ticketDrawList = document.getElementById("ticketDrawList");
+const goldTicketRatingButton = document.getElementById("goldTicketRatingButton");
+const goldTicketRatingPanel = document.getElementById("goldTicketRatingPanel");
+const goldTicketRatingSummary = document.getElementById("goldTicketRatingSummary");
+const goldTicketRatingList = document.getElementById("goldTicketRatingList");
+const ticketResultsButton = document.getElementById("ticketResultsButton");
+const ticketResultsPanel = document.getElementById("ticketResultsPanel");
+const ticketResultsAdminNormal = document.getElementById("ticketResultsAdminNormal");
+const ticketResultsStartNormal = document.getElementById("ticketResultsStartNormal");
+const ticketResultsEndNormal = document.getElementById("ticketResultsEndNormal");
+const ticketResultsCountNormal = document.getElementById("ticketResultsCountNormal");
+const ticketResultsAdminNormalButton = document.getElementById("ticketResultsAdminNormalButton");
+const ticketResultsNormalSummary = document.getElementById("ticketResultsNormalSummary");
+const ticketResultsNormalList = document.getElementById("ticketResultsNormalList");
+const ticketResultsAdminGold = document.getElementById("ticketResultsAdminGold");
+const ticketResultsStartGold = document.getElementById("ticketResultsStartGold");
+const ticketResultsEndGold = document.getElementById("ticketResultsEndGold");
+const ticketResultsCountGold = document.getElementById("ticketResultsCountGold");
+const ticketResultsAdminGoldButton = document.getElementById("ticketResultsAdminGoldButton");
+const ticketResultsGoldSummary = document.getElementById("ticketResultsGoldSummary");
+const ticketResultsGoldList = document.getElementById("ticketResultsGoldList");
 const profileHeader = document.getElementById("profileHeader");
 const profileView = document.getElementById("view-profile");
 const captchaView = document.getElementById("view-captcha");
@@ -75,8 +89,10 @@ let telegramAuthContext = null;
 let captchaCountdownId = null;
 let ticketRatingLoaded = false;
 let ticketRatingVisible = false;
-let ticketDrawLoaded = false;
-let ticketDrawVisible = false;
+let goldTicketRatingLoaded = false;
+let goldTicketRatingVisible = false;
+let ticketResultsVisible = false;
+let ticketResultsLoaded = false;
 let isAdminUser = false;
 let activeTab = "profile";
 let bookEntries = [];
@@ -150,109 +166,118 @@ function setActiveView(viewName) {
 
 function setActiveTab(tabName, updateView = true) {
   const normalized = String(tabName || "profile").trim().toLowerCase();
-  const nextTab = normalized || "profile";
-  const targetSection = document.getElementById(`view-${nextTab}`);
-  if (!targetSection) {
-    return;
-  }
+  function renderTicketResults(payload, summaryEl, listEl) {
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+    const period = payload?.period || null;
 
-  activeTab = nextTab;
-
-  profileTabViews.forEach((section) => {
-    section.classList.toggle("active", section.id === `view-${nextTab}`);
-  });
-
-  tabButtons.forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.tab === nextTab);
-  });
-
-  if (updateView) {
-    setActiveView("profile");
-  }
-
-  if (nextTab === "book" && bookEntries.length === 0) {
-    loadBookEntries().catch((error) => {
-      console.error(error);
-      setText(bookStatus, "Не удалось загрузить книгу.");
-    });
-  }
-
-  if (nextTab === "adventures") {
-    loadAdventuresState().catch((error) => {
-      console.error(error);
-      setText(adventuresStatus, "Не удалось загрузить приключения.");
-    });
-  }
-
-  if (nextTab === "guilds") {
-    loadGuilds().catch((error) => {
-      console.error(error);
-      setText(guildsStatus, "Не удалось загрузить артели.");
-    });
-  }
-
-  if (nextTab === "friends") {
-    loadFriends().catch((error) => {
-      console.error(error);
-      setText(friendsStatus, "Не удалось загрузить друзей.");
-    });
-  }
-}
-
-function renderBookEntry() {
-  if (!bookEntries.length) {
-    setText(bookStatus, "По запросу ничего не найдено.");
-    setText(bookFishName, "🐟 Рыба не найдена");
-    setText(bookFishMeta, "Попробуйте другой запрос.");
-    setText(bookStatWeight, "⚖️ —");
-    setText(bookStatLength, "📏 —");
-    setText(bookStatBait, "🎣 —");
-    setText(bookFishLore, "Нет данных.");
-    setText(bookCatchState, "НЕ СЛОВЛЕНА");
-    if (bookCatchState) {
-      bookCatchState.classList.remove("caught");
+    if (summaryEl) {
+      if (!period) {
+        summaryEl.textContent = "Результаты еще не сформированы.";
+      } else {
+        const startDate = String(period.start_date || "");
+        const endDate = String(period.end_date || "");
+        summaryEl.textContent = items.length > 0
+          ? `Период ${startDate} — ${endDate}. Найдено ${items.length} билетов.`
+          : "В выбранном диапазоне нет билетов.";
+      }
     }
-    if (bookFishImage) {
-      bookFishImage.src = "/api/fish-image/fishdef.webp";
+
+    if (!listEl) {
+      return;
     }
-    setText(bookCounterCurrent, "0");
-    setText(bookCounterTotal, String(bookTotalAll || 0));
-    if (bookPrevButton) bookPrevButton.disabled = true;
-    if (bookNextButton) bookNextButton.disabled = true;
-    return;
+
+    listEl.innerHTML = "";
+    if (items.length === 0) {
+      const li = document.createElement("li");
+      li.className = "leaderboard-item leaderboard-empty";
+      li.textContent = "Нет результатов для отображения.";
+      listEl.appendChild(li);
+      return;
+    }
+
+    items.forEach((item) => {
+      const li = document.createElement("li");
+      li.className = "leaderboard-item";
+
+      const place = document.createElement("span");
+      place.className = "leaderboard-place";
+      place.textContent = String(item.place || "-");
+
+      const info = document.createElement("span");
+      info.className = "leaderboard-name";
+      info.textContent = `${String(item.ticket_code || "-")} · ${String(item.username || "Неизвестно")}`;
+
+      li.appendChild(place);
+      li.appendChild(info);
+      listEl.appendChild(li);
+    });
   }
 
-  const safeIndex = Math.max(0, Math.min(bookCursor, bookEntries.length - 1));
-  bookCursor = safeIndex;
-  const item = bookEntries[safeIndex];
+  async function loadTicketResults(ticketType, summaryEl, listEl) {
+    const response = await fetch(`/api/tickets/results?ticket_type=${encodeURIComponent(ticketType)}`, {
+      headers: getAuthHeaders(),
+    });
 
-  setText(bookFishName, `🐟 ${item.name || "Неизвестная рыба"}`);
-  setText(bookFishMeta, `Редкость: ${item.rarity || "Обычная"} • Среда: ${item.locations || "Неизвестно"}`);
-  setText(bookStatWeight, `⚖️ ${Number(item.min_weight || 0).toFixed(2)}-${Number(item.max_weight || 0).toFixed(2)} кг`);
-  setText(bookStatLength, `📏 ${Number(item.min_length || 0).toFixed(1)}-${Number(item.max_length || 0).toFixed(1)} см`);
-  setText(bookStatBait, `🎣 Наживка: ${item.baits || "Любая"}`);
-  setText(bookFishLore, item.lore || "Описание отсутствует.");
-  if (bookFishImage) {
-    bookFishImage.src = item.image_url || "/api/fish-image/fishdef.webp";
-    bookFishImage.alt = item.name || "Рыба";
-  }
-  const caught = Boolean(item.is_caught);
-  setText(bookCatchState, caught ? "ПОЙМАНА" : "НЕ СЛОВЛЕНА");
-  if (bookCatchState) {
-    bookCatchState.classList.toggle("caught", caught);
-  }
-  setText(bookCounterCurrent, String(safeIndex + 1));
-  setText(bookCounterTotal, String(bookTotalAll || bookEntries.length));
-  setText(bookStatus, `Загружено: ${bookEntries.length} из ${bookTotalAll || bookEntries.length}`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `ticket_results_http_${response.status}`);
+    }
 
-  if (bookPrevButton) {
-    bookPrevButton.disabled = safeIndex <= 0;
+    renderTicketResults(payload, summaryEl, listEl);
   }
-  if (bookNextButton) {
-    bookNextButton.disabled = safeIndex >= bookEntries.length - 1;
-  }
-}
 
+  async function submitTicketResults(ticketType, startInput, endInput, countInput, summaryEl, listEl) {
+    if (!startInput?.value || !endInput?.value) {
+      throw new Error("invalid_date_range");
+    }
+
+    if (summaryEl) {
+      summaryEl.textContent = "Формирую результаты...";
+    }
+
+    const response = await fetch("/api/tickets/draw", {
+      method: "POST",
+      headers: {
+        ...getAuthHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        start_date: startInput.value,
+        end_date: endInput.value,
+        count: Number(countInput?.value || 1),
+        ticket_type: ticketType,
+      }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `ticket_draw_http_${response.status}`);
+    }
+
+    renderTicketResults(payload, summaryEl, listEl);
+  }
+
+  function setupAdminTicketResultsDefaults() {
+    if (!isAdminUser) {
+      return;
+    }
+
+    if (ticketResultsStartNormal && !ticketResultsStartNormal.value) {
+      ticketResultsStartNormal.value = formatDateTimeLocalOffset(-7, 0, 0);
+    }
+    if (ticketResultsEndNormal && !ticketResultsEndNormal.value) {
+      const now = new Date();
+      ticketResultsEndNormal.value = formatDateTimeLocalOffset(0, now.getHours(), now.getMinutes());
+    }
+
+    if (ticketResultsStartGold && !ticketResultsStartGold.value) {
+      ticketResultsStartGold.value = formatDateTimeLocalOffset(-7, 0, 0);
+    }
+    if (ticketResultsEndGold && !ticketResultsEndGold.value) {
+      const now = new Date();
+      ticketResultsEndGold.value = formatDateTimeLocalOffset(0, now.getHours(), now.getMinutes());
+    }
+  }
 async function loadBookEntries() {
   const query = String(bookSearchInput?.value || "").trim();
   setText(bookStatus, "Загрузка энциклопедии...");
@@ -473,17 +498,35 @@ function setAppInteractive(isInteractive, mode = "profile") {
   if (ticketRatingButton) {
     ticketRatingButton.disabled = !(isInteractive && mode === "profile");
   }
-  if (ticketDrawButton) {
-    ticketDrawButton.disabled = !(isInteractive && mode === "profile" && isAdminUser);
+  if (goldTicketRatingButton) {
+    goldTicketRatingButton.disabled = !(isInteractive && mode === "profile");
   }
-  if (ticketDrawStart) {
-    ticketDrawStart.disabled = !(isInteractive && mode === "profile" && isAdminUser);
+  if (ticketResultsButton) {
+    ticketResultsButton.disabled = !(isInteractive && mode === "profile");
   }
-  if (ticketDrawEnd) {
-    ticketDrawEnd.disabled = !(isInteractive && mode === "profile" && isAdminUser);
+  if (ticketResultsAdminNormalButton) {
+    ticketResultsAdminNormalButton.disabled = !(isInteractive && mode === "profile" && isAdminUser);
   }
-  if (ticketDrawCount) {
-    ticketDrawCount.disabled = !(isInteractive && mode === "profile" && isAdminUser);
+  if (ticketResultsAdminGoldButton) {
+    ticketResultsAdminGoldButton.disabled = !(isInteractive && mode === "profile" && isAdminUser);
+  }
+  if (ticketResultsStartNormal) {
+    ticketResultsStartNormal.disabled = !(isInteractive && mode === "profile" && isAdminUser);
+  }
+  if (ticketResultsEndNormal) {
+    ticketResultsEndNormal.disabled = !(isInteractive && mode === "profile" && isAdminUser);
+  }
+  if (ticketResultsCountNormal) {
+    ticketResultsCountNormal.disabled = !(isInteractive && mode === "profile" && isAdminUser);
+  }
+  if (ticketResultsStartGold) {
+    ticketResultsStartGold.disabled = !(isInteractive && mode === "profile" && isAdminUser);
+  }
+  if (ticketResultsEndGold) {
+    ticketResultsEndGold.disabled = !(isInteractive && mode === "profile" && isAdminUser);
+  }
+  if (ticketResultsCountGold) {
+    ticketResultsCountGold.disabled = !(isInteractive && mode === "profile" && isAdminUser);
   }
   if (captchaSubmit) {
     captchaSubmit.disabled = !(isInteractive && mode === "captcha");
@@ -538,6 +581,8 @@ function updateProfile(profile) {
   levelEl.textContent = String(profile.level || 1);
   xpEl.textContent = String(profile.xp || 0);
   coinsEl.textContent = String(profile.coins || 0);
+  setText(ticketsEl, profile.tickets || 0);
+  setText(goldTicketsEl, profile.gold_tickets || 0);
 
   const xp = Number(profile.xp || 0);
   const nextLevelTarget = 2000;
@@ -545,8 +590,17 @@ function updateProfile(profile) {
   xpFillEl.style.width = `${percent}%`;
   xpInfoEl.textContent = `XP to next level: ${Math.max(0, nextLevelTarget - xp)}`;
 
-  if (ticketDrawCard) {
-    ticketDrawCard.hidden = !isAdminUser;
+  if (ticketResultsAdminNormal) {
+    ticketResultsAdminNormal.hidden = !isAdminUser;
+  }
+  if (ticketResultsAdminNormalButton) {
+    ticketResultsAdminNormalButton.hidden = !isAdminUser;
+  }
+  if (ticketResultsAdminGold) {
+    ticketResultsAdminGold.hidden = !isAdminUser;
+  }
+  if (ticketResultsAdminGoldButton) {
+    ticketResultsAdminGoldButton.hidden = !isAdminUser;
   }
 
   renderActiveTrophy(profile.selected_trophy_data || null);
@@ -565,29 +619,29 @@ function formatDateTimeLocalOffset(daysOffset, hour = 0, minute = 0) {
   return `${year}-${month}-${day}T${hh}:${mm}`;
 }
 
-function renderTicketRating(payload) {
+function renderTicketRating(payload, summaryEl, listEl) {
   const items = Array.isArray(payload?.items) ? payload.items : [];
   const myRank = payload?.my_rank || {};
 
-  if (ticketRatingSummary) {
+  if (summaryEl) {
     const rank = Number(myRank.rank || 0);
     const tickets = Number(myRank.tickets || 0);
     const totalUsers = Number(myRank.total_users || 0);
-    ticketRatingSummary.textContent = rank > 0
+    summaryEl.textContent = rank > 0
       ? `Ваше место: #${rank} из ${Math.max(totalUsers, items.length)}. У вас ${tickets} билетов.`
       : "Ваше место в рейтинге пока не определено.";
   }
 
-  if (!ticketRatingList) {
+  if (!listEl) {
     return;
   }
 
-  ticketRatingList.innerHTML = "";
+  listEl.innerHTML = "";
   if (items.length === 0) {
     const li = document.createElement("li");
     li.className = "leaderboard-item leaderboard-empty";
     li.textContent = "Пока нет билетов.";
-    ticketRatingList.appendChild(li);
+    listEl.appendChild(li);
     return;
   }
 
@@ -610,20 +664,19 @@ function renderTicketRating(payload) {
     li.appendChild(place);
     li.appendChild(name);
     li.appendChild(count);
-    ticketRatingList.appendChild(li);
+    listEl.appendChild(li);
   });
 }
 
-async function loadTicketRating() {
-  if (!ticketRatingPanel || !ticketRatingList) {
+async function loadTicketRating(ticketType, summaryEl, listEl) {
+  if (!summaryEl || !listEl) {
     return;
   }
 
-  if (ticketRatingSummary) {
-    ticketRatingSummary.textContent = "Загрузка рейтинга...";
-  }
+  summaryEl.textContent = "Загрузка рейтинга...";
 
-  const response = await fetch("/api/tickets/rating?limit=100", {
+  const queryType = ticketType ? `&ticket_type=${encodeURIComponent(ticketType)}` : "";
+  const response = await fetch(`/api/tickets/rating?limit=100${queryType}`, {
     headers: getAuthHeaders(),
   });
 
@@ -632,8 +685,7 @@ async function loadTicketRating() {
     throw new Error(payload.error || `tickets_http_${response.status}`);
   }
 
-  ticketRatingLoaded = true;
-  renderTicketRating(payload);
+  renderTicketRating(payload, summaryEl, listEl);
 }
 
 function toggleTicketRating() {
@@ -649,7 +701,9 @@ function toggleTicketRating() {
   }
 
   if (ticketRatingVisible && !ticketRatingLoaded) {
-    loadTicketRating().catch((error) => {
+    loadTicketRating("normal", ticketRatingSummary, ticketRatingList).then(() => {
+      ticketRatingLoaded = true;
+    }).catch((error) => {
       console.error(error);
       if (ticketRatingSummary) {
         ticketRatingSummary.textContent = "Не удалось загрузить рейтинг.";
@@ -658,110 +712,57 @@ function toggleTicketRating() {
   }
 }
 
-function renderTicketDraw(payload) {
-  const items = Array.isArray(payload?.items) ? payload.items : [];
-  const period = payload?.period || {};
-
-  if (ticketDrawSummary) {
-    const startDate = String(period.start_date || "");
-    const endDate = String(period.end_date || "");
-    ticketDrawSummary.textContent = items.length > 0
-      ? `Период ${startDate} — ${endDate}. Найдено ${items.length} билетов.`
-      : "Билеты в выбранном диапазоне не найдены.";
-  }
-
-  if (!ticketDrawList) {
+function toggleGoldTicketRating() {
+  if (!goldTicketRatingPanel) {
     return;
   }
 
-  ticketDrawList.innerHTML = "";
-  items.forEach((item) => {
-    const li = document.createElement("li");
-    li.className = "leaderboard-item";
+  goldTicketRatingVisible = !goldTicketRatingVisible;
+  goldTicketRatingPanel.hidden = !goldTicketRatingVisible;
+  goldTicketRatingPanel.classList.toggle("visible", goldTicketRatingVisible);
+  if (goldTicketRatingButton) {
+    goldTicketRatingButton.textContent = goldTicketRatingVisible ? "Скрыть рейтинг билетов" : "Показать рейтинг билетов";
+  }
 
-    const place = document.createElement("span");
-    place.className = "leaderboard-place";
-    place.textContent = String(item.place || "-");
-
-    const info = document.createElement("span");
-    info.className = "leaderboard-name";
-    info.textContent = `${String(item.ticket_code || "-")} · ${String(item.username || "Неизвестно")}`;
-
-    const count = document.createElement("span");
-    count.className = "leaderboard-count";
-    count.textContent = `${Number(item.tickets_in_period || 0)} бил.`;
-
-    li.appendChild(place);
-    li.appendChild(info);
-    li.appendChild(count);
-    ticketDrawList.appendChild(li);
-  });
-
-  if (items.length === 0) {
-    const li = document.createElement("li");
-    li.className = "leaderboard-item leaderboard-empty";
-    li.textContent = "Пока нет билетов в этом диапазоне.";
-    ticketDrawList.appendChild(li);
+  if (goldTicketRatingVisible && !goldTicketRatingLoaded) {
+    loadTicketRating("gold", goldTicketRatingSummary, goldTicketRatingList).then(() => {
+      goldTicketRatingLoaded = true;
+    }).catch((error) => {
+      console.error(error);
+      if (goldTicketRatingSummary) {
+        goldTicketRatingSummary.textContent = "Не удалось загрузить рейтинг.";
+      }
+    });
   }
 }
 
-async function loadTicketDraw() {
-  if (!ticketDrawStart || !ticketDrawEnd || !ticketDrawCount) {
+function toggleTicketResults() {
+  if (!ticketResultsPanel) {
     return;
   }
 
-  if (!ticketDrawStart.value || !ticketDrawEnd.value) {
-    throw new Error("invalid_date_range");
+  ticketResultsVisible = !ticketResultsVisible;
+  ticketResultsPanel.hidden = !ticketResultsVisible;
+  ticketResultsPanel.classList.toggle("visible", ticketResultsVisible);
+  if (ticketResultsButton) {
+    ticketResultsButton.textContent = ticketResultsVisible ? "Скрыть результаты" : "Показать результаты";
   }
 
-  if (ticketDrawSummary) {
-    ticketDrawSummary.textContent = "Выбираю случайные билеты...";
-  }
-
-  const response = await fetch("/api/tickets/draw", {
-    method: "POST",
-    headers: {
-      ...getAuthHeaders(),
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      start_date: ticketDrawStart.value,
-      end_date: ticketDrawEnd.value,
-      count: Number(ticketDrawCount.value || 1),
-    }),
-  });
-
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload.error || `ticket_draw_http_${response.status}`);
-  }
-
-  ticketDrawLoaded = true;
-  ticketDrawVisible = true;
-  if (ticketDrawPanel) {
-    ticketDrawPanel.hidden = false;
-    ticketDrawPanel.classList.add("visible");
-  }
-  if (ticketDrawButton) {
-    ticketDrawButton.textContent = "Переразобрать билет";
-  }
-  renderTicketDraw(payload);
-}
-
-function setupAdminTicketControls() {
-  if (!isAdminUser) {
-    return;
-  }
-
-  if (ticketDrawStart && !ticketDrawStart.value) {
-    ticketDrawStart.value = formatDateTimeLocalOffset(-7, 0, 0);
-  }
-  if (ticketDrawEnd && !ticketDrawEnd.value) {
-    const now = new Date();
-    ticketDrawEnd.value = formatDateTimeLocalOffset(0, now.getHours(), now.getMinutes());
-  }
-  if (ticketDrawCount && !ticketDrawCount.value) {
-    ticketDrawCount.value = "1";
+  if (ticketResultsVisible && !ticketResultsLoaded) {
+    Promise.all([
+      loadTicketResults("normal", ticketResultsNormalSummary, ticketResultsNormalList),
+      loadTicketResults("gold", ticketResultsGoldSummary, ticketResultsGoldList),
+    ]).then(() => {
+      ticketResultsLoaded = true;
+    }).catch((error) => {
+      console.error(error);
+      if (ticketResultsNormalSummary) {
+        ticketResultsNormalSummary.textContent = "Не удалось загрузить результаты.";
+      }
+      if (ticketResultsGoldSummary) {
+        ticketResultsGoldSummary.textContent = "Не удалось загрузить результаты.";
+      }
+    });
   }
 }
 
@@ -776,6 +777,7 @@ async function loadProfile() {
   }
 
   updateProfile(payload);
+  setupAdminTicketResultsDefaults();
 }
 
 async function loadTrophies() {
@@ -1152,34 +1154,69 @@ function bindUi() {
     });
   }
 
-  if (ticketDrawButton) {
-    ticketDrawButton.addEventListener("click", () => {
-      loadTicketDraw().catch((error) => {
+  if (goldTicketRatingButton) {
+    goldTicketRatingButton.addEventListener("click", () => {
+      toggleGoldTicketRating();
+    });
+  }
+
+  if (ticketResultsButton) {
+    ticketResultsButton.addEventListener("click", () => {
+      toggleTicketResults();
+    });
+  }
+
+  if (ticketResultsAdminNormalButton) {
+    ticketResultsAdminNormalButton.addEventListener("click", () => {
+      submitTicketResults(
+        "normal",
+        ticketResultsStartNormal,
+        ticketResultsEndNormal,
+        ticketResultsCountNormal,
+        ticketResultsNormalSummary,
+        ticketResultsNormalList,
+      ).catch((error) => {
         console.error(error);
-        if (ticketDrawSummary) {
+        if (ticketResultsNormalSummary) {
           const code = String(error?.message || "");
           const errorTextByCode = {
             invalid_date_range: "Укажите корректные дату и время начала/конца.",
-            no_tickets_in_range: "В указанном диапазоне нет билетов.",
-            forbidden: "Нет доступа к розыгрышу.",
+            forbidden: "Нет доступа к результатам.",
             auth_required: "Требуется авторизация в Telegram.",
             auth_invalid: "Ошибка авторизации. Откройте апку заново из бота.",
             auth_expired: "Сессия истекла. Откройте апку заново из бота.",
-            db_read_failed: "Ошибка чтения БД при розыгрыше.",
+            db_read_failed: "Ошибка чтения БД при формировании результатов.",
             db_unavailable: "База данных временно недоступна.",
           };
-          ticketDrawSummary.textContent = errorTextByCode[code] || "Не удалось выбрать билет.";
+          ticketResultsNormalSummary.textContent = errorTextByCode[code] || "Не удалось сформировать результаты.";
         }
-        if (ticketDrawPanel) {
-          ticketDrawPanel.hidden = false;
-          ticketDrawPanel.classList.add("visible");
-        }
-        if (ticketDrawList) {
-          ticketDrawList.innerHTML = "";
-          const li = document.createElement("li");
-          li.className = "leaderboard-item leaderboard-empty";
-          li.textContent = "Нет данных для отображения.";
-          ticketDrawList.appendChild(li);
+      });
+    });
+  }
+
+  if (ticketResultsAdminGoldButton) {
+    ticketResultsAdminGoldButton.addEventListener("click", () => {
+      submitTicketResults(
+        "gold",
+        ticketResultsStartGold,
+        ticketResultsEndGold,
+        ticketResultsCountGold,
+        ticketResultsGoldSummary,
+        ticketResultsGoldList,
+      ).catch((error) => {
+        console.error(error);
+        if (ticketResultsGoldSummary) {
+          const code = String(error?.message || "");
+          const errorTextByCode = {
+            invalid_date_range: "Укажите корректные дату и время начала/конца.",
+            forbidden: "Нет доступа к результатам.",
+            auth_required: "Требуется авторизация в Telegram.",
+            auth_invalid: "Ошибка авторизации. Откройте апку заново из бота.",
+            auth_expired: "Сессия истекла. Откройте апку заново из бота.",
+            db_read_failed: "Ошибка чтения БД при формировании результатов.",
+            db_unavailable: "База данных временно недоступна.",
+          };
+          ticketResultsGoldSummary.textContent = errorTextByCode[code] || "Не удалось сформировать результаты.";
         }
       });
     });
@@ -1290,7 +1327,6 @@ async function bootstrap() {
     await loadAdventuresState();
     await loadGuilds();
     await loadFriends();
-    setupAdminTicketControls();
     if (trophyStatus) {
       trophyStatus.textContent = "You can choose a trophy";
     }
