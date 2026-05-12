@@ -16,6 +16,7 @@ interface TelegramWebApp {
   expand(): void;
   setHeaderColor(color: string): void;
   setBackgroundColor(color: string): void;
+  showAlert(message: string): void;
   HapticFeedback?: {
     impactOccurred(style: 'light' | 'medium' | 'heavy' | 'rigid' | 'soft'): void;
     notificationOccurred(type: 'error' | 'success' | 'warning'): void;
@@ -23,6 +24,7 @@ interface TelegramWebApp {
   };
   initDataUnsafe?: {
     user?: {
+      id?: number;
       first_name?: string;
       username?: string;
     };
@@ -64,6 +66,24 @@ class TelegramService {
   getUserTag(): string | null {
     const username = this.tg?.initDataUnsafe?.user?.username;
     return username ? `@${username}` : null;
+  }
+
+  getUser(): { id: number; first_name?: string; username?: string } | null {
+    const user = this.tg?.initDataUnsafe?.user;
+    if (!user || !user.id) return null;
+    return {
+      id: user.id,
+      first_name: user.first_name,
+      username: user.username,
+    };
+  }
+
+  showAlert(message: string): void {
+    if (this.tg?.showAlert) {
+      this.tg.showAlert(message);
+    } else {
+      alert(message);
+    }
   }
 }
 

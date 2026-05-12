@@ -233,6 +233,13 @@ export const ICONS: Record<string, string> = {
       <circle cx="12" cy="12" r="2" fill="#f4a82e"/>
     </svg>
   `, // Crowned Fish silhouette
+  results: `
+    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="4" y="3" width="16" height="18" rx="2" stroke="currentColor" stroke-width="2"/>
+      <path d="M8 8H16M8 12H16M8 16H12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <path d="M16 16L19 19M19 19L22 16M19 19V13" stroke="#f4a82e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  `, // Document with winner arrow
   trophy: `
     <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M6 9C6 9 6 3 12 3C18 3 18 9 18 9M6 9C6 14 10 17 12 17C14 17 18 14 18 9M6 9H3V11C3 13 5 13 5 13M18 9H21V11C21 13 19 13 19 13M12 17V21M9 21H15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>

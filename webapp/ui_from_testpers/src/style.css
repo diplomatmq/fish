@@ -514,14 +514,15 @@ svg {
    QUICK ACTIONS
    ════════════════════════════════════════════════════════════════════════════ */
 .quick-actions {
-  display: flex; gap: 12px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
   margin-bottom: 14px;
   flex-shrink: 0;
 }
 .quick-card {
-  flex: 1;
   display: flex; flex-direction: column; align-items: center; gap: 6px;
-  padding: 14px 8px;
+  padding: 12px 6px;
   cursor: pointer; border: none;
   font-family: inherit;
   background: var(--glass-bg);
@@ -529,10 +530,11 @@ svg {
   transition: transform 0.15s;
 }
 .quick-card:active { transform: scale(0.96); }
-.quick-icon { font-size: 30px; }
+.quick-icon { font-size: 28px; }
 .quick-label {
-  font-size: 9px; font-weight: 800; letter-spacing: 1.5px;
+  font-size: 9px; font-weight: 800; letter-spacing: 1.2px;
   text-transform: uppercase; color: var(--text-muted);
+  text-align: center;
 }
 .quick-card.bounce {
   animation: bounceBtn 0.45s var(--ease-spring);

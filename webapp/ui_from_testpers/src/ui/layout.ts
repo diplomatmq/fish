@@ -44,13 +44,17 @@ export function buildLayout(): HTMLElement {
 
         <!-- Quick actions -->
         <div class="quick-actions slide-up" style="animation-delay:2.1s">
-          <button class="quick-card glass" id="btn-achievements" aria-label="Достижения">
-            <span class="quick-icon" aria-hidden="true">${getIcon('achievements')}</span>
-            <span class="quick-label">Достижения</span>
-          </button>
           <button class="quick-card glass" id="btn-rating" aria-label="Рейтинг">
             <span class="quick-icon" aria-hidden="true">${getIcon('rating')}</span>
             <span class="quick-label">Рейтинг</span>
+          </button>
+          <button class="quick-card glass" id="btn-results" aria-label="Результаты">
+            <span class="quick-icon" aria-hidden="true">${getIcon('results')}</span>
+            <span class="quick-label">Результаты</span>
+          </button>
+          <button class="quick-card glass" id="btn-achievements" aria-label="Достижения">
+            <span class="quick-icon" aria-hidden="true">${getIcon('achievements')}</span>
+            <span class="quick-label">Достижения</span>
           </button>
         </div>
       </section>
@@ -122,11 +126,12 @@ export function hideEntryOverlay(overlay: HTMLElement, delay = 1600): void {
 }
 
 // ── Quick action bounce helper ──────────────────────────────────────────────
-export function bindQuickActions(): void {
+export function bindQuickActions(onRatingClick?: () => void, onResultsClick?: () => void): void {
   const achievementsBtn = document.getElementById('btn-achievements');
   const ratingBtn       = document.getElementById('btn-rating');
+  const resultsBtn      = document.getElementById('btn-results');
 
-  [achievementsBtn, ratingBtn].forEach(btn => {
+  [achievementsBtn, ratingBtn, resultsBtn].forEach(btn => {
     if (!btn) return;
     btn.addEventListener('click', () => {
       tgService.haptic('light');
@@ -136,6 +141,16 @@ export function bindQuickActions(): void {
       btn.addEventListener('animationend', () => btn.classList.remove('bounce'), { once: true });
     });
   });
+
+  // Rating button opens rating screen
+  if (ratingBtn && onRatingClick) {
+    ratingBtn.addEventListener('click', onRatingClick);
+  }
+
+  // Results button opens results screen
+  if (resultsBtn && onResultsClick) {
+    resultsBtn.addEventListener('click', onResultsClick);
+  }
 }
 
 // ── Trophy button helper ────────────────────────────────────────────────────

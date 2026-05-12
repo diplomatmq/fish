@@ -8,6 +8,7 @@ import './book.css';
 import './adventures.css';
 import './guilds.css';
 import './friends.css';
+import './rating.css';
 
 import { buildLayout, buildEntryOverlay, hideEntryOverlay, bindQuickActions, bindTrophyButton } from './ui/layout';
 import { ProfilePanel }   from './ui/profile';
@@ -18,6 +19,8 @@ import { BookScreen }     from './ui/bookScreen';
 import { ShopScreen }     from './ui/shopScreen';
 import { GuildsScreen } from './ui/guildsScreen';
 import { FriendsScreen } from './ui/friendsScreen';
+import { RatingScreen } from './ui/ratingScreen';
+import { ResultsScreen } from './ui/resultsScreen';
 import { ParticleSystem } from './animations/particles';
 import { ParallaxController } from './animations/effects';
 
@@ -114,10 +117,22 @@ const oldFriendsPlaceholder = document.getElementById('screen-friends');
 if (oldFriendsPlaceholder) oldFriendsPlaceholder.replaceWith(friendsScreenEl);
 else screensWrap.appendChild(friendsScreenEl);
 
+// ── Rating screen ──────────────────────────────────────────────────────────────
+const ratingScreen = new RatingScreen();
+const ratingScreenEl = ratingScreen.getElement();
+screensWrap.appendChild(ratingScreenEl);
+
+// ── Results screen ─────────────────────────────────────────────────────────────
+const resultsScreen = new ResultsScreen();
+const resultsScreenEl = resultsScreen.getElement();
+screensWrap.appendChild(resultsScreenEl);
+
 let bookInitialized = false;
 let shopInitialized = false;
 let guildsInitialized = false;
 let friendsInitialized = false;
+let ratingInitialized = false;
+let resultsInitialized = false;
 
 // ── Shop screen ────────────────────────────────────────────────────────────────────
 const tabbarMount = document.getElementById('tabbar-mount')!;
@@ -125,6 +140,8 @@ const tabBar   = new TabBar(tabbarMount, screensWrap);
 
 // Lazy-init screens on first visit
 tabBar.onChange((_prev, next) => {
+  console.log(`Screen transition: ${_prev} -> ${next}`);
+  
   if (next === 'book' && !bookInitialized) {
     bookScreen.init();
     bookInitialized = true;
@@ -143,10 +160,42 @@ tabBar.onChange((_prev, next) => {
   } else if (next === 'friends' && friendsInitialized) {
     friendsScreen.init();
   }
+  if (next === 'rating' && !ratingInitialized) {
+    ratingScreen.init();
+    ratingInitialized = true;
+  } else if (next === 'rating' && ratingInitialized) {
+    ratingScreen.init();
+  }
+  if (next === 'results' && !resultsInitialized) {
+    resultsScreen.init();
+    resultsInitialized = true;
+  } else if (next === 'results' && resultsInitialized) {
+    resultsScreen.init();
+  }
+  
+  // ИСПРАВЛЕНИЕ: При возврате на home - сбрасываем анимации и показываем контент
+  if (next === 'home') {
+    const homeScreen = document.getElementById('screen-home');
+    if (homeScreen) {
+      // Находим все элементы с анимацией slide-up
+      const animatedElements = homeScreen.querySelectorAll('.slide-up');
+      
+      animatedElements.forEach((el) => {
+        const element = el as HTMLElement;
+        // Сбрасываем анимацию и принудительно показываем элемент
+        element.style.animation = 'none';
+        element.style.opacity = '1';
+        element.style.transform = 'translateY(0)';
+      });
+    }
+  }
 });
 
 // ── Quick action buttons ────────────────────────────────────────────────────
-bindQuickActions();
+bindQuickActions(
+  () => tabBar.switchTo('rating'),
+  () => tabBar.switchTo('results')
+);
 
 // ── Animate progress bar after boot sequence ──────────────────────────────────
 setTimeout(() => profilePanel.animateProgress(0), 2000);

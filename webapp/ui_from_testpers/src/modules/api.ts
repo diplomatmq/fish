@@ -22,6 +22,9 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}): 
   return response.json();
 }
 
+// Alias for compatibility
+export const apiRequest = fetchApi;
+
 export interface ApiResponse<T> {
   ok: boolean;
   error?: string;
