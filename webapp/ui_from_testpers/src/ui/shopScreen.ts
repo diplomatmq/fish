@@ -4,21 +4,23 @@ import { getIcon } from './icons';
 import { normalizeRarity, rarityColor, rarityStars, rarityLabel } from '../modules/rarity';
 import { RARITY_COLORS } from '../data';
 
-interface InventoryItem {
-  id: number;
+interface GroupedInventoryItem {
+  ids: number[];
   name: string;
-  weight: number;
-  length: number;
-  location: string;
+  count: number;
+  total_weight: number;
   rarity: string;
   price: number;
+  unit_price: number;
   image_url: string;
 }
 
 export class ShopScreen {
   private el: HTMLElement;
-  private items: InventoryItem[] = [];
+  private items: GroupedInventoryItem[] = [];
   private loading = false;
+  private mode: 'view' | 'select' = 'view';
+  private selectedIds: Set<number> = new Set();
 
   constructor() {
     this.el = this.buildShell();
@@ -35,15 +37,20 @@ export class ShopScreen {
     s.setAttribute('role', 'main');
 
     s.innerHTML = `
-      <h1 class="page-title">ЛАВКА</h1>
+      <div class="shop-header">
+        <h1 class="page-title">ЛАВКА</h1>
+        <button id="shop-sell-btn" class="glass-btn primary-btn" style="display:none;">${getIcon('shop')} ПРОДАТЬ</button>
+      </div>
       <div class="shop-container">
-        <div class="shop-tabs">
-          <button class="shop-tab-btn is-active" data-tab="inventory">ИНВЕНТАРЬ</button>
-          <button class="shop-tab-btn" data-tab="market">РЫНОК (SOON)</button>
-        </div>
-        
         <div id="shop-content" class="shop-content">
           <div class="loader-wrap"><div class="loader"></div></div>
+        </div>
+      </div>
+      <div id="shop-select-actions" class="shop-select-actions" style="display:none;">
+        <div class="select-info">Выбрано: <span id="select-count">0</span></div>
+        <div class="select-buttons">
+          <button id="cancel-select-btn" class="glass-btn">ОТМЕНА</button>
+          <button id="confirm-sell-btn" class="glass-btn primary-btn">ПРОДАТЬ</button>
         </div>
       </div>
     `;
@@ -56,24 +63,104 @@ export class ShopScreen {
   }
 
   private bindEvents(): void {
-    const tabs = this.el.querySelectorAll('.shop-tab-btn');
-    tabs.forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (btn.classList.contains('is-active')) return;
+    const sellBtn = this.el.querySelector('#shop-sell-btn');
+    if (sellBtn) {
+      sellBtn.addEventListener('click', () => {
         tgService.haptic('light');
-        tabs.forEach(t => t.classList.remove('is-active'));
-        btn.classList.add('is-active');
-        const tab = (btn as HTMLElement).dataset['tab'];
-        if (tab === 'inventory') this.renderInventory();
-        else this.renderMarketSoon();
+        this.showSellModal();
+      });
+    }
+
+    const cancelBtn = this.el.querySelector('#cancel-select-btn');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', () => {
+        tgService.haptic('light');
+        this.mode = 'view';
+        this.selectedIds.clear();
+        this.renderInventory();
+      });
+    }
+
+    const confirmBtn = this.el.querySelector('#confirm-sell-btn');
+    if (confirmBtn) {
+      confirmBtn.addEventListener('click', () => {
+        if (this.selectedIds.size === 0) return;
+        tgService.haptic('medium');
+        this.sellBulk({ ids: Array.from(this.selectedIds) });
+      });
+    }
+  }
+
+  private showSellModal(): void {
+    const content = `
+      <div class="sell-options">
+        <button class="glass-btn sell-opt-btn" data-cat="all">💰 Продать всю рыбу</button>
+        <button class="glass-btn sell-opt-btn" data-cat="trash">🗑 Продать весь мусор</button>
+        <button class="glass-btn sell-opt-btn" data-cat="common" style="color:var(--r-common)">Продать все обычные</button>
+        <button class="glass-btn sell-opt-btn" data-cat="rare" style="color:var(--r-rare)">Продать все редкие</button>
+        <button class="glass-btn sell-opt-btn" data-cat="legendary" style="color:var(--r-legendary)">Продать все легендарные</button>
+        <button class="glass-btn sell-opt-btn" data-cat="anomaly" style="color:var(--r-anomaly)">Продать все аномалии</button>
+        <button class="glass-btn sell-opt-btn" data-cat="aquarium" style="color:var(--r-aquarium)">Продать все аквариумные</button>
+        <button class="glass-btn sell-opt-btn" data-cat="mythic" style="color:var(--r-mythic)">Продать все мифические</button>
+        <button class="glass-btn sell-opt-btn select-mode-btn">✅ Выбрать</button>
+      </div>
+    `;
+    
+    // Quick modal implementation
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay is-open';
+    modal.style.display = 'flex';
+    modal.innerHTML = `
+      <div class="modal-sheet" style="transform:none; bottom:0;">
+        <div class="modal-handle"></div>
+        <p class="modal-title">ПРОДАЖА РЫБЫ</p>
+        <div style="padding:10px;">${content}</div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) document.body.removeChild(modal);
+    });
+    
+    modal.querySelectorAll('.sell-opt-btn').forEach((btn: Element) => {
+      btn.addEventListener('click', () => {
+        const cat = (btn as HTMLElement).dataset['cat'];
+        tgService.haptic('light');
+        document.body.removeChild(modal);
+        if (cat) {
+          this.sellBulk({ category: cat });
+        } else if (btn.classList.contains('select-mode-btn')) {
+          this.mode = 'select';
+          this.selectedIds.clear();
+          this.renderInventory();
+        }
       });
     });
+  }
+
+  private async sellBulk(payload: {category?: string, ids?: number[]}): Promise<void> {
+    try {
+      const res = await fetchApi<{earned_coins: number, earned_xp: number}>('/api/sell-bulk', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      if (res && res.earned_coins !== undefined) {
+        tgService.haptic('success');
+        alert(`Успешно продано!\nПолучено: ${res.earned_coins} 🪙\nОпыт: ${res.earned_xp} ✨`);
+        this.mode = 'view';
+        this.selectedIds.clear();
+        await this.loadInventory();
+      }
+    } catch(e) {
+      alert('Ошибка при продаже');
+    }
   }
 
   private async loadInventory(): Promise<void> {
     this.loading = true;
     try {
-      const data = await fetchApi<{ items?: InventoryItem[] }>('/api/inventory');
+      const data = await fetchApi<{ items?: GroupedInventoryItem[] }>('/api/inventory/grouped');
       this.items = data?.items || [];
       this.renderInventory();
     } catch (e) {
@@ -86,6 +173,18 @@ export class ShopScreen {
 
   private renderInventory(): void {
     const content = this.el.querySelector('#shop-content')!;
+    const sellBtn = this.el.querySelector('#shop-sell-btn') as HTMLElement;
+    const selectActions = this.el.querySelector('#shop-select-actions') as HTMLElement;
+    
+    if (this.mode === 'select') {
+      sellBtn.style.display = 'none';
+      selectActions.style.display = 'flex';
+      this.updateSelectCount();
+    } else {
+      sellBtn.style.display = this.items.length > 0 ? 'block' : 'none';
+      selectActions.style.display = 'none';
+    }
+
     if (this.items.length === 0) {
       content.innerHTML = `
         <div class="shop-empty">
@@ -98,43 +197,63 @@ export class ShopScreen {
     }
 
     content.innerHTML = `
-      <div class="inventory-list">
-        ${this.items.map(item => {
+      <div class="inventory-grid">
+        ${this.items.map((item, idx) => {
           const rarityKey = normalizeRarity(item.rarity);
-          const color = RARITY_COLORS[rarityKey];
+          const color = RARITY_COLORS[rarityKey] || '#ccc';
+          const isSelected = item.ids.every(id => this.selectedIds.has(id));
+          const partialSelect = item.ids.some(id => this.selectedIds.has(id)) && !isSelected;
+          
+          let selectClass = '';
+          if (this.mode === 'select') {
+            if (isSelected) selectClass = 'is-selected';
+            else if (partialSelect) selectClass = 'is-partial';
+          }
+          
           return `
-            <div class="inventory-item glass" style="--accent: ${color}">
-              <div class="inv-item-img">
+            <div class="inv-card glass ${selectClass}" style="--card-color: ${color}" data-idx="${idx}">
+              ${item.count > 1 ? `<div class="inv-badge">${item.count}x</div>` : ''}
+              <div class="inv-img-wrap">
                 <img src="${item.image_url}" alt="${item.name}" loading="lazy">
               </div>
-              <div class="inv-item-info">
-                <div class="inv-item-name">${item.name}</div>
-                <div class="inv-item-rarity" style="color: ${color}">${rarityStars(item.rarity)} ${rarityLabel(item.rarity)}</div>
-                <div class="inv-item-stats">
-                  <span>⚖️ ${item.weight.toFixed(2)} кг</span>
-                  <span>📏 ${item.length.toFixed(1)} см</span>
-                </div>
+              <div class="inv-details">
+                <div class="inv-name">${item.name}</div>
+                <div class="inv-rarity" style="color:${color}">${rarityLabel(item.rarity)}</div>
+                <div class="inv-weight">⚖️ ${item.total_weight.toFixed(2)} кг</div>
               </div>
-              <div class="inv-item-price">
-                <span class="price-val">${item.price}</span>
-                <span class="price-icon">🪙</span>
+              <div class="inv-price">
+                <span>${item.price}</span> 🪙
               </div>
+              ${this.mode === 'select' ? `<div class="select-indicator">${isSelected ? '✅' : ''}</div>` : ''}
             </div>
           `;
         }).join('')}
       </div>
     `;
-  }
 
-  private renderMarketSoon(): void {
-    const content = this.el.querySelector('#shop-content')!;
-    content.innerHTML = `
-      <div class="shop-empty">
-        <div class="shop-soon-icon">${getIcon('shop')}</div>
-        <h3>Рынок скоро откроется!</h3>
-        <p>Здесь вы сможете покупать снаряжение, наживку и другие полезные вещи.</p>
-      </div>
-    `;
+    // Bind card clicks
+    content.querySelectorAll('.inv-card').forEach(card => {
+      card.addEventListener('click', () => {
+        if (this.mode !== 'select') return;
+        tgService.haptic('light');
+        const idx = parseInt((card as HTMLElement).dataset['idx'] || '0');
+        const item = this.items[idx];
+        
+        // Toggle all ids for this item group
+        const allSelected = item.ids.every(id => this.selectedIds.has(id));
+        if (allSelected) {
+          item.ids.forEach(id => this.selectedIds.delete(id));
+        } else {
+          item.ids.forEach(id => this.selectedIds.add(id));
+        }
+        this.renderInventory();
+      });
+    });
+  }
+  
+  private updateSelectCount() {
+    const countEl = this.el.querySelector('#select-count');
+    if (countEl) countEl.textContent = this.selectedIds.size.toString();
   }
 
   private renderError(): void {

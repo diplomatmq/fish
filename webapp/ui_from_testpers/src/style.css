@@ -738,3 +738,24 @@ svg {
   from { opacity: 0.3; }
   to   { opacity: 0.9; }
 }
+/* Shop Redesign */
+.shop-header { display: flex; justify-content: space-between; align-items: center; padding: 0 20px; }
+.shop-header .page-title { margin: 0; }
+.shop-select-actions { position: fixed; bottom: 80px; left: 0; right: 0; display: flex; flex-direction: column; align-items: center; background: rgba(0,0,0,0.8); padding: 15px; border-top: 1px solid rgba(255,255,255,0.1); z-index: 100; backdrop-filter: blur(10px); }
+.select-info { font-size: 14px; margin-bottom: 10px; font-weight: bold; }
+.select-buttons { display: flex; gap: 10px; }
+.inventory-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; padding: 10px; }
+.inv-card { position: relative; padding: 12px; border-radius: 16px; border-top: 2px solid var(--card-color); display: flex; flex-direction: column; align-items: center; text-align: center; cursor: pointer; transition: transform 0.2s; }
+.inv-card:active { transform: scale(0.95); }
+.inv-card.is-selected { box-shadow: 0 0 0 3px #4caf50; background: rgba(76, 175, 80, 0.2); }
+.inv-card.is-partial { box-shadow: 0 0 0 2px #ff9800; background: rgba(255, 152, 0, 0.2); }
+.inv-badge { position: absolute; top: -5px; right: -5px; background: #e91e63; color: white; font-weight: 900; font-size: 12px; padding: 4px 8px; border-radius: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.5); }
+.inv-img-wrap img { width: 80px; height: 80px; object-fit: contain; filter: drop-shadow(0 4px 8px rgba(0,0,0,0.5)); }
+.inv-name { font-weight: 800; font-size: 14px; margin-top: 8px; }
+.inv-rarity { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
+.inv-weight { font-size: 12px; color: #aaa; margin-top: 4px; }
+.inv-price { margin-top: auto; padding-top: 8px; font-weight: bold; color: #ffd700; font-size: 16px; }
+.sell-options { display: flex; flex-direction: column; gap: 10px; padding: 10px 0; }
+.sell-opt-btn { font-size: 14px; font-weight: bold; text-align: left; justify-content: flex-start; }
+.select-indicator { position: absolute; top: 5px; left: 5px; font-size: 20px; }
+.primary-btn { background: linear-gradient(45deg, #1e88e5, #00acc1); border: none; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }

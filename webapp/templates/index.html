@@ -96,69 +96,6 @@
             <p id="xpInfo" class="subtext">До следующего уровня: 0 XP</p>
           </article>
 
-          <article class="card glass slide-up delay-4">
-            <h3>🎟️ Рейтинг обычных билетов</h3>
-            <p class="subtext">Топ-100 участников по количеству обычных билетов.</p>
-            <button id="ticketRatingButton" class="btn btn-secondary">Показать рейтинг</button>
-
-            <div id="ticketRatingPanel" class="ticket-rating-panel" hidden>
-              <p id="ticketRatingSummary" class="status">Нажмите кнопку, чтобы загрузить рейтинг.</p>
-              <ol id="ticketRatingList" class="leaderboard-list"></ol>
-            </div>
-          </article>
-
-          <article class="card glass slide-up delay-4">
-            <h3>🌟 Рейтинг золотых билетов</h3>
-            <p class="subtext">Топ-100 участников по количеству золотых билетов.</p>
-            <button id="goldTicketRatingButton" class="btn btn-secondary">Показать рейтинг</button>
-
-            <div id="goldTicketRatingPanel" class="ticket-rating-panel" hidden>
-              <p id="goldTicketRatingSummary" class="status">Нажмите кнопку, чтобы загрузить рейтинг.</p>
-              <ol id="goldTicketRatingList" class="leaderboard-list"></ol>
-            </div>
-          </article>
-
-          <article id="ticketResultsCard" class="card glass slide-up delay-4">
-            <h3>📜 Результаты</h3>
-            <p class="subtext">Публичный список результатов для обычных и золотых билетов.</p>
-            <button id="ticketResultsButton" class="btn btn-secondary">Показать результаты</button>
-
-            <div id="ticketResultsPanel" class="ticket-rating-panel" hidden>
-              <div class="ticket-results-section">
-                <h4>🎟 Обычные билеты</h4>
-                <div id="ticketResultsAdminNormal" class="ticket-draw-grid" hidden>
-                  <label class="field-label" for="ticketResultsStartNormal">🕒 Дата и время начала</label>
-                  <input id="ticketResultsStartNormal" class="input" type="datetime-local" step="60" />
-
-                  <label class="field-label" for="ticketResultsEndNormal">🕓 Дата и время конца</label>
-                  <input id="ticketResultsEndNormal" class="input" type="datetime-local" step="60" />
-
-                  <label class="field-label" for="ticketResultsCountNormal">🎫 Количество мест</label>
-                  <input id="ticketResultsCountNormal" class="input" type="number" min="1" max="100" value="1" />
-                </div>
-                <button id="ticketResultsAdminNormalButton" class="btn btn-secondary" hidden>Сформировать результаты</button>
-                <p id="ticketResultsNormalSummary" class="status">Нажмите кнопку, чтобы загрузить результаты.</p>
-                <ol id="ticketResultsNormalList" class="leaderboard-list"></ol>
-              </div>
-
-              <div class="ticket-results-section" style="margin-top: 16px;">
-                <h4>🌟 Золотые билеты</h4>
-                <div id="ticketResultsAdminGold" class="ticket-draw-grid" hidden>
-                  <label class="field-label" for="ticketResultsStartGold">🕒 Дата и время начала</label>
-                  <input id="ticketResultsStartGold" class="input" type="datetime-local" step="60" />
-
-                  <label class="field-label" for="ticketResultsEndGold">🕓 Дата и время конца</label>
-                  <input id="ticketResultsEndGold" class="input" type="datetime-local" step="60" />
-
-                  <label class="field-label" for="ticketResultsCountGold">🎫 Количество мест</label>
-                  <input id="ticketResultsCountGold" class="input" type="number" min="1" max="100" value="1" />
-                </div>
-                <button id="ticketResultsAdminGoldButton" class="btn btn-secondary" hidden>Сформировать результаты</button>
-                <p id="ticketResultsGoldSummary" class="status">Нажмите кнопку, чтобы загрузить результаты.</p>
-                <ol id="ticketResultsGoldList" class="leaderboard-list"></ol>
-              </div>
-            </div>
-          </article>
         </section>
 
         <section id="view-book" class="view profile-tab-view">
