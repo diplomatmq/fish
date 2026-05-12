@@ -52,7 +52,11 @@ export class ResultsScreen {
     screen.setAttribute('aria-label', 'Результаты');
 
     screen.innerHTML = `
-      <h1 class="page-title">РЕЗУЛЬТАТЫ</h1>
+      <div class="screen-header">
+        <button class="back-btn" id="results-back-btn">← Назад</button>
+        <h1 class="page-title">РЕЗУЛЬТАТЫ</h1>
+        <div class="back-btn-spacer"></div>
+      </div>
       
       <div class="results-tabs">
         <button class="results-tab is-active" data-type="normal">
@@ -107,6 +111,15 @@ export class ResultsScreen {
   }
 
   private bindEvents(): void {
+    // Back button
+    const backBtn = this.el.querySelector('#results-back-btn');
+    if (backBtn) {
+      backBtn.addEventListener('click', () => {
+        const event = new CustomEvent('navigate-home');
+        window.dispatchEvent(event);
+      });
+    }
+
     // Tab switching
     const tabs = this.el.querySelectorAll('.results-tab');
     tabs.forEach(tab => {

@@ -207,6 +207,40 @@ svg {
 /* ════════════════════════════════════════════════════════════════════════════
    PAGE TITLE
    ════════════════════════════════════════════════════════════════════════════ */
+.screen-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  flex-shrink: 0;
+  gap: 10px;
+}
+
+.back-btn {
+  padding: 8px 14px;
+  background: rgba(0, 180, 216, 0.18);
+  border: 1px solid rgba(0, 180, 216, 0.45);
+  border-radius: 20px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--teal-glow);
+  cursor: pointer;
+  transition: all 0.2s;
+  -webkit-tap-highlight-color: transparent;
+  flex-shrink: 0;
+}
+
+.back-btn:active {
+  transform: scale(0.94);
+  background: rgba(0, 180, 216, 0.28);
+}
+
+.back-btn-spacer {
+  width: 80px;
+  flex-shrink: 0;
+}
+
 .page-title {
   text-align: center;
   font-size: clamp(18px, 5vw, 24px);
@@ -215,6 +249,11 @@ svg {
   text-transform: uppercase;
   color: var(--gold);
   text-shadow: 0 0 22px rgba(244, 168, 46, 0.65), 0 2px 6px rgba(0, 0, 0, 0.55);
+  margin: 0;
+  flex: 1;
+}
+
+.screen > .page-title {
   margin-bottom: 14px;
   flex-shrink: 0;
 }

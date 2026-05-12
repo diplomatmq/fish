@@ -89,15 +89,22 @@ export class TabBar {
 
     const prevId   = this.activeId;
     const fromScreen = this.screens.get(prevId);
-    const toScreen   = this.screens.get(id);
+    
+    // Для rating и results экраны не в this.screens, ищем по ID
+    let toScreen = this.screens.get(id);
+    if (!toScreen) {
+      toScreen = document.getElementById(`screen-${id}`) as HTMLElement;
+    }
+    
     if (!fromScreen || !toScreen) {
+      console.warn(`Screen not found: from=${prevId}, to=${id}`);
       return;
     }
 
     // Animate screens
     ScreenTransition.transitionTo(fromScreen, toScreen);
 
-    // Update button states
+    // Update button states (только для кнопок в TabBar)
     this.buttons.forEach((btn, tabId) => {
       const isActive = tabId === id;
       btn.classList.toggle('is-active', isActive);

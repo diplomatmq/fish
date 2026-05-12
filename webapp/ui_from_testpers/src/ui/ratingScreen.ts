@@ -35,7 +35,11 @@ export class RatingScreen {
     screen.setAttribute('aria-label', 'Рейтинг');
 
     screen.innerHTML = `
-      <h1 class="page-title">РЕЙТИНГ</h1>
+      <div class="screen-header">
+        <button class="back-btn" id="rating-back-btn">← Назад</button>
+        <h1 class="page-title">РЕЙТИНГ</h1>
+        <div class="back-btn-spacer"></div>
+      </div>
       
       <div class="rating-tabs">
         <button class="rating-tab is-active" data-type="normal">
@@ -68,6 +72,15 @@ export class RatingScreen {
   }
 
   private bindEvents(): void {
+    // Back button
+    const backBtn = this.el.querySelector('#rating-back-btn');
+    if (backBtn) {
+      backBtn.addEventListener('click', () => {
+        const event = new CustomEvent('navigate-home');
+        window.dispatchEvent(event);
+      });
+    }
+
     const tabs = this.el.querySelectorAll('.rating-tab');
     tabs.forEach(tab => {
       tab.addEventListener('click', () => {

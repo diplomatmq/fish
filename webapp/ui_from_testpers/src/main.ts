@@ -197,6 +197,11 @@ bindQuickActions(
   () => tabBar.switchTo('results')
 );
 
+// ── Navigate home event listener ───────────────────────────────────────────
+window.addEventListener('navigate-home', () => {
+  tabBar.switchTo('home');
+});
+
 // ── Animate progress bar after boot sequence ──────────────────────────────────
 setTimeout(() => profilePanel.animateProgress(0), 2000);
 
