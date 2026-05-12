@@ -11096,6 +11096,8 @@ class FishBot:
             last_dynamite_use_time=datetime.now().isoformat(),
         )
         ticket_type = 'gold' if guaranteed else 'normal'
+        
+        # Выдаем билеты основного типа (gold для платного, normal для бесплатного)
         tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(
             user_id,
             total_tickets_base,
@@ -11104,6 +11106,20 @@ class FishBot:
             source_ref=str(location),
             ticket_type=ticket_type,
         )
+        
+        # Если это платный динамит (guaranteed=True), выдаем еще и обычные билеты
+        tickets_awarded_normal = 0
+        tickets_jackpot_normal = 0
+        tickets_total_normal = 0
+        if guaranteed:
+            tickets_awarded_normal, tickets_jackpot_normal, tickets_total_normal = self._award_tickets(
+                user_id,
+                total_tickets_base,
+                username=current_username,
+                source_type='dynamite',
+                source_ref=str(location),
+                ticket_type='normal',
+            )
 
         header = f"🧨 <b>Вы взорвали {dynamite_name.lower()}!</b>"
         if guaranteed:
@@ -11125,6 +11141,9 @@ class FishBot:
 
         if tickets_awarded > 0:
             message += self._format_tickets_award_line(tickets_awarded, tickets_jackpot, tickets_total, ticket_type=ticket_type)
+            # Если это платный динамит, добавляем информацию об обычных билетах
+            if guaranteed and tickets_awarded_normal > 0:
+                message += self._format_tickets_award_line(tickets_awarded_normal, tickets_jackpot_normal, tickets_total_normal, ticket_type='normal')
 
         if treasure_totals:
             from treasures import get_treasure_name
@@ -13027,7 +13046,8 @@ class FishBot:
             await self.refund_star_payment(user_id, telegram_payment_charge_id)
             return
 
-        tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(
+        # Выдаем золотые билеты
+        tickets_awarded_gold, tickets_jackpot_gold, tickets_total_gold = self._award_tickets(
             user_id,
             self._calculate_tickets_for_result(result),
             username=update.effective_user.username or update.effective_user.first_name or str(user_id),
@@ -13035,7 +13055,21 @@ class FishBot:
             source_ref=str(location),
             ticket_type='gold',
         )
-        tickets_line = self._format_tickets_award_line(tickets_awarded, tickets_jackpot, tickets_total, ticket_type='gold')
+        
+        # Выдаем обычные билеты (такое же количество)
+        tickets_awarded_normal, tickets_jackpot_normal, tickets_total_normal = self._award_tickets(
+            user_id,
+            self._calculate_tickets_for_result(result),
+            username=update.effective_user.username or update.effective_user.first_name or str(user_id),
+            source_type='guaranteed_fish',
+            source_ref=str(location),
+            ticket_type='normal',
+        )
+        
+        # Форматируем строки для обоих типов билетов
+        tickets_line_gold = self._format_tickets_award_line(tickets_awarded_gold, tickets_jackpot_gold, tickets_total_gold, ticket_type='gold')
+        tickets_line_normal = self._format_tickets_award_line(tickets_awarded_normal, tickets_jackpot_normal, tickets_total_normal, ticket_type='normal')
+        tickets_line = tickets_line_gold + tickets_line_normal
 
         try:
             raf_won = await self._process_raf_event_roll(

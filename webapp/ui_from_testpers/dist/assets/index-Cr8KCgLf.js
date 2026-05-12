@@ -727,6 +727,7 @@
       <div class="screen-header">
         <button class="back-btn" id="rating-back-btn">← Назад</button>
         <h1 class="page-title">РЕЙТИНГ</h1>
+        <div></div>
       </div>
       
       <div class="rating-tabs">
@@ -779,6 +780,7 @@
       <div class="screen-header">
         <button class="back-btn" id="results-back-btn">← Назад</button>
         <h1 class="page-title">РЕЗУЛЬТАТЫ</h1>
+        <div></div>
       </div>
       
       <div class="results-tabs">

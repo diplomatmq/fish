@@ -208,13 +208,12 @@ svg {
    PAGE TITLE
    ════════════════════════════════════════════════════════════════════════════ */
 .screen-header {
-  display: flex;
+  display: grid;
+  grid-template-columns: 80px 1fr 80px;
   align-items: center;
-  justify-content: space-between;
   margin-bottom: 14px;
   flex-shrink: 0;
   gap: 10px;
-  position: relative;
 }
 
 .back-btn {
@@ -229,10 +228,7 @@ svg {
   cursor: pointer;
   transition: all 0.2s;
   -webkit-tap-highlight-color: transparent;
-  flex-shrink: 0;
-  position: absolute;
-  left: 0;
-  z-index: 10;
+  justify-self: start;
 }
 
 .back-btn:active {
@@ -241,9 +237,9 @@ svg {
 }
 
 .screen-header .page-title {
-  flex: 1;
   margin: 0;
   text-align: center;
+  justify-self: center;
 }
 
 .page-title {

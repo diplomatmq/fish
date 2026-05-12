@@ -38,6 +38,7 @@ export class RatingScreen {
       <div class="screen-header">
         <button class="back-btn" id="rating-back-btn">← Назад</button>
         <h1 class="page-title">РЕЙТИНГ</h1>
+        <div></div>
       </div>
       
       <div class="rating-tabs">

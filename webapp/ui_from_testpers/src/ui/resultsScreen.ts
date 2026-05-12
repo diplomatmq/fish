@@ -55,6 +55,7 @@ export class ResultsScreen {
       <div class="screen-header">
         <button class="back-btn" id="results-back-btn">← Назад</button>
         <h1 class="page-title">РЕЗУЛЬТАТЫ</h1>
+        <div></div>
       </div>
       
       <div class="results-tabs">
