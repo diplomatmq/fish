@@ -87,19 +87,25 @@ export class TabBar {
 
     tgService.haptic('selection');
 
-    const prevId   = this.activeId;
-    const fromScreen = this.screens.get(prevId);
+    const prevId = this.activeId;
     
-    // Для rating и results экраны не в this.screens, ищем по ID
+    // Ищем экраны - сначала в this.screens, потом по ID
+    let fromScreen = this.screens.get(prevId);
+    if (!fromScreen) {
+      fromScreen = document.getElementById(`screen-${prevId}`) as HTMLElement;
+    }
+    
     let toScreen = this.screens.get(id);
     if (!toScreen) {
       toScreen = document.getElementById(`screen-${id}`) as HTMLElement;
     }
     
     if (!fromScreen || !toScreen) {
-      console.warn(`Screen not found: from=${prevId}, to=${id}`);
+      console.warn(`Screen not found: from=${prevId} (${!!fromScreen}), to=${id} (${!!toScreen})`);
       return;
     }
+
+    console.log(`Switching from ${prevId} to ${id}`);
 
     // Animate screens
     ScreenTransition.transitionTo(fromScreen, toScreen);
