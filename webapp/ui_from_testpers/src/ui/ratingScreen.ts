@@ -38,7 +38,6 @@ export class RatingScreen {
       <div class="screen-header">
         <button class="back-btn" id="rating-back-btn">← Назад</button>
         <h1 class="page-title">РЕЙТИНГ</h1>
-        <div class="back-btn-spacer"></div>
       </div>
       
       <div class="rating-tabs">
@@ -144,12 +143,13 @@ export class RatingScreen {
       `;
     } else {
       const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '';
+      const rankText = rank > 0 ? `#${rank}` : 'Не в топе';
       container.innerHTML = `
         <div class="my-rank-content">
           <div class="my-rank-icon">${medal || emoji}</div>
           <div class="my-rank-text">
             <div class="my-rank-label">Ваше место в топе</div>
-            <div class="my-rank-value">#${rank}</div>
+            <div class="my-rank-value">${rankText}</div>
           </div>
         </div>
       `;

@@ -142,6 +142,16 @@ const tabBar   = new TabBar(tabbarMount, screensWrap);
 tabBar.onChange((_prev, next) => {
   console.log(`Screen transition: ${_prev} -> ${next}`);
   
+  // Hide/show TabBar based on screen
+  const tabBarEl = document.getElementById('tab-bar');
+  if (tabBarEl) {
+    if (next === 'rating' || next === 'results') {
+      tabBarEl.classList.add('hide-tabbar');
+    } else {
+      tabBarEl.classList.remove('hide-tabbar');
+    }
+  }
+  
   if (next === 'book' && !bookInitialized) {
     bookScreen.init();
     bookInitialized = true;

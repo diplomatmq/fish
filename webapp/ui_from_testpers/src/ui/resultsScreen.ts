@@ -55,7 +55,6 @@ export class ResultsScreen {
       <div class="screen-header">
         <button class="back-btn" id="results-back-btn">← Назад</button>
         <h1 class="page-title">РЕЗУЛЬТАТЫ</h1>
-        <div class="back-btn-spacer"></div>
       </div>
       
       <div class="results-tabs">
@@ -234,16 +233,20 @@ export class ResultsScreen {
     }
 
     const period = response.period;
-    const periodHtml = period ? `
-      <div class="results-period">
-        <div class="results-period-title">Период розыгрыша</div>
-        <div class="results-period-dates">
-          ${this.formatDate(period.start_date)} — ${this.formatDate(period.end_date)}
+    
+    // Кнопка с датой (collapsed state)
+    const periodButtonHtml = period ? `
+      <button class="results-period-btn" id="results-toggle-btn">
+        <div class="results-period-btn-icon">📅</div>
+        <div class="results-period-btn-text">
+          <div class="results-period-btn-label">Результаты розыгрыша</div>
+          <div class="results-period-btn-date">${this.formatDate(period.start_date)} — ${this.formatDate(period.end_date)}</div>
         </div>
-        <div class="results-period-count">Победителей: ${period.count}</div>
-      </div>
+        <div class="results-period-btn-arrow">▼</div>
+      </button>
     ` : '';
 
+    // Список победителей (скрыт по умолчанию)
     const winnersHtml = response.items.map(winner => {
       const medal = winner.place === 1 ? '🥇' : winner.place === 2 ? '🥈' : winner.place === 3 ? '🥉' : '🎖️';
       const placeClass = winner.place <= 3 ? 'results-winner-top' : '';
@@ -263,7 +266,28 @@ export class ResultsScreen {
       `;
     }).join('');
 
-    container.innerHTML = periodHtml + '<div class="results-winners">' + winnersHtml + '</div>';
+    container.innerHTML = `
+      ${periodButtonHtml}
+      <div class="results-winners" id="results-winners-list" style="display: none;">
+        ${winnersHtml}
+      </div>
+    `;
+
+    // Добавляем обработчик для кнопки
+    const toggleBtn = container.querySelector('#results-toggle-btn');
+    const winnersList = container.querySelector('#results-winners-list') as HTMLElement;
+    const arrow = container.querySelector('.results-period-btn-arrow') as HTMLElement;
+    
+    if (toggleBtn && winnersList) {
+      toggleBtn.addEventListener('click', () => {
+        const isVisible = winnersList.style.display !== 'none';
+        winnersList.style.display = isVisible ? 'none' : 'flex';
+        if (arrow) {
+          arrow.textContent = isVisible ? '▼' : '▲';
+        }
+        tgService.haptic('selection');
+      });
+    }
   }
 
   private formatDate(dateStr: string): string {

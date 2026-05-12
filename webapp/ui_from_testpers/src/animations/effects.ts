@@ -115,13 +115,15 @@ export class ScreenTransition {
     from.style.opacity    = '0';
     from.style.transform  = 'scale(0.93)';
     from.style.pointerEvents = 'none';
+    from.classList.remove('is-active');
 
     // Prepare incoming screen - сразу показываем и делаем кликабельным
     to.style.display      = 'flex';
     to.style.transition   = 'none';
     to.style.opacity      = '0';
     to.style.transform    = 'scale(1.06)';
-    to.style.pointerEvents = 'all'; // ИСПРАВЛЕНИЕ: включаем сразу
+    to.style.pointerEvents = 'all';
+    to.classList.add('is-active');
 
     // After exit completes — bring in new screen
     this.pendingTimeout = window.setTimeout(() => {
