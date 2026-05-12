@@ -622,7 +622,7 @@ def inventory():
 		return jsonify({"ok": False, "error": "db_unavailable"}), 500
 	
 	try:
-		# Получаем список непроданной рыбы
+		# Получаем список непроданной рыбы с лимитом для производительности
 		with db._connect() as conn:
 			cursor = conn.cursor()
 			cursor.execute('''
@@ -631,6 +631,7 @@ def inventory():
 				JOIN fish f ON cf.fish_name = f.name
 				WHERE cf.user_id = ? AND cf.sold = 0
 				ORDER BY cf.caught_at DESC
+				LIMIT 1000
 			''', (user_id,))
 			rows = cursor.fetchall()
 			
@@ -702,20 +703,22 @@ def inventory_grouped():
 	try:
 		with db._connect() as conn:
 			cursor = conn.cursor()
+			# Оптимизированный запрос с использованием STRING_AGG и LIMIT
 			cursor.execute('''
-				SELECT cf.fish_name, f.rarity, f.price, f.sticker_id, COUNT(cf.id), SUM(cf.weight), GROUP_CONCAT(cf.id)
+				SELECT cf.fish_name, f.rarity, f.price, f.sticker_id, COUNT(cf.id), SUM(cf.weight), STRING_AGG(CAST(cf.id AS TEXT), ',')
 				FROM caught_fish cf
 				LEFT JOIN fish f ON cf.fish_name = f.name
 				WHERE cf.user_id = ? AND cf.sold = 0
 				GROUP BY cf.fish_name, f.rarity, f.price, f.sticker_id
 				ORDER BY f.rarity IS NOT NULL DESC, COUNT(cf.id) DESC
+				LIMIT 500
 			''', (user_id,))
 			rows = cursor.fetchall()
 			items = []
 			for r in rows:
 				fish_name, rarity, price, sticker_id, count, tw, ids_str = r
 				price = price or 0
-				ids = [int(i) for i in ids_str.split(',')]
+				ids = [int(i) for i in ids_str.split(',') if i]
 				if not rarity:
 					cursor.execute('SELECT price, sticker_id FROM trash WHERE name = ?', (fish_name,))
 					tr = cursor.fetchone()
@@ -727,7 +730,7 @@ def inventory_grouped():
 			return jsonify({"ok": True, "items": items})
 	except Exception as e:
 		logger.exception("Grouped API error")
-		return jsonify({"ok": False}), 500
+		return jsonify({"ok": False, "error": "internal_error"}), 500
 
 @app.post("/api/sell-bulk")
 def sell_bulk():

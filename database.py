@@ -5005,117 +5005,163 @@ class Database:
         with self._connect() as conn:
             cursor = conn.cursor()
 
-            def get_columns(table_name: str):
-                cursor.execute(
-                    "SELECT column_name FROM information_schema.columns WHERE table_name = %s AND table_schema = 'public'",
-                    (table_name,)
-                )
-                return [r[0] for r in cursor.fetchall()]
+            # Protect migrations from concurrent workers with an advisory lock
+            # lock_id = 987654321 (arbitrary constant for this migration set)
+            try:
+                cursor.execute("SELECT pg_try_advisory_lock(987654321)")
+                row = cursor.fetchone()
+                lock_acquired = row[0] if row else False
+            except Exception:
+                lock_acquired = False
 
-            # Проверяем наличие колонок в таблице players (Postgres-friendly)
-            columns = get_columns('players')
+            if not lock_acquired:
+                # Another worker is running migrations - skip, they'll finish first
+                logger.info("_run_migrations: advisory lock not acquired, skipping (another worker is migrating)")
+                return
 
-            if 'ref' not in columns:
-                cursor.execute('ALTER TABLE players ADD COLUMN ref INTEGER')
-                conn.commit()
-
-            if 'ref_link' not in columns:
-                cursor.execute('ALTER TABLE players ADD COLUMN ref_link TEXT')
-                conn.commit()
-
-            if 'chat_id' not in columns:
-                cursor.execute('ALTER TABLE players ADD COLUMN chat_id BIGINT')
-                conn.commit()
-
-            # Ensure chat_configs has columns for tracking title and total stars
-            chat_conf_cols = get_columns('chat_configs')
-            if 'stars_total' not in chat_conf_cols:
+            try:
+                self._run_migrations_inner(conn)
+            finally:
                 try:
-                    cursor.execute('ALTER TABLE chat_configs ADD COLUMN stars_total INTEGER DEFAULT 0')
-                    conn.commit()
-                except Exception:
-                    pass
-            if 'chat_title' not in chat_conf_cols:
-                try:
-                    cursor.execute('ALTER TABLE chat_configs ADD COLUMN chat_title TEXT')
+                    cursor.execute("SELECT pg_advisory_unlock(987654321)")
                     conn.commit()
                 except Exception:
                     pass
 
-            if 'xp' not in columns:
-                cursor.execute('ALTER TABLE players ADD COLUMN xp INTEGER DEFAULT 0')
-                conn.commit()
+    def _run_migrations_inner(self, conn):
+        """Actual migration logic, called with advisory lock held."""
+        cursor = conn.cursor()
 
-            if 'level' not in columns:
-                cursor.execute('ALTER TABLE players ADD COLUMN level INTEGER DEFAULT 0')
-                conn.commit()
-
-            # CRITICAL: Migrate players table to use composite primary key (user_id, chat_id)
+        def get_columns(table_name: str):
             cursor.execute(
-                """
-                SELECT kcu.column_name
-                FROM information_schema.table_constraints tc
-                JOIN information_schema.key_column_usage kcu
-                  ON tc.constraint_name = kcu.constraint_name
-                  AND tc.table_schema = kcu.table_schema
-                WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = %s
-                """,
-                ('players',)
+                "SELECT column_name FROM information_schema.columns WHERE table_name = %s AND table_schema = 'public'",
+                (table_name,)
             )
-            pk_cols = [r[0] for r in cursor.fetchall()]
+            return [r[0] for r in cursor.fetchall()]
 
-            if pk_cols == ['user_id']:
-                # Need to recreate table with composite key
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS players_new (
-                        user_id BIGINT NOT NULL,
-                        chat_id BIGINT NOT NULL,
-                        username TEXT NOT NULL,
-                        coins INTEGER DEFAULT 100,
-                        stars INTEGER DEFAULT 0,
-                        xp INTEGER DEFAULT 0,
-                        level INTEGER DEFAULT 0,
-                        current_rod TEXT DEFAULT 'Бамбуковая удочка',
-                        current_bait TEXT DEFAULT 'Черви',
-                        current_location TEXT DEFAULT 'Городской пруд',
-                        last_fish_time TEXT,
-                        is_banned INTEGER DEFAULT 0,
-                        ban_until TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        ref INTEGER,
-                        ref_link TEXT,
-                        last_net_use_time TEXT,
-                        PRIMARY KEY (user_id, chat_id)
-                    )
-                ''')
+        # Проверяем наличие колонок в таблице players (Postgres-friendly)
+        columns = get_columns('players')
 
-                # Copy data from old table, normalizing NULL chat_id to -1
-                cursor.execute('''
-                    INSERT INTO players_new (user_id, chat_id, username, coins, stars, xp, level, current_rod, current_bait, current_location, last_fish_time, is_banned, ban_until, created_at, ref, ref_link, last_net_use_time)
-                    SELECT user_id, COALESCE(chat_id, -1), username, coins, stars, COALESCE(xp, 0), COALESCE(level, 0), current_rod, current_bait, current_location, last_fish_time, is_banned, ban_until, created_at, ref, ref_link, last_net_use_time
-                    FROM players
-                    ON CONFLICT (user_id, chat_id) DO NOTHING
-                ''')
+        if 'ref' not in columns:
+            cursor.execute('ALTER TABLE players ADD COLUMN ref INTEGER')
+            conn.commit()
 
-                # Attempt to replace the old players table only if nothing
-                # references it via foreign key constraints. If other objects
-                # depend on `players` skip the destructive replacement to
-                # avoid dropping dependent objects and noisy stack traces.
+        if 'ref_link' not in columns:
+            cursor.execute('ALTER TABLE players ADD COLUMN ref_link TEXT')
+            conn.commit()
+
+        if 'chat_id' not in columns:
+            cursor.execute('ALTER TABLE players ADD COLUMN chat_id BIGINT')
+            conn.commit()
+
+        # Ensure chat_configs has columns for tracking title and total stars
+        chat_conf_cols = get_columns('chat_configs')
+        if 'stars_total' not in chat_conf_cols:
+            try:
+                cursor.execute('ALTER TABLE chat_configs ADD COLUMN stars_total INTEGER DEFAULT 0')
+                conn.commit()
+            except Exception:
+                pass
+        if 'chat_title' not in chat_conf_cols:
+            try:
+                cursor.execute('ALTER TABLE chat_configs ADD COLUMN chat_title TEXT')
+                conn.commit()
+            except Exception:
+                pass
+
+        if 'xp' not in columns:
+            cursor.execute('ALTER TABLE players ADD COLUMN xp INTEGER DEFAULT 0')
+            conn.commit()
+
+        if 'level' not in columns:
+            cursor.execute('ALTER TABLE players ADD COLUMN level INTEGER DEFAULT 0')
+            conn.commit()
+
+        # CRITICAL: Migrate players table to use composite primary key (user_id, chat_id)
+        cursor.execute(
+            """
+            SELECT kcu.column_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name
+              AND tc.table_schema = kcu.table_schema
+            WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = %s
+            """,
+            ('players',)
+        )
+        pk_cols = [r[0] for r in cursor.fetchall()]
+
+        if pk_cols == ['user_id']:
+            # Need to recreate table with composite key
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS players_new (
+                    user_id BIGINT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    username TEXT NOT NULL,
+                    coins INTEGER DEFAULT 100,
+                    stars INTEGER DEFAULT 0,
+                    xp INTEGER DEFAULT 0,
+                    level INTEGER DEFAULT 0,
+                    current_rod TEXT DEFAULT 'Бамбуковая удочка',
+                    current_bait TEXT DEFAULT 'Черви',
+                    current_location TEXT DEFAULT 'Городской пруд',
+                    last_fish_time TEXT,
+                    is_banned INTEGER DEFAULT 0,
+                    ban_until TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    ref INTEGER,
+                    ref_link TEXT,
+                    last_net_use_time TEXT,
+                    PRIMARY KEY (user_id, chat_id)
+                )
+            ''')
+
+            # Copy data from old table, normalizing NULL chat_id to -1
+            cursor.execute('''
+                INSERT INTO players_new (user_id, chat_id, username, coins, stars, xp, level, current_rod, current_bait, current_location, last_fish_time, is_banned, ban_until, created_at, ref, ref_link, last_net_use_time)
+                SELECT user_id, COALESCE(chat_id, -1), username, coins, stars, COALESCE(xp, 0), COALESCE(level, 0), current_rod, current_bait, current_location, last_fish_time, is_banned, ban_until, created_at, ref, ref_link, last_net_use_time
+                FROM players
+                ON CONFLICT (user_id, chat_id) DO NOTHING
+            ''')
+
+            # Attempt to replace the old players table only if nothing
+            # references it via foreign key constraints. If other objects
+            # depend on `players` skip the destructive replacement to
+            # avoid dropping dependent objects and noisy stack traces.
+            try:
+                # Check for any foreign-key constraints referencing players
+                cursor.execute(
+                    "SELECT COUNT(*) FROM pg_constraint WHERE confrelid = (SELECT oid FROM pg_class WHERE relname = %s AND relnamespace = 'public'::regnamespace)",
+                    ('players',)
+                )
+                # fetchone() returns a tuple like (count,); use the first value
+                ref_count_row = cursor.fetchone()
+                ref_count = ref_count_row[0] if ref_count_row else 0
+            except Exception:
+                # Fallback: if we cannot reliably detect references, avoid DROP
+                ref_count = 1
+
+            if ref_count:
+                logger.warning("Could not replace players table (dependent objects exist). Skipping composite-PK migration.")
                 try:
-                    # Check for any foreign-key constraints referencing players
-                    cursor.execute(
-                        "SELECT COUNT(*) FROM pg_constraint WHERE confrelid = (SELECT oid FROM pg_class WHERE relname = %s AND relnamespace = 'public'::regnamespace)",
-                        ('players',)
-                    )
-                    # fetchone() returns a tuple like (count,); use the first value
-                    ref_count_row = cursor.fetchone()
-                    ref_count = ref_count_row[0] if ref_count_row else 0
+                    conn.rollback()
                 except Exception:
-                    # Fallback: if we cannot reliably detect references, avoid DROP
-                    ref_count = 1
-
-                if ref_count:
-                    logger.warning("Could not replace players table (dependent objects exist). Skipping composite-PK migration.")
+                    pass
+                try:
+                    cursor.execute('DROP TABLE IF EXISTS players_new')
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    cursor.execute('DROP TABLE players')
+                    cursor.execute('ALTER TABLE players_new RENAME TO players')
+                    conn.commit()
+                except Exception as e:
+                    logger.warning("Could not replace players table (%s). Skipping composite-PK migration.", e)
                     try:
                         conn.rollback()
                     except Exception:
@@ -5128,268 +5174,322 @@ class Database:
                             conn.rollback()
                         except Exception:
                             pass
-                else:
+
+        # refresh columns list after potential schema change
+        columns = get_columns('players')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS player_trophies (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                fish_name TEXT NOT NULL,
+                weight REAL NOT NULL,
+                length REAL DEFAULT 0,
+                location TEXT,
+                image_file TEXT,
+                is_active INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_player_trophies_user_created
+            ON player_trophies (user_id, created_at)
+        ''')
+        conn.commit()
+
+        if 'last_net_use_time' not in columns:
+            cursor.execute('ALTER TABLE players ADD COLUMN last_net_use_time TEXT')
+            conn.commit()
+
+        # Helper to add a column if missing
+        def ensure_column(table: str, col: str, col_def: str):
+            cols = get_columns(table)
+            if col not in cols:
+                cursor.execute(f'ALTER TABLE {table} ADD COLUMN {col} {col_def}')
+                conn.commit()
+
+        ensure_column('trash', 'sticker_id', 'TEXT')
+        ensure_column('caught_fish', 'length', 'REAL DEFAULT 0')
+        ensure_column('caught_fish', 'sold', 'INTEGER DEFAULT 0')
+        ensure_column('caught_fish', 'sold_at', 'TIMESTAMP')
+        ensure_column('fish', 'required_level', 'INTEGER DEFAULT 0')
+        ensure_column('star_transactions', 'chat_id', 'INTEGER')
+        ensure_column('star_transactions', 'chat_title', 'TEXT')
+        ensure_column('player_rods', 'chat_id', 'INTEGER')
+        ensure_column('player_nets', 'chat_id', 'INTEGER')
+        ensure_column('chat_configs', 'admin_ref_link', 'TEXT')
+        ensure_column('chat_configs', 'chat_invite_link', 'TEXT')
+        ensure_column('user_ref_links', 'chat_invite_link', 'TEXT')
+        ensure_column('caught_fish', 'chat_id', 'INTEGER')
+        ensure_column('players', 'consecutive_casts_at_location', 'INTEGER DEFAULT 0')
+        ensure_column('players', 'last_fishing_location', 'TEXT')
+        ensure_column('players', 'population_penalty', 'REAL DEFAULT 0.0')
+        ensure_column('players', 'penalty_recovery_casts', 'INTEGER DEFAULT 0')
+        ensure_column('players', 'last_population_action_time', 'TEXT')
+        ensure_column('players', 'consecutive_dynamite_at_location', 'INTEGER DEFAULT 0')
+        ensure_column('players', 'last_dynamite_location', 'TEXT')
+        ensure_column('players', 'dynamite_penalty', 'REAL DEFAULT 0.0')
+        ensure_column('players', 'dynamite_recovery_explosions', 'INTEGER DEFAULT 0')
+        ensure_column('players', 'last_dynamite_use_time', 'TEXT')
+        ensure_column('players', 'last_boat_return_time', 'TEXT')
+        ensure_column('players', 'diamonds', 'INTEGER DEFAULT 0')
+        ensure_column('players', 'tickets', 'INTEGER DEFAULT 0')
+        ensure_column('players', 'gold_tickets', 'INTEGER DEFAULT 0')
+        ensure_column('players', 'dynamite_ban_until', 'TEXT')
+        ensure_column('players', 'dynamite_upgrade_level', 'INTEGER DEFAULT 1')
+        ensure_column('raf_events', 'creator_username', 'TEXT')
+        ensure_column('player_trophies', 'length', 'REAL DEFAULT 0')
+        ensure_column('player_trophies', 'location', 'TEXT')
+        ensure_column('player_trophies', 'image_file', 'TEXT')
+        ensure_column('player_trophies', 'is_active', 'INTEGER DEFAULT 0')
+        ensure_column('player_trophies', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+        ensure_column('ticket_awards', 'ticket_type', "TEXT NOT NULL DEFAULT 'normal'")
+        ensure_column('ticket_items', 'ticket_type', "TEXT NOT NULL DEFAULT 'normal'")
+
+        # Create user_fish_stats if not exists (historical stats table)
+        try:
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_fish_stats (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    fish_name TEXT NOT NULL,
+                    count INTEGER DEFAULT 1,
+                    total_weight REAL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_ufs_user ON user_fish_stats(user_id)')
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+        # Add performance indexes on caught_fish
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_cf_user_sold ON caught_fish(user_id, sold)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_cf_user_sold_name ON caught_fish(user_id, sold, fish_name)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_cf_caught_at ON caught_fish(caught_at DESC)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_cf_fish_name ON caught_fish(fish_name)')
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+        # Add performance indexes on fish_sales_history
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_fsh_fish_sold ON fish_sales_history(fish_name, sold_at DESC)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_fsh_sold_at ON fish_sales_history(sold_at DESC)')
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+        # Add performance indexes on players
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_players_tickets ON players(tickets DESC) WHERE tickets > 0')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_players_gold_tickets ON players(gold_tickets DESC) WHERE gold_tickets > 0')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_players_user_id ON players(user_id)')
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+        # Add performance indexes on clan tables
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_clan_members_user ON clan_members(user_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_clan_members_clan ON clan_members(clan_id)')
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+        # Convert known user/chat id columns to BIGINT to support large Telegram IDs
+        # Execute these migrations in a specific order to avoid deadlocks
+        # First, update data without schema changes
+        try:
+            cursor.execute("UPDATE ticket_awards SET ticket_type = 'normal' WHERE ticket_type IS NULL OR ticket_type = ''")
+            cursor.execute("UPDATE ticket_items SET ticket_type = 'normal' WHERE ticket_type IS NULL OR ticket_type = ''")
+            cursor.execute("UPDATE players SET gold_tickets = COALESCE(gold_tickets, 0)")
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+        # Define helper function for BIGINT conversion
+        def ensure_bigint_column(table_name: str, column_name: str):
+            try:
+                cursor.execute(
+                    "SELECT data_type FROM information_schema.columns WHERE table_name = %s AND column_name = %s AND table_schema = 'public'",
+                    (table_name, column_name)
+                )
+                row = cursor.fetchone()
+                if row and row[0] != 'bigint':
                     try:
-                        cursor.execute('DROP TABLE players')
-                        cursor.execute('ALTER TABLE players_new RENAME TO players')
+                        # Direct cast INTEGER -> BIGINT is always safe and lossless.
+                        # Avoids the old '^[0-9]+$' regex which incorrectly converted
+                        # negative Telegram group chat IDs (e.g. -1001234567890) to NULL.
+                        cursor.execute(f'ALTER TABLE {table_name} ALTER COLUMN {column_name} TYPE BIGINT USING {column_name}::bigint')
                         conn.commit()
+                        logger.info(f"Converted {table_name}.{column_name} to BIGINT")
                     except Exception as e:
-                        logger.warning("Could not replace players table (%s). Skipping composite-PK migration.", e)
+                        logger.warning(f"ALTER {table_name}.{column_name} BIGINT skipped: {e}")
                         try:
                             conn.rollback()
                         except Exception:
                             pass
-                        try:
-                            cursor.execute('DROP TABLE IF EXISTS players_new')
-                            conn.commit()
-                        except Exception:
-                            try:
-                                conn.rollback()
-                            except Exception:
-                                pass
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
-            # refresh columns list after potential schema change
-            columns = get_columns('players')
+        # Then, perform schema changes in order of dependency (child tables first, then parent tables)
+        bigint_targets = [
+            # Child tables first (to avoid FK conflicts)
+            ('caught_fish', 'user_id'),
+            ('caught_fish', 'chat_id'),
+            ('player_rods', 'user_id'),
+            ('player_rods', 'chat_id'),
+            ('player_baits', 'user_id'),
+            ('player_nets', 'user_id'),
+            ('player_nets', 'chat_id'),
+            ('star_transactions', 'user_id'),
+            ('star_transactions', 'chat_id'),
+            ('player_trophies', 'user_id'),
+            ('user_ref_links', 'user_id'),
+            # Parent tables last
+            ('players', 'user_id'),
+            ('players', 'chat_id'),
+            ('chat_configs', 'chat_id'),
+            ('chat_configs', 'admin_user_id'),
+        ]
+        for tbl, col in bigint_targets:
+            ensure_bigint_column(tbl, col)
 
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS player_trophies (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL,
-                    fish_name TEXT NOT NULL,
-                    weight REAL NOT NULL,
-                    length REAL DEFAULT 0,
-                    location TEXT,
-                    image_file TEXT,
-                    is_active INTEGER DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cursor.execute('''
-                CREATE INDEX IF NOT EXISTS idx_player_trophies_user_created
-                ON player_trophies (user_id, created_at)
-            ''')
-            conn.commit()
-
-            if 'last_net_use_time' not in columns:
-                cursor.execute('ALTER TABLE players ADD COLUMN last_net_use_time TEXT')
+        # Ensure unique index for ON CONFLICT targets that expect (user_id, chat_id)
+        try:
+            cols = get_columns('players')
+            if 'chat_id' in cols:
+                cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS players_user_chat_unique ON players (user_id, chat_id)")
                 conn.commit()
-
-            # Helper to add a column if missing
-            def ensure_column(table: str, col: str, col_def: str):
-                cols = get_columns(table)
-                if col not in cols:
-                    cursor.execute(f'ALTER TABLE {table} ADD COLUMN {col} {col_def}')
-                    conn.commit()
-
-            ensure_column('trash', 'sticker_id', 'TEXT')
-            ensure_column('caught_fish', 'length', 'REAL DEFAULT 0')
-            ensure_column('caught_fish', 'sold', 'INTEGER DEFAULT 0')
-            ensure_column('caught_fish', 'sold_at', 'TIMESTAMP')
-            ensure_column('fish', 'required_level', 'INTEGER DEFAULT 0')
-            ensure_column('star_transactions', 'chat_id', 'INTEGER')
-            ensure_column('star_transactions', 'chat_title', 'TEXT')
-            ensure_column('player_rods', 'chat_id', 'INTEGER')
-            ensure_column('player_nets', 'chat_id', 'INTEGER')
-            ensure_column('chat_configs', 'admin_ref_link', 'TEXT')
-            ensure_column('chat_configs', 'chat_invite_link', 'TEXT')
-            ensure_column('user_ref_links', 'chat_invite_link', 'TEXT')
-            ensure_column('caught_fish', 'chat_id', 'INTEGER')
-            ensure_column('players', 'consecutive_casts_at_location', 'INTEGER DEFAULT 0')
-            ensure_column('players', 'last_fishing_location', 'TEXT')
-            ensure_column('players', 'population_penalty', 'REAL DEFAULT 0.0')
-            ensure_column('players', 'penalty_recovery_casts', 'INTEGER DEFAULT 0')
-            ensure_column('players', 'last_population_action_time', 'TEXT')
-            ensure_column('players', 'consecutive_dynamite_at_location', 'INTEGER DEFAULT 0')
-            ensure_column('players', 'last_dynamite_location', 'TEXT')
-            ensure_column('players', 'dynamite_penalty', 'REAL DEFAULT 0.0')
-            ensure_column('players', 'dynamite_recovery_explosions', 'INTEGER DEFAULT 0')
-            ensure_column('players', 'last_dynamite_use_time', 'TEXT')
-            ensure_column('players', 'last_boat_return_time', 'TEXT')
-            ensure_column('players', 'diamonds', 'INTEGER DEFAULT 0')
-            ensure_column('players', 'tickets', 'INTEGER DEFAULT 0')
-            ensure_column('players', 'gold_tickets', 'INTEGER DEFAULT 0')
-            ensure_column('players', 'dynamite_ban_until', 'TEXT')
-            ensure_column('players', 'dynamite_upgrade_level', 'INTEGER DEFAULT 1')
-            ensure_column('raf_events', 'creator_username', 'TEXT')
-            ensure_column('player_trophies', 'length', 'REAL DEFAULT 0')
-            ensure_column('player_trophies', 'location', 'TEXT')
-            ensure_column('player_trophies', 'image_file', 'TEXT')
-            ensure_column('player_trophies', 'is_active', 'INTEGER DEFAULT 0')
-            ensure_column('player_trophies', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
-            ensure_column('ticket_awards', 'ticket_type', "TEXT NOT NULL DEFAULT 'normal'")
-            ensure_column('ticket_items', 'ticket_type', "TEXT NOT NULL DEFAULT 'normal'")
-
+        except Exception:
             try:
-                cursor.execute("UPDATE ticket_awards SET ticket_type = 'normal' WHERE ticket_type IS NULL OR ticket_type = ''")
-                cursor.execute("UPDATE ticket_items SET ticket_type = 'normal' WHERE ticket_type IS NULL OR ticket_type = ''")
-                cursor.execute("UPDATE players SET gold_tickets = COALESCE(gold_tickets, 0)")
+                conn.rollback()
+            except Exception:
+                pass
+
+        # Use module-level helper `ensure_serial_pk(conn, table, id_col)`
+        try:
+            ensure_serial_pk(conn, 'rods', 'id')
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+        # Force caught_fish.chat_id to BIGINT unconditionally.
+        # Telegram supergroup IDs like -1001234567890 exceed 32-bit INTEGER range.
+        # ALTER TABLE ... TYPE BIGINT is a no-op if column is already BIGINT.
+        for _tbl, _col in [
+            ('caught_fish', 'chat_id'),
+            ('players', 'chat_id'),
+            ('players', 'user_id'),
+            ('player_rods', 'chat_id'),
+            ('player_rods', 'user_id'),
+            ('player_nets', 'chat_id'),
+            ('player_nets', 'user_id'),
+            ('star_transactions', 'chat_id'),
+            ('star_transactions', 'user_id'),
+        ]:
+            try:
+                cursor.execute(
+                    f'ALTER TABLE {_tbl} ALTER COLUMN {_col} TYPE BIGINT USING {_col}::bigint'
+                )
                 conn.commit()
-            except Exception:
+                logger.info("Ensured %s.%s is BIGINT", _tbl, _col)
+            except Exception as _e:
+                logger.warning("ALTER %s.%s BIGINT skipped: %s", _tbl, _col, _e)
                 try:
                     conn.rollback()
                 except Exception:
                     pass
 
-            # Ensure unique index for ON CONFLICT targets that expect (user_id, chat_id)
+        # Populate chat_id in player_rods and player_nets and caught_fish
+        # Use p.chat_id directly — the old regex '^[0-9]+$' incorrectly excluded
+        # negative Telegram group chat IDs, setting them to NULL.
+        cursor.execute('''
+            UPDATE player_rods
+            SET chat_id = (
+                SELECT p.chat_id
+                FROM players p
+                WHERE p.user_id = player_rods.user_id AND p.chat_id IS NOT NULL AND p.chat_id != 0
+                ORDER BY p.chat_id
+                LIMIT 1
+            )
+            WHERE chat_id IS NULL OR chat_id = 0
+        ''')
+        conn.commit()
+
+        cursor.execute('''
+            UPDATE player_nets
+            SET chat_id = (
+                SELECT p.chat_id
+                FROM players p
+                WHERE p.user_id = player_nets.user_id AND p.chat_id IS NOT NULL AND p.chat_id != 0
+                ORDER BY p.chat_id
+                LIMIT 1
+            )
+            WHERE chat_id IS NULL OR chat_id = 0
+        ''')
+        conn.commit()
+
+        cursor.execute('''
+            UPDATE caught_fish
+            SET chat_id = (
+                SELECT p.chat_id
+                FROM players p
+                WHERE p.user_id = caught_fish.user_id AND p.chat_id IS NOT NULL AND p.chat_id != 0
+                ORDER BY p.chat_id
+                LIMIT 1
+            )
+            WHERE chat_id IS NULL OR chat_id = 0
+        ''')
+        conn.commit()
+
+        # Инициализация погоды для локаций
+        cursor.execute('SELECT name FROM locations')
+        locations = cursor.fetchall()
+
+        from weather import weather_system
+        for location in locations:
+            loc_name = location[0]
+            cursor.execute('SELECT 1 FROM weather WHERE location = %s', (loc_name,))
+            if not cursor.fetchone():
+                condition, temp = weather_system.generate_weather(loc_name)
+                cursor.execute(
+                    'INSERT INTO weather (location, condition, temperature) VALUES (%s, %s, %s)',
+                    (loc_name, condition, temp),
+                )
+            # Ensure a global players row exists (user_id = -1, chat_id = -1)
             try:
-                cols = get_columns('players')
-                if 'chat_id' in cols:
-                    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS players_user_chat_unique ON players (user_id, chat_id)")
-                    conn.commit()
+                cursor.execute(
+                    "INSERT INTO players (user_id, chat_id, username, coins, stars, xp, level) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (user_id, chat_id) DO NOTHING",
+                    (-1, -1, 'GLOBAL', 0, 0, 0, 0),
+                )
             except Exception:
                 try:
-                    conn.rollback()
-                except Exception:
-                    pass
-
-            # Ensure integer PK columns have a sequence/default on Postgres (e.g., rods.id)
-            # Also ensure user/chat identifier columns are 64-bit on Postgres to avoid integer out of range
-            def ensure_bigint_column(table_name: str, column_name: str):
-                try:
-                    cursor.execute(
-                        "SELECT data_type FROM information_schema.columns WHERE table_name = %s AND column_name = %s AND table_schema = 'public'",
-                        (table_name, column_name)
-                    )
-                    row = cursor.fetchone()
-                    if row and row[0] != 'bigint':
-                        try:
-                            # Direct cast INTEGER -> BIGINT is always safe and lossless.
-                            # Avoids the old '^[0-9]+$' regex which incorrectly converted
-                            # negative Telegram group chat IDs (e.g. -1001234567890) to NULL.
-                            cursor.execute(f'ALTER TABLE {table_name} ALTER COLUMN {column_name} TYPE BIGINT USING {column_name}::bigint')
-                            conn.commit()
-                        except Exception:
-                            try:
-                                conn.rollback()
-                            except Exception:
-                                pass
-                except Exception:
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-
-            # Convert known user/chat id columns to BIGINT to support large Telegram IDs
-            bigint_targets = [
-                ('players', 'user_id'),
-                ('players', 'chat_id'),
-                ('player_rods', 'user_id'),
-                ('player_rods', 'chat_id'),
-                ('player_baits', 'user_id'),
-                ('caught_fish', 'user_id'),
-                ('caught_fish', 'chat_id'),
-                ('player_nets', 'user_id'),
-                ('player_nets', 'chat_id'),
-                ('star_transactions', 'user_id'),
-                ('star_transactions', 'chat_id'),
-                ('chat_configs', 'chat_id'),
-                ('chat_configs', 'admin_user_id'),
-                ('user_ref_links', 'user_id'),
-                ('player_trophies', 'user_id')
-            ]
-            for tbl, col in bigint_targets:
-                ensure_bigint_column(tbl, col)
-
-            # Use module-level helper `ensure_serial_pk(conn, table, id_col)`
-            try:
-                ensure_serial_pk(conn, 'rods', 'id')
-            except Exception:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-
-            # Force caught_fish.chat_id to BIGINT unconditionally.
-            # Telegram supergroup IDs like -1001234567890 exceed 32-bit INTEGER range.
-            # ALTER TABLE ... TYPE BIGINT is a no-op if column is already BIGINT.
-            for _tbl, _col in [
-                ('caught_fish', 'chat_id'),
-                ('players', 'chat_id'),
-                ('players', 'user_id'),
-                ('player_rods', 'chat_id'),
-                ('player_rods', 'user_id'),
-                ('player_nets', 'chat_id'),
-                ('player_nets', 'user_id'),
-                ('star_transactions', 'chat_id'),
-                ('star_transactions', 'user_id'),
-            ]:
-                try:
-                    cursor.execute(
-                        f'ALTER TABLE {_tbl} ALTER COLUMN {_col} TYPE BIGINT USING {_col}::bigint'
-                    )
-                    conn.commit()
-                    logger.info("Ensured %s.%s is BIGINT", _tbl, _col)
-                except Exception as _e:
-                    logger.warning("ALTER %s.%s BIGINT skipped: %s", _tbl, _col, _e)
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-
-            # Populate chat_id in player_rods and player_nets and caught_fish
-            # Use p.chat_id directly — the old regex '^[0-9]+$' incorrectly excluded
-            # negative Telegram group chat IDs, setting them to NULL.
-            cursor.execute('''
-                UPDATE player_rods
-                SET chat_id = (
-                    SELECT p.chat_id
-                    FROM players p
-                    WHERE p.user_id = player_rods.user_id AND p.chat_id IS NOT NULL AND p.chat_id != 0
-                    ORDER BY p.chat_id
-                    LIMIT 1
-                )
-                WHERE chat_id IS NULL OR chat_id = 0
-            ''')
-            conn.commit()
-
-            cursor.execute('''
-                UPDATE player_nets
-                SET chat_id = (
-                    SELECT p.chat_id
-                    FROM players p
-                    WHERE p.user_id = player_nets.user_id AND p.chat_id IS NOT NULL AND p.chat_id != 0
-                    ORDER BY p.chat_id
-                    LIMIT 1
-                )
-                WHERE chat_id IS NULL OR chat_id = 0
-            ''')
-            conn.commit()
-
-            cursor.execute('''
-                UPDATE caught_fish
-                SET chat_id = (
-                    SELECT p.chat_id
-                    FROM players p
-                    WHERE p.user_id = caught_fish.user_id AND p.chat_id IS NOT NULL AND p.chat_id != 0
-                    ORDER BY p.chat_id
-                    LIMIT 1
-                )
-                WHERE chat_id IS NULL OR chat_id = 0
-            ''')
-            conn.commit()
-
-            # Инициализация погоды для локаций
-            cursor.execute('SELECT name FROM locations')
-            locations = cursor.fetchall()
-
-            from weather import weather_system
-            for location in locations:
-                loc_name = location[0]
-                cursor.execute('SELECT 1 FROM weather WHERE location = %s', (loc_name,))
-                if not cursor.fetchone():
-                    condition, temp = weather_system.generate_weather(loc_name)
-                    cursor.execute(
-                        'INSERT INTO weather (location, condition, temperature) VALUES (%s, %s, %s)',
-                        (loc_name, condition, temp),
-                    )
-                # Ensure a global players row exists (user_id = -1, chat_id = -1)
-                try:
-                    cursor.execute(
-                        "INSERT INTO players (user_id, chat_id, username, coins, stars, xp, level) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (user_id, chat_id) DO NOTHING",
-                        (-1, -1, 'GLOBAL', 0, 0, 0, 0),
-                    )
-                except Exception:
-                    try:
                         conn.rollback()
                     except Exception:
                         pass
