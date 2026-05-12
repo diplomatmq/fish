@@ -209,6 +209,15 @@ bindQuickActions(
 
 // ── Navigate home event listener ───────────────────────────────────────────
 window.addEventListener('navigate-home', () => {
+  console.log('Navigate home event received');
+  
+  // Показываем TabBar
+  const tabBarEl = document.getElementById('tab-bar');
+  if (tabBarEl) {
+    tabBarEl.classList.remove('hide-tabbar');
+  }
+  
+  // Переключаемся на главный экран
   tabBar.switchTo('home');
 });
 

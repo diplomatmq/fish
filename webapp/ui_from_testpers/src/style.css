@@ -219,12 +219,12 @@ svg {
 }
 
 .back-btn {
-  padding: 8px 14px;
+  padding: 6px 10px;
   background: rgba(0, 180, 216, 0.18);
   border: 1px solid rgba(0, 180, 216, 0.45);
-  border-radius: 20px;
+  border-radius: 16px;
   font-family: inherit;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--teal-glow);
   cursor: pointer;
@@ -233,6 +233,7 @@ svg {
   justify-self: start;
   z-index: 21;
   position: relative;
+  white-space: nowrap;
 }
 
 .back-btn:active {
