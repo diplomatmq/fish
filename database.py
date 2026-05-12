@@ -5490,21 +5490,21 @@ class Database:
                 )
             except Exception:
                 try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-
-                # Ensure a global base net exists (user_id = -1, chat_id = -1)
-                try:
-                    cursor.execute(
-                        "INSERT INTO player_nets (user_id, net_name, uses_left, chat_id) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id, net_name) DO NOTHING",
-                        (-1, 'Базовая сеть', -1, -1),
-                    )
+                    conn.rollback()
                 except Exception:
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
+                    pass
+
+            # Ensure a global base net exists (user_id = -1, chat_id = -1)
+            try:
+                cursor.execute(
+                    "INSERT INTO player_nets (user_id, net_name, uses_left, chat_id) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id, net_name) DO NOTHING",
+                    (-1, 'Базовая сеть', -1, -1),
+                )
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             
             # ===== МИГРАЦИЯ: переименование рыб (убраны подписи в скобках) =====
             # Рыбы, пойманные до переименования, теряли стоимость — исправляем имена в caught_fish.
