@@ -206,8 +206,8 @@
               <ol id="captchaSteps" class="captcha-steps"></ol>
             </div>
 
-            <label class="field-label" for="captchaAnswer">⌨️ Ответ</label>
-            <div class="trophy-row">
+            <label class="field-label" for="captchaAnswer" style="display: block; margin-top: 16px;">⌨️ Ответ</label>
+            <div class="trophy-row" style="display: flex; gap: 8px;">
               <input
                 id="captchaAnswer"
                 class="input"
@@ -215,8 +215,9 @@
                 inputmode="text"
                 autocomplete="off"
                 placeholder="Введите ответ"
+                style="flex: 1; min-width: 0;"
               />
-              <button id="captchaSubmit" class="btn">✅ Проверить</button>
+              <button id="captchaSubmit" class="btn" style="flex-shrink: 0;">✅ Проверить</button>
             </div>
 
             <p id="captchaTimer" class="status">⏳ Ожидание капчи...</p>

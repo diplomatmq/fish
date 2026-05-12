@@ -26,15 +26,18 @@ export class TabBar {
       if (screen) this.screens.set(tab.id, screen);
     });
 
-    // Show home, hide rest
+    // Show home, hide rest - ИСПРАВЛЕНИЕ: правильная инициализация
     this.screens.forEach((screen, id) => {
       if (id === 'home') {
         screen.style.display = 'flex';
         screen.style.opacity = '1';
+        screen.style.transform = 'scale(1)';
         screen.style.pointerEvents = 'all';
       } else {
         screen.style.display = 'none';
         screen.style.opacity = '0';
+        screen.style.transform = '';
+        screen.style.pointerEvents = 'all'; // ИСПРАВЛЕНИЕ: всегда включено
       }
     });
   }

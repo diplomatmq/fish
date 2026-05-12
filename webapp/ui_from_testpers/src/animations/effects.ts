@@ -116,12 +116,12 @@ export class ScreenTransition {
     from.style.transform  = 'scale(0.93)';
     from.style.pointerEvents = 'none';
 
-    // Prepare incoming screen
+    // Prepare incoming screen - сразу показываем и делаем кликабельным
+    to.style.display      = 'flex';
     to.style.transition   = 'none';
     to.style.opacity      = '0';
     to.style.transform    = 'scale(1.06)';
-    to.style.display      = 'flex';
-    to.style.pointerEvents = 'none';
+    to.style.pointerEvents = 'all'; // ИСПРАВЛЕНИЕ: включаем сразу
 
     // After exit completes — bring in new screen
     this.pendingTimeout = window.setTimeout(() => {
@@ -141,7 +141,6 @@ export class ScreenTransition {
         to.style.transition  = 'opacity 0.38s cubic-bezier(0.25,0.46,0.45,0.94), transform 0.38s cubic-bezier(0.25,0.46,0.45,0.94)';
         to.style.opacity     = '1';
         to.style.transform   = 'scale(1)';
-        to.style.pointerEvents = 'all';
       });
     }, 300);
   }

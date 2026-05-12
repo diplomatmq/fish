@@ -898,29 +898,47 @@ function renderCaptchaChallenge(result) {
   if (captchaMap) {
     const mapBlock = captchaMap.closest(".captcha-block");
     if (mapBlock) {
-      mapBlock.style.display = hasMap ? "block" : "none";
+      // Всегда показываем блок, даже если нет данных
+      mapBlock.style.display = "block";
     }
     captchaMap.innerHTML = "";
-    symbolMap.forEach((item) => {
+    if (hasMap && symbolMap.length > 0) {
+      symbolMap.forEach((item) => {
+        const li = document.createElement("li");
+        const symbol = String(item?.symbol || "?");
+        const value = String(item?.value ?? "?");
+        li.textContent = `${symbol} = ${value}`;
+        captchaMap.appendChild(li);
+      });
+    } else {
+      // Показываем placeholder если нет данных
       const li = document.createElement("li");
-      const symbol = String(item?.symbol || "?");
-      const value = String(item?.value ?? "?");
-      li.textContent = `${symbol} = ${value}`;
+      li.textContent = "Загрузка подсказок...";
+      li.style.opacity = "0.6";
       captchaMap.appendChild(li);
-    });
+    }
   }
 
   if (captchaSteps) {
     const stepsBlock = captchaSteps.closest(".captcha-block");
     if (stepsBlock) {
-      stepsBlock.style.display = hasSteps ? "block" : "none";
+      // Всегда показываем блок, даже если нет данных
+      stepsBlock.style.display = "block";
     }
     captchaSteps.innerHTML = "";
-    steps.forEach((stepText) => {
+    if (hasSteps && steps.length > 0) {
+      steps.forEach((stepText) => {
+        const li = document.createElement("li");
+        li.textContent = String(stepText || "");
+        captchaSteps.appendChild(li);
+      });
+    } else {
+      // Показываем placeholder если нет данных
       const li = document.createElement("li");
-      li.textContent = String(stepText || "");
+      li.textContent = "Загрузка условий...";
+      li.style.opacity = "0.6";
       captchaSteps.appendChild(li);
-    });
+    }
   }
 
   if (captchaAnswer) {

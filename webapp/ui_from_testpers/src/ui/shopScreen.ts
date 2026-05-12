@@ -15,6 +15,17 @@ interface GroupedInventoryItem {
   image_url: string;
 }
 
+interface IndividualFish {
+  id: number;
+  name: string;
+  weight: number;
+  length: number;
+  location: string;
+  rarity: string;
+  price: number;
+  image_url: string;
+}
+
 export class ShopScreen {
   private el: HTMLElement;
   private items: GroupedInventoryItem[] = [];
@@ -139,6 +150,152 @@ export class ShopScreen {
     });
   }
 
+  private async showFishDetailModal(item: GroupedInventoryItem): Promise<void> {
+    // Загружаем детальную информацию о каждой рыбе
+    try {
+      const data = await fetchApi<{ items?: IndividualFish[] }>('/api/inventory');
+      const fishList = (data?.items || []).filter(f => item.ids.includes(f.id));
+      
+      if (fishList.length === 0) return;
+
+      const rarityKey = normalizeRarity(item.rarity);
+      const color = RARITY_COLORS[rarityKey] || '#ccc';
+      
+      const modal = document.createElement('div');
+      modal.className = 'modal-overlay is-open';
+      modal.style.display = 'flex';
+      
+      const content = `
+        <div class="modal-sheet" style="transform:none; bottom:0; max-height: 80vh;">
+          <div class="modal-handle"></div>
+          <p class="modal-title">${item.name}</p>
+          <p style="text-align:center; color:${color}; font-size:12px; margin-top:-10px;">${rarityLabel(item.rarity)}</p>
+          
+          <div class="fish-action-buttons">
+            <button class="glass-btn primary-btn" id="make-trophy-btn">🏆 Сделать трофеем</button>
+            <button class="glass-btn" id="select-to-sell-btn">💰 Выбрать для продажи</button>
+          </div>
+          
+          <div id="fish-detail-content" style="display:none;">
+            <p style="text-align:center; font-size:14px; margin:10px 0;">Выберите рыбу:</p>
+            <div class="fish-detail-grid">
+              ${fishList.map(fish => `
+                <div class="fish-detail-card" data-id="${fish.id}">
+                  <img src="${fish.image_url}" alt="${fish.name}">
+                  <div class="fish-detail-weight">⚖️ ${fish.weight.toFixed(2)} кг</div>
+                  <div class="fish-detail-weight">📏 ${fish.length.toFixed(1)} см</div>
+                </div>
+              `).join('')}
+            </div>
+            <div style="padding:10px; display:flex; gap:10px; justify-content:center;">
+              <button class="glass-btn" id="cancel-detail-btn">ОТМЕНА</button>
+              <button class="glass-btn primary-btn" id="confirm-detail-btn" style="display:none;">ПОДТВЕРДИТЬ</button>
+            </div>
+          </div>
+        </div>
+      `;
+      
+      modal.innerHTML = content;
+      document.body.appendChild(modal);
+
+      let selectedFishIds = new Set<number>();
+      let currentAction: 'trophy' | 'sell' | null = null;
+
+      const detailContent = modal.querySelector('#fish-detail-content') as HTMLElement;
+      const actionButtons = modal.querySelector('.fish-action-buttons') as HTMLElement;
+      const confirmBtn = modal.querySelector('#confirm-detail-btn') as HTMLElement;
+
+      // Кнопка "Сделать трофеем"
+      modal.querySelector('#make-trophy-btn')?.addEventListener('click', () => {
+        tgService.haptic('light');
+        currentAction = 'trophy';
+        actionButtons.style.display = 'none';
+        detailContent.style.display = 'block';
+        confirmBtn.style.display = 'block';
+        confirmBtn.textContent = 'СДЕЛАТЬ ТРОФЕЕМ';
+      });
+
+      // Кнопка "Выбрать для продажи"
+      modal.querySelector('#select-to-sell-btn')?.addEventListener('click', () => {
+        tgService.haptic('light');
+        currentAction = 'sell';
+        actionButtons.style.display = 'none';
+        detailContent.style.display = 'block';
+        confirmBtn.style.display = 'block';
+        confirmBtn.textContent = 'ПРОДАТЬ';
+      });
+
+      // Выбор рыбы
+      modal.querySelectorAll('.fish-detail-card').forEach(card => {
+        card.addEventListener('click', () => {
+          tgService.haptic('light');
+          const id = parseInt((card as HTMLElement).dataset['id'] || '0');
+          
+          if (selectedFishIds.has(id)) {
+            selectedFishIds.delete(id);
+            card.classList.remove('selected');
+          } else {
+            selectedFishIds.add(id);
+            card.classList.add('selected');
+          }
+        });
+      });
+
+      // Отмена
+      modal.querySelector('#cancel-detail-btn')?.addEventListener('click', () => {
+        tgService.haptic('light');
+        document.body.removeChild(modal);
+      });
+
+      // Подтверждение
+      confirmBtn?.addEventListener('click', async () => {
+        if (selectedFishIds.size === 0) {
+          alert('Выберите хотя бы одну рыбу');
+          return;
+        }
+
+        tgService.haptic('medium');
+        document.body.removeChild(modal);
+
+        if (currentAction === 'trophy') {
+          await this.makeTrophies(Array.from(selectedFishIds));
+        } else if (currentAction === 'sell') {
+          await this.sellBulk({ ids: Array.from(selectedFishIds) });
+        }
+      });
+
+      // Закрытие по клику на overlay
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) document.body.removeChild(modal);
+      });
+
+    } catch (e) {
+      console.error('Failed to load fish details:', e);
+      alert('Ошибка загрузки деталей рыбы');
+    }
+  }
+
+  private async makeTrophies(ids: number[]): Promise<void> {
+    try {
+      let successCount = 0;
+      for (const id of ids) {
+        const res = await fetchApi<{ok?: boolean}>('/api/make-trophy', {
+          method: 'POST',
+          body: JSON.stringify({ id })
+        });
+        if (res?.ok) successCount++;
+      }
+      
+      if (successCount > 0) {
+        tgService.haptic('success');
+        alert(`Создано трофеев: ${successCount}`);
+        await this.loadInventory();
+      }
+    } catch(e) {
+      alert('Ошибка при создании трофеев');
+    }
+  }
+
   private async sellBulk(payload: {category?: string, ids?: number[]}): Promise<void> {
     try {
       const res = await fetchApi<{earned_coins: number, earned_xp: number}>('/api/sell-bulk', {
@@ -234,19 +391,23 @@ export class ShopScreen {
     // Bind card clicks
     content.querySelectorAll('.inv-card').forEach(card => {
       card.addEventListener('click', () => {
-        if (this.mode !== 'select') return;
         tgService.haptic('light');
         const idx = parseInt((card as HTMLElement).dataset['idx'] || '0');
         const item = this.items[idx];
         
-        // Toggle all ids for this item group
-        const allSelected = item.ids.every(id => this.selectedIds.has(id));
-        if (allSelected) {
-          item.ids.forEach(id => this.selectedIds.delete(id));
+        if (this.mode === 'select') {
+          // В режиме выбора - переключаем выбор всей группы
+          const allSelected = item.ids.every(id => this.selectedIds.has(id));
+          if (allSelected) {
+            item.ids.forEach(id => this.selectedIds.delete(id));
+          } else {
+            item.ids.forEach(id => this.selectedIds.add(id));
+          }
+          this.renderInventory();
         } else {
-          item.ids.forEach(id => this.selectedIds.add(id));
+          // В режиме просмотра - показываем детали с выбором действия
+          this.showFishDetailModal(item);
         }
-        this.renderInventory();
       });
     });
   }

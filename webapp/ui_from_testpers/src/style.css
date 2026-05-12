@@ -741,8 +741,32 @@ svg {
 /* Shop Redesign */
 .shop-header { display: flex; justify-content: space-between; align-items: center; padding: 0 20px; }
 .shop-header .page-title { margin: 0; }
-.shop-select-actions { position: fixed; bottom: 80px; left: 0; right: 0; display: flex; flex-direction: column; align-items: center; background: rgba(0,0,0,0.8); padding: 15px; border-top: 1px solid rgba(255,255,255,0.1); z-index: 100; backdrop-filter: blur(10px); }
-.select-info { font-size: 14px; margin-bottom: 10px; font-weight: bold; }
+.shop-header #shop-sell-btn { 
+  padding: 8px 16px; 
+  font-size: 14px; 
+  min-width: auto;
+}
+.shop-select-actions { 
+  position: fixed; 
+  bottom: 80px; 
+  left: 0; 
+  right: 0; 
+  display: flex; 
+  flex-direction: column; 
+  align-items: center; 
+  background: rgba(0,0,0,0.95); 
+  padding: 15px; 
+  border-top: 1px solid rgba(255,255,255,0.2); 
+  z-index: 100; 
+  backdrop-filter: blur(10px); 
+}
+.select-info { 
+  font-size: 16px; 
+  margin-bottom: 10px; 
+  font-weight: bold; 
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+}
 .select-buttons { display: flex; gap: 10px; }
 .inventory-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; padding: 10px; }
 .inv-card { position: relative; padding: 12px; border-radius: 16px; border-top: 2px solid var(--card-color); display: flex; flex-direction: column; align-items: center; text-align: center; cursor: pointer; transition: transform 0.2s; }
@@ -759,3 +783,46 @@ svg {
 .sell-opt-btn { font-size: 14px; font-weight: bold; text-align: left; justify-content: flex-start; }
 .select-indicator { position: absolute; top: 5px; left: 5px; font-size: 20px; }
 .primary-btn { background: linear-gradient(45deg, #1e88e5, #00acc1); border: none; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
+
+/* Fish detail modal */
+.fish-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 10px;
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 10px;
+}
+.fish-detail-card {
+  padding: 8px;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: rgba(255,255,255,0.05);
+}
+.fish-detail-card:active { transform: scale(0.95); }
+.fish-detail-card.selected {
+  border-color: #4caf50;
+  background: rgba(76, 175, 80, 0.2);
+}
+.fish-detail-card img {
+  width: 60px;
+  height: 60px;
+  object-fit: contain;
+}
+.fish-detail-weight {
+  font-size: 11px;
+  color: #aaa;
+  margin-top: 4px;
+}
+.fish-action-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 0;
+}
