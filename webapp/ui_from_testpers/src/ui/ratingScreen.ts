@@ -72,14 +72,19 @@ export class RatingScreen {
   }
 
   private bindEvents(): void {
-    // Back button
-    const backBtn = this.el.querySelector('#rating-back-btn');
-    if (backBtn) {
-      backBtn.addEventListener('click', () => {
-        const event = new CustomEvent('navigate-home');
-        window.dispatchEvent(event);
-      });
-    }
+    // Back button - используем setTimeout чтобы убедиться что элемент в DOM
+    setTimeout(() => {
+      const backBtn = this.el.querySelector('#rating-back-btn');
+      if (backBtn) {
+        backBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          console.log('Rating back button clicked');
+          const event = new CustomEvent('navigate-home');
+          window.dispatchEvent(event);
+        });
+      }
+    }, 100);
 
     const tabs = this.el.querySelectorAll('.rating-tab');
     tabs.forEach(tab => {
@@ -144,13 +149,12 @@ export class RatingScreen {
       `;
     } else {
       const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '';
-      const rankText = rank > 0 ? `#${rank}` : 'Не в топе';
       container.innerHTML = `
         <div class="my-rank-content">
           <div class="my-rank-icon">${medal || emoji}</div>
           <div class="my-rank-text">
             <div class="my-rank-label">Ваше место в топе</div>
-            <div class="my-rank-value">${rankText}</div>
+            <div class="my-rank-value">#${rank}</div>
           </div>
         </div>
       `;

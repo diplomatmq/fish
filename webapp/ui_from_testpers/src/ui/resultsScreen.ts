@@ -111,14 +111,19 @@ export class ResultsScreen {
   }
 
   private bindEvents(): void {
-    // Back button
-    const backBtn = this.el.querySelector('#results-back-btn');
-    if (backBtn) {
-      backBtn.addEventListener('click', () => {
-        const event = new CustomEvent('navigate-home');
-        window.dispatchEvent(event);
-      });
-    }
+    // Back button - используем setTimeout чтобы убедиться что элемент в DOM
+    setTimeout(() => {
+      const backBtn = this.el.querySelector('#results-back-btn');
+      if (backBtn) {
+        backBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          console.log('Results back button clicked');
+          const event = new CustomEvent('navigate-home');
+          window.dispatchEvent(event);
+        });
+      }
+    }, 100);
 
     // Tab switching
     const tabs = this.el.querySelectorAll('.results-tab');

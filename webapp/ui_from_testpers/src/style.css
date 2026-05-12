@@ -214,6 +214,8 @@ svg {
   margin-bottom: 14px;
   flex-shrink: 0;
   gap: 10px;
+  position: relative;
+  z-index: 20;
 }
 
 .back-btn {
@@ -229,6 +231,8 @@ svg {
   transition: all 0.2s;
   -webkit-tap-highlight-color: transparent;
   justify-self: start;
+  z-index: 21;
+  position: relative;
 }
 
 .back-btn:active {
