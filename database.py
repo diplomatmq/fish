@@ -4,6 +4,7 @@ import logging
 import random
 import secrets
 import re
+import time
 from typing import Any, Dict, List, Optional, Union
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -629,71 +630,65 @@ class Database:
             return
         
         logger.info("Starting fish stats migration from caught_fish...")
+        start_time = time.time()
         
         with self._connect() as conn:
             cursor = conn.cursor()
             
-            # Получаем всех пользователей и их статистику из caught_fish
+            # Шаг 1: Обновляем статистику в players одним запросом
+            logger.info("Step 1/3: Updating player stats...")
             cursor.execute(
                 '''
-                SELECT 
-                    user_id,
-                    COUNT(*) as total_caught,
-                    COALESCE(SUM(weight), 0) as total_weight,
-                    COALESCE(SUM(CASE WHEN sold = 1 THEN weight ELSE 0 END), 0) as total_sold_weight
-                FROM caught_fish
-                WHERE is_trash = 0 OR is_trash IS NULL
-                GROUP BY user_id
+                UPDATE players 
+                SET 
+                    total_fish_caught = (
+                        SELECT COUNT(*) FROM caught_fish 
+                        WHERE caught_fish.user_id = players.user_id 
+                        AND (is_trash = 0 OR is_trash IS NULL)
+                    ),
+                    total_weight_caught = (
+                        SELECT COALESCE(SUM(weight), 0) FROM caught_fish 
+                        WHERE caught_fish.user_id = players.user_id 
+                        AND (is_trash = 0 OR is_trash IS NULL)
+                    ),
+                    total_weight_sold = (
+                        SELECT COALESCE(SUM(weight), 0) FROM caught_fish 
+                        WHERE caught_fish.user_id = players.user_id 
+                        AND sold = 1 
+                        AND (is_trash = 0 OR is_trash IS NULL)
+                    ),
+                    total_trash_caught = (
+                        SELECT COUNT(*) FROM caught_fish 
+                        WHERE caught_fish.user_id = players.user_id 
+                        AND is_trash = 1
+                    ),
+                    total_trash_weight = (
+                        SELECT COALESCE(SUM(weight), 0) FROM caught_fish 
+                        WHERE caught_fish.user_id = players.user_id 
+                        AND is_trash = 1
+                    )
+                WHERE user_id IN (SELECT DISTINCT user_id FROM caught_fish)
                 '''
             )
-            fish_stats = cursor.fetchall()
+            conn.commit()
+            logger.info(f"Step 1/3 completed in {time.time() - start_time:.2f}s")
             
-            # Получаем статистику мусора
+            # Шаг 2: Создаем записи в энциклопедии для всех пользователей
+            step2_start = time.time()
+            logger.info("Step 2/3: Creating encyclopedia entries...")
             cursor.execute(
                 '''
-                SELECT 
-                    user_id,
-                    COUNT(*) as trash_count,
-                    COALESCE(SUM(weight), 0) as trash_weight
-                FROM caught_fish
-                WHERE is_trash = 1
-                GROUP BY user_id
+                INSERT INTO user_fish_encyclopedia (user_id)
+                SELECT DISTINCT user_id FROM caught_fish
+                ON CONFLICT (user_id) DO NOTHING
                 '''
             )
-            trash_stats = cursor.fetchall()
+            conn.commit()
+            logger.info(f"Step 2/3 completed in {time.time() - step2_start:.2f}s")
             
-            # Обновляем статистику в players
-            logger.info(f"Updating stats for {len(fish_stats)} users (fish)...")
-            for user_id, total_caught, total_weight, total_sold_weight in fish_stats:
-                cursor.execute(
-                    '''
-                    UPDATE players 
-                    SET total_fish_caught = ?,
-                        total_weight_caught = ?,
-                        total_weight_sold = ?
-                    WHERE user_id = ?
-                    ''',
-                    (int(total_caught), float(total_weight), float(total_sold_weight), int(user_id))
-                )
-            
-            logger.info(f"Updating stats for {len(trash_stats)} users (trash)...")
-            for user_id, trash_count, trash_weight in trash_stats:
-                cursor.execute(
-                    '''
-                    UPDATE players 
-                    SET total_trash_caught = ?,
-                        total_trash_weight = ?
-                    WHERE user_id = ?
-                    ''',
-                    (int(trash_count), float(trash_weight), int(user_id))
-                )
-            
-            # Заполняем энциклопедию (какие рыбы пойманы)
-            logger.info("Populating fish encyclopedia...")
-            
-            # Получаем список всех пользователей
-            cursor.execute('SELECT DISTINCT user_id FROM caught_fish')
-            all_users = [row[0] for row in cursor.fetchall()]
+            # Шаг 3: Заполняем энциклопедию (какие рыбы пойманы)
+            step3_start = time.time()
+            logger.info("Step 3/3: Populating fish encyclopedia...")
             
             # Получаем список всех рыб
             cursor.execute('SELECT name FROM fish ORDER BY name')
@@ -711,42 +706,40 @@ class Database:
                 )
                 fish_column_map[fish_name.lower()] = safe_column_name
             
-            # Для каждого пользователя определяем какие рыбы он поймал
-            for user_id in all_users:
-                # Получаем уникальные рыбы пользователя
-                cursor.execute(
-                    '''
-                    SELECT DISTINCT LOWER(TRIM(fish_name))
-                    FROM caught_fish
-                    WHERE user_id = ? AND (is_trash = 0 OR is_trash IS NULL)
-                    ''',
-                    (int(user_id),)
-                )
-                caught_fish_names = [row[0] for row in cursor.fetchall()]
-                
-                # Создаем запись для пользователя если её нет
-                cursor.execute(
-                    'INSERT INTO user_fish_encyclopedia (user_id) VALUES (?) ON CONFLICT (user_id) DO NOTHING',
-                    (int(user_id),)
-                )
-                
-                # Обновляем колонки для пойманных рыб
-                for fish_name_lower in caught_fish_names:
-                    column_name = fish_column_map.get(fish_name_lower)
-                    if column_name:
-                        try:
-                            cursor.execute(
-                                f'UPDATE user_fish_encyclopedia SET {column_name} = 1 WHERE user_id = ?',
-                                (int(user_id),)
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to update {column_name} for user {user_id}: {e}")
+            # Для каждой рыбы обновляем всех пользователей, кто её поймал (батчинг по рыбам)
+            total_fish = len(fish_column_map)
+            for idx, (fish_name_lower, column_name) in enumerate(fish_column_map.items(), 1):
+                try:
+                    # Один UPDATE для всех пользователей, кто поймал эту рыбу
+                    cursor.execute(
+                        f'''
+                        UPDATE user_fish_encyclopedia 
+                        SET {column_name} = 1 
+                        WHERE user_id IN (
+                            SELECT DISTINCT user_id 
+                            FROM caught_fish 
+                            WHERE LOWER(TRIM(fish_name)) = ? 
+                            AND (is_trash = 0 OR is_trash IS NULL)
+                        )
+                        ''',
+                        (fish_name_lower,)
+                    )
+                    
+                    # Коммитим каждые 10 рыб и логируем прогресс
+                    if idx % 10 == 0:
+                        conn.commit()
+                        logger.info(f"Progress: {idx}/{total_fish} fish processed ({idx*100//total_fish}%)")
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to update {column_name}: {e}")
             
             conn.commit()
+            logger.info(f"Step 3/3 completed in {time.time() - step3_start:.2f}s")
             
         # Отмечаем миграцию как выполненную
         self.set_system_flag('fish_stats_migrated', '1')
-        logger.info("Fish stats migration completed successfully!")
+        total_time = time.time() - start_time
+        logger.info(f"Fish stats migration completed successfully in {total_time:.2f}s!")
 
     @staticmethod
     def _normalize_item_name(value: Any) -> str:
