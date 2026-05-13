@@ -679,7 +679,7 @@ class Database:
             cursor.execute(
                 '''
                 INSERT INTO user_fish_encyclopedia (user_id)
-                SELECT DISTINCT user_id FROM caught_fish
+                SELECT DISTINCT user_id FROM players
                 ON CONFLICT (user_id) DO NOTHING
                 '''
             )
