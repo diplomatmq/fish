@@ -7756,10 +7756,6 @@ class Database:
                         ''',
                         (float(stats['weight']), int(stats['count']), int(user_id))
                     )
-                        WHERE user_id = ?
-                        ''',
-                        (float(total_weight), int(user_id))
-                    )
 
                 day_key = datetime.utcnow().date().isoformat()
                 cursor.execute(
