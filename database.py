@@ -526,10 +526,18 @@ class Database:
                     '''
                     UPDATE players 
                     SET total_fish_caught = COALESCE(total_fish_caught, 0) + 1,
-                        total_weight_caught = COALESCE(total_weight_caught, 0) + ?
+                        total_weight_caught = COALESCE(total_weight_caught, 0) + ?,
+                        biggest_fish_name = CASE 
+                            WHEN COALESCE(biggest_fish_weight, 0) < ? THEN ?
+                            ELSE biggest_fish_name
+                        END,
+                        biggest_fish_weight = CASE 
+                            WHEN COALESCE(biggest_fish_weight, 0) < ? THEN ?
+                            ELSE biggest_fish_weight
+                        END
                     WHERE user_id = ?
                     ''',
-                    (float(weight), int(user_id))
+                    (float(weight), float(weight), str(fish_name), float(weight), float(weight), int(user_id))
                 )
             
             conn.commit()
@@ -657,6 +665,12 @@ class Database:
                         AND sold = 1 
                         AND (is_trash = 0 OR is_trash IS NULL)
                     ),
+                    total_fish_sold = (
+                        SELECT COUNT(*) FROM caught_fish 
+                        WHERE caught_fish.user_id = players.user_id 
+                        AND sold = 1 
+                        AND (is_trash = 0 OR is_trash IS NULL)
+                    ),
                     total_trash_caught = (
                         SELECT COUNT(*) FROM caught_fish 
                         WHERE caught_fish.user_id = players.user_id 
@@ -670,6 +684,38 @@ class Database:
                 WHERE user_id IN (SELECT DISTINCT user_id FROM caught_fish)
                 '''
             )
+            conn.commit()
+            
+            # Обновляем самую большую рыбу для каждого пользователя
+            cursor.execute(
+                '''
+                SELECT user_id, fish_name, weight
+                FROM (
+                    SELECT user_id, fish_name, weight,
+                           ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY weight DESC) as rn
+                    FROM (
+                        SELECT user_id, fish_name, weight FROM caught_fish 
+                        WHERE (is_trash = 0 OR is_trash IS NULL)
+                        UNION ALL
+                        SELECT user_id, fish_name, weight FROM player_trophies
+                    ) all_fish
+                ) ranked
+                WHERE rn = 1
+                '''
+            )
+            biggest_fish_rows = cursor.fetchall()
+            
+            for user_id, fish_name, weight in biggest_fish_rows:
+                cursor.execute(
+                    '''
+                    UPDATE players 
+                    SET biggest_fish_name = ?,
+                        biggest_fish_weight = ?
+                    WHERE user_id = ?
+                    ''',
+                    (str(fish_name), float(weight), int(user_id))
+                )
+            
             conn.commit()
             logger.info(f"Step 1/3 completed in {time.time() - start_time:.2f}s")
             
@@ -5586,6 +5632,9 @@ class Database:
         ensure_column('players', 'total_trash_weight', 'REAL DEFAULT 0')
         ensure_column('players', 'total_weight_sold', 'REAL DEFAULT 0')
         ensure_column('players', 'total_coins_earned', 'INTEGER DEFAULT 0')
+        ensure_column('players', 'total_fish_sold', 'INTEGER DEFAULT 0')
+        ensure_column('players', 'biggest_fish_name', 'TEXT')
+        ensure_column('players', 'biggest_fish_weight', 'REAL DEFAULT 0')
         
         ensure_column('raf_events', 'creator_username', 'TEXT')
         ensure_column('player_trophies', 'length', 'REAL DEFAULT 0')
@@ -7678,7 +7727,7 @@ class Database:
 
             if sales_to_record:
                 # Группируем продажи по пользователям для обновления статистики
-                user_sales: Dict[int, float] = {}
+                user_sales: Dict[int, Dict[str, Any]] = {}
                 
                 for sale in sales_to_record:
                     cursor.execute(
@@ -7689,16 +7738,24 @@ class Database:
                         (sale['fish_name'], sale['weight']),
                     )
                     
-                    # Суммируем вес по пользователям
+                    # Суммируем вес и количество по пользователям
                     user_id = sale['user_id']
-                    user_sales[user_id] = user_sales.get(user_id, 0.0) + sale['weight']
+                    if user_id not in user_sales:
+                        user_sales[user_id] = {'weight': 0.0, 'count': 0}
+                    user_sales[user_id]['weight'] += sale['weight']
+                    user_sales[user_id]['count'] += 1
                 
                 # Обновляем статистику продаж для каждого пользователя
-                for user_id, total_weight in user_sales.items():
+                for user_id, stats in user_sales.items():
                     cursor.execute(
                         '''
                         UPDATE players 
-                        SET total_weight_sold = COALESCE(total_weight_sold, 0) + ?
+                        SET total_weight_sold = COALESCE(total_weight_sold, 0) + ?,
+                            total_fish_sold = COALESCE(total_fish_sold, 0) + ?
+                        WHERE user_id = ?
+                        ''',
+                        (float(stats['weight']), int(stats['count']), int(user_id))
+                    )
                         WHERE user_id = ?
                         ''',
                         (float(total_weight), int(user_id))
@@ -7769,7 +7826,10 @@ class Database:
                     total_weight_sold,
                     total_coins_earned,
                     total_trash_caught,
-                    total_trash_weight
+                    total_trash_weight,
+                    total_fish_sold,
+                    biggest_fish_name,
+                    biggest_fish_weight
                 FROM players
                 WHERE user_id = ?
             ''', (int(user_id),))
@@ -7785,6 +7845,7 @@ class Database:
                     'sold_count': 0,
                     'sold_weight': 0.0,
                     'biggest_fish': None,
+                    'biggest_weight': 0,
                     'total_coins_earned': 0,
                     'total_trash_caught': 0
                 }
@@ -7795,6 +7856,9 @@ class Database:
             total_coins_earned = int(player_stats[3] or 0)
             total_trash_caught = int(player_stats[4] or 0)
             total_trash_weight = float(player_stats[5] or 0.0)
+            total_fish_sold = int(player_stats[6] or 0)
+            biggest_fish_name = player_stats[7]
+            biggest_fish_weight = float(player_stats[8] or 0.0)
             
             # Получаем количество уникальных рыб из энциклопедии
             cursor.execute(
@@ -7816,28 +7880,14 @@ class Database:
                         if value == 1:
                             unique_fish += 1
             
-            # Самая большая рыба (с учетом трофеев и текущего инвентаря)
-            cursor.execute('''
-                WITH all_valid_catches AS (
-                    SELECT fish_name, weight FROM caught_fish WHERE user_id = ?
-                    UNION ALL
-                    SELECT fish_name, weight FROM player_trophies WHERE user_id = ?
-                )
-                SELECT fish_name, weight FROM all_valid_catches 
-                WHERE LOWER(TRIM(fish_name)) IN (SELECT LOWER(TRIM(name)) FROM fish)
-                ORDER BY weight DESC LIMIT 1
-            ''', (int(user_id), int(user_id)))
-            
-            biggest = cursor.fetchone()
-            
             return {
                 'total_fish': total_fish_caught,
                 'total_weight': total_weight_caught,
                 'unique_fish': unique_fish,
-                'biggest_fish': biggest[0] if biggest else None,
-                'biggest_weight': biggest[1] if biggest else 0,
+                'biggest_fish': biggest_fish_name,
+                'biggest_weight': biggest_fish_weight,
                 'trash_weight': total_trash_weight,
-                'sold_fish_count': 0,  # Больше не храним количество проданной рыбы
+                'sold_fish_count': total_fish_sold,
                 'sold_fish_weight': total_weight_sold,
                 'total_coins_earned': total_coins_earned,
                 'total_trash_caught': total_trash_caught
