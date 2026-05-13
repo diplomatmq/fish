@@ -671,20 +671,25 @@ def sell_fish():
 	try:
 		with db._connect() as conn:
 			cursor = conn.cursor()
-			# Проверяем владельца и цену
+			# Проверяем владельца, цену и вес
 			cursor.execute('''
-				SELECT price FROM caught_fish 
-				JOIN fish ON caught_fish.fish_name = fish.name
-				WHERE caught_fish.id = ? AND user_id = ? AND sold = 0
+				SELECT f.price, cf.weight, cf.fish_name FROM caught_fish cf
+				JOIN fish f ON cf.fish_name = f.name
+				WHERE cf.id = ? AND cf.user_id = ? AND cf.sold = 0
 			''', (fish_id, user_id))
 			row = cursor.fetchone()
 			if not row:
 				return jsonify({"ok": False, "error": "fish_not_found"}), 404
 			
 			price = row[0]
+			weight = row[1]
+			fish_name = row[2]
 			
-			# Продаем
-			cursor.execute('UPDATE caught_fish SET sold = 1, sold_at = CURRENT_TIMESTAMP WHERE id = ?', (fish_id,))
+			# Обновляем статистику продажи
+			db.update_player_sale_stats(user_id, weight, price)
+			
+			# УДАЛЯЕМ рыбу вместо пометки sold=1
+			cursor.execute('DELETE FROM caught_fish WHERE id = ?', (fish_id,))
 			cursor.execute('UPDATE players SET coins = coins + ? WHERE user_id = ?', (price, user_id))
 			conn.commit()
 			
@@ -780,13 +785,16 @@ def sell_bulk():
 			if fish_items:
 				try:
 					from bot import calculate_sale_summary
-					xp, _, _, _, _ = calculate_sale_summary(fish_items)
+					xp, _, _, _, total_weight = calculate_sale_summary(fish_items)
 					tot_xp += xp
+					# Обновляем статистику продажи
+					db.update_player_sale_stats(user_id, total_weight, tot_price)
 				except:
 					pass
 				
 			pid = ",".join("?" for _ in actual_ids)
-			cursor.execute(f'UPDATE caught_fish SET sold = 1, sold_at = CURRENT_TIMESTAMP WHERE id IN ({pid})', actual_ids)
+			# УДАЛЯЕМ рыбу вместо пометки sold=1
+			cursor.execute(f'DELETE FROM caught_fish WHERE id IN ({pid})', actual_ids)
 			cursor.execute('UPDATE players SET coins = coins + ?, xp = xp + ? WHERE user_id = ?', (tot_price, tot_xp, user_id))
 			conn.commit()
 			return jsonify({"ok": True, "earned_coins": tot_price, "earned_xp": tot_xp})

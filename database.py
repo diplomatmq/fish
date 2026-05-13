@@ -481,6 +481,273 @@ class Database:
             cursor.execute("INSERT OR REPLACE INTO system_flags (key, value) VALUES (?, ?)", (key, value))
             conn.commit()
 
+    def update_player_fish_stats(self, user_id: int, fish_name: str, weight: float, is_trash: bool = False):
+        """Обновить статистику пользователя при ловле рыбы."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            
+            # Обновляем энциклопедию (отмечаем, что рыба поймана)
+            if not is_trash:
+                # Создаем безопасное имя колонки
+                safe_column_name = 'fish_' + ''.join(
+                    c if c.isalnum() or c == '_' else '_' 
+                    for c in fish_name.lower().strip()
+                )
+                
+                # Создаем запись для пользователя если её нет
+                cursor.execute(
+                    'INSERT INTO user_fish_encyclopedia (user_id) VALUES (?) ON CONFLICT (user_id) DO NOTHING',
+                    (int(user_id),)
+                )
+                
+                # Обновляем колонку для этой рыбы
+                try:
+                    cursor.execute(
+                        f'UPDATE user_fish_encyclopedia SET {safe_column_name} = 1 WHERE user_id = ?',
+                        (int(user_id),)
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to update encyclopedia column {safe_column_name} for user {user_id}: {e}")
+            
+            # Обновляем статистику в players
+            if is_trash:
+                cursor.execute(
+                    '''
+                    UPDATE players 
+                    SET total_trash_caught = COALESCE(total_trash_caught, 0) + 1,
+                        total_trash_weight = COALESCE(total_trash_weight, 0) + ?
+                    WHERE user_id = ?
+                    ''',
+                    (float(weight), int(user_id))
+                )
+            else:
+                cursor.execute(
+                    '''
+                    UPDATE players 
+                    SET total_fish_caught = COALESCE(total_fish_caught, 0) + 1,
+                        total_weight_caught = COALESCE(total_weight_caught, 0) + ?
+                    WHERE user_id = ?
+                    ''',
+                    (float(weight), int(user_id))
+                )
+            
+            conn.commit()
+
+    def update_player_sale_stats(self, user_id: int, weight: float, price: int):
+        """Обновить статистику пользователя при продаже рыбы."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE players 
+                SET total_weight_sold = COALESCE(total_weight_sold, 0) + ?,
+                    total_coins_earned = COALESCE(total_coins_earned, 0) + ?
+                WHERE user_id = ?
+                ''',
+                (float(weight), int(price), int(user_id))
+            )
+            conn.commit()
+
+    def get_user_fish_encyclopedia(self, user_id: int) -> Dict[str, bool]:
+        """Получить энциклопедию пойманных рыб пользователя."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            
+            # Получаем запись пользователя
+            cursor.execute(
+                'SELECT * FROM user_fish_encyclopedia WHERE user_id = ?',
+                (int(user_id),)
+            )
+            row = cursor.fetchone()
+            
+            if not row:
+                return {}
+            
+            # Получаем имена колонок
+            if self.is_postgres:
+                cursor.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'user_fish_encyclopedia' 
+                    AND table_schema = 'public'
+                    AND column_name LIKE 'fish_%'
+                    ORDER BY column_name
+                """)
+                columns = [r[0] for r in cursor.fetchall()]
+            else:
+                cursor.execute("PRAGMA table_info(user_fish_encyclopedia)")
+                columns = [r[1] for r in cursor.fetchall() if r[1].startswith('fish_')]
+            
+            # Получаем список всех рыб для маппинга
+            cursor.execute('SELECT name FROM fish ORDER BY name')
+            all_fish = cursor.fetchall()
+            
+            # Создаем обратный маппинг: имя колонки -> имя рыбы
+            column_to_fish = {}
+            for fish_row in all_fish:
+                fish_name = str(fish_row[0] or '').strip()
+                if not fish_name:
+                    continue
+                safe_column_name = 'fish_' + ''.join(
+                    c if c.isalnum() or c == '_' else '_' 
+                    for c in fish_name.lower()
+                )
+                column_to_fish[safe_column_name] = fish_name
+            
+            # Получаем значения из строки пользователя
+            cursor.execute(
+                'SELECT * FROM user_fish_encyclopedia WHERE user_id = ?',
+                (int(user_id),)
+            )
+            row = cursor.fetchone()
+            
+            if not row:
+                return {}
+            
+            # Получаем описание колонок для маппинга индексов
+            column_names = [desc[0] for desc in cursor.description]
+            
+            # Создаем словарь: имя рыбы -> поймана (True/False)
+            result = {}
+            for col_name in columns:
+                if col_name in column_names:
+                    col_index = column_names.index(col_name)
+                    value = row[col_index]
+                    fish_name = column_to_fish.get(col_name)
+                    if fish_name:
+                        result[fish_name] = bool(value == 1)
+            
+            return result
+
+    def migrate_caught_fish_to_stats(self):
+        """Мигрировать данные из caught_fish в статистику players и энциклопедию.
+        Это одноразовая операция при первом деплое."""
+        
+        # Проверяем, была ли уже выполнена миграция
+        if self.get_system_flag('fish_stats_migrated') == '1':
+            logger.info("Fish stats migration already completed, skipping.")
+            return
+        
+        logger.info("Starting fish stats migration from caught_fish...")
+        
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            
+            # Получаем всех пользователей и их статистику из caught_fish
+            cursor.execute(
+                '''
+                SELECT 
+                    user_id,
+                    COUNT(*) as total_caught,
+                    COALESCE(SUM(weight), 0) as total_weight,
+                    COALESCE(SUM(CASE WHEN sold = 1 THEN weight ELSE 0 END), 0) as total_sold_weight
+                FROM caught_fish
+                WHERE is_trash = 0 OR is_trash IS NULL
+                GROUP BY user_id
+                '''
+            )
+            fish_stats = cursor.fetchall()
+            
+            # Получаем статистику мусора
+            cursor.execute(
+                '''
+                SELECT 
+                    user_id,
+                    COUNT(*) as trash_count,
+                    COALESCE(SUM(weight), 0) as trash_weight
+                FROM caught_fish
+                WHERE is_trash = 1
+                GROUP BY user_id
+                '''
+            )
+            trash_stats = cursor.fetchall()
+            
+            # Обновляем статистику в players
+            logger.info(f"Updating stats for {len(fish_stats)} users (fish)...")
+            for user_id, total_caught, total_weight, total_sold_weight in fish_stats:
+                cursor.execute(
+                    '''
+                    UPDATE players 
+                    SET total_fish_caught = ?,
+                        total_weight_caught = ?,
+                        total_weight_sold = ?
+                    WHERE user_id = ?
+                    ''',
+                    (int(total_caught), float(total_weight), float(total_sold_weight), int(user_id))
+                )
+            
+            logger.info(f"Updating stats for {len(trash_stats)} users (trash)...")
+            for user_id, trash_count, trash_weight in trash_stats:
+                cursor.execute(
+                    '''
+                    UPDATE players 
+                    SET total_trash_caught = ?,
+                        total_trash_weight = ?
+                    WHERE user_id = ?
+                    ''',
+                    (int(trash_count), float(trash_weight), int(user_id))
+                )
+            
+            # Заполняем энциклопедию (какие рыбы пойманы)
+            logger.info("Populating fish encyclopedia...")
+            
+            # Получаем список всех пользователей
+            cursor.execute('SELECT DISTINCT user_id FROM caught_fish')
+            all_users = [row[0] for row in cursor.fetchall()]
+            
+            # Получаем список всех рыб
+            cursor.execute('SELECT name FROM fish ORDER BY name')
+            all_fish = cursor.fetchall()
+            
+            # Создаем маппинг имени рыбы -> имя колонки
+            fish_column_map = {}
+            for fish_row in all_fish:
+                fish_name = str(fish_row[0] or '').strip()
+                if not fish_name:
+                    continue
+                safe_column_name = 'fish_' + ''.join(
+                    c if c.isalnum() or c == '_' else '_' 
+                    for c in fish_name.lower()
+                )
+                fish_column_map[fish_name.lower()] = safe_column_name
+            
+            # Для каждого пользователя определяем какие рыбы он поймал
+            for user_id in all_users:
+                # Получаем уникальные рыбы пользователя
+                cursor.execute(
+                    '''
+                    SELECT DISTINCT LOWER(TRIM(fish_name))
+                    FROM caught_fish
+                    WHERE user_id = ? AND (is_trash = 0 OR is_trash IS NULL)
+                    ''',
+                    (int(user_id),)
+                )
+                caught_fish_names = [row[0] for row in cursor.fetchall()]
+                
+                # Создаем запись для пользователя если её нет
+                cursor.execute(
+                    'INSERT INTO user_fish_encyclopedia (user_id) VALUES (?) ON CONFLICT (user_id) DO NOTHING',
+                    (int(user_id),)
+                )
+                
+                # Обновляем колонки для пойманных рыб
+                for fish_name_lower in caught_fish_names:
+                    column_name = fish_column_map.get(fish_name_lower)
+                    if column_name:
+                        try:
+                            cursor.execute(
+                                f'UPDATE user_fish_encyclopedia SET {column_name} = 1 WHERE user_id = ?',
+                                (int(user_id),)
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to update {column_name} for user {user_id}: {e}")
+            
+            conn.commit()
+            
+        # Отмечаем миграцию как выполненную
+        self.set_system_flag('fish_stats_migrated', '1')
+        logger.info("Fish stats migration completed successfully!")
+
     @staticmethod
     def _normalize_item_name(value: Any) -> str:
         return str(value or '').strip().casefold()
@@ -4502,6 +4769,12 @@ class Database:
                     dynamite_upgrade_level INTEGER DEFAULT 1,
                     is_banned INTEGER DEFAULT 0,
                     ban_until TEXT,
+                    total_fish_caught INTEGER DEFAULT 0,
+                    total_weight_caught REAL DEFAULT 0,
+                    total_weight_sold REAL DEFAULT 0,
+                    total_coins_earned INTEGER DEFAULT 0,
+                    total_trash_caught INTEGER DEFAULT 0,
+                    total_trash_weight REAL DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -4566,6 +4839,7 @@ class Database:
                     length REAL DEFAULT 0,
                     location TEXT NOT NULL,
                     sold INTEGER DEFAULT 0,
+                    is_trash INTEGER DEFAULT 0,
                     caught_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     sold_at TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES players (user_id)
@@ -4579,6 +4853,74 @@ class Database:
                     cursor.execute("ALTER TABLE caught_fish ADD COLUMN chat_id BIGINT DEFAULT 0")
                 except:
                     pass
+            # Ensure `is_trash` column exists
+            try:
+                cursor.execute("ALTER TABLE caught_fish ADD COLUMN IF NOT EXISTS is_trash INTEGER DEFAULT 0")
+            except Exception:
+                try:
+                    cursor.execute("ALTER TABLE caught_fish ADD COLUMN is_trash INTEGER DEFAULT 0")
+                except:
+                    pass
+
+            # Таблица энциклопедии пойманных рыб пользователя
+            # Вместо отдельных строк для каждой рыбы, создаем колонки для каждого вида
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_fish_encyclopedia (
+                    user_id BIGINT PRIMARY KEY,
+                    FOREIGN KEY (user_id) REFERENCES players (user_id)
+                )
+            ''')
+            
+            # Получаем список всех рыб и добавляем колонки для каждой
+            cursor.execute('SELECT name FROM fish ORDER BY name')
+            all_fish = cursor.fetchall()
+            
+            # Получаем существующие колонки в таблице
+            if self.is_postgres:
+                cursor.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'user_fish_encyclopedia' 
+                    AND table_schema = 'public'
+                """)
+            else:
+                cursor.execute("PRAGMA table_info(user_fish_encyclopedia)")
+            
+            existing_columns = set()
+            for row in cursor.fetchall():
+                if self.is_postgres:
+                    existing_columns.add(row[0])
+                else:
+                    existing_columns.add(row[1])  # SQLite PRAGMA возвращает (cid, name, ...)
+            
+            # Добавляем колонки для рыб, которых еще нет
+            for fish_row in all_fish:
+                fish_name = str(fish_row[0] or '').strip()
+                if not fish_name:
+                    continue
+                
+                # Создаем безопасное имя колонки (заменяем пробелы и спецсимволы)
+                safe_column_name = 'fish_' + ''.join(
+                    c if c.isalnum() or c == '_' else '_' 
+                    for c in fish_name.lower()
+                )
+                
+                if safe_column_name not in existing_columns:
+                    try:
+                        cursor.execute(f'''
+                            ALTER TABLE user_fish_encyclopedia 
+                            ADD COLUMN {safe_column_name} INTEGER DEFAULT 0
+                        ''')
+                        logger.info(f"Added column {safe_column_name} for fish '{fish_name}'")
+                    except Exception as e:
+                        logger.warning(f"Failed to add column {safe_column_name}: {e}")
+            
+            conn.commit()
+            
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_user_fish_encyclopedia_user
+                ON user_fish_encyclopedia (user_id)
+            ''')
 
             # Таблица трофеев игроков (отдельно от обычного инвентаря/лавки)
             cursor.execute('''
@@ -4999,6 +5341,12 @@ class Database:
         
         # Заполняем начальными данными
         self._fill_default_data()
+        
+        # Мигрируем данные из caught_fish в статистику (одноразово)
+        try:
+            self.migrate_caught_fish_to_stats()
+        except Exception:
+            logger.exception('Failed to migrate caught_fish stats')
     
     def _run_migrations(self):
         """Выполнение миграций для обновления схемы БД"""
@@ -5237,6 +5585,15 @@ class Database:
         ensure_column('players', 'gold_tickets', 'INTEGER DEFAULT 0')
         ensure_column('players', 'dynamite_ban_until', 'TEXT')
         ensure_column('players', 'dynamite_upgrade_level', 'INTEGER DEFAULT 1')
+        
+        # Новые колонки для статистики
+        ensure_column('players', 'total_fish_caught', 'INTEGER DEFAULT 0')
+        ensure_column('players', 'total_weight_caught', 'REAL DEFAULT 0')
+        ensure_column('players', 'total_trash_caught', 'INTEGER DEFAULT 0')
+        ensure_column('players', 'total_trash_weight', 'REAL DEFAULT 0')
+        ensure_column('players', 'total_weight_sold', 'REAL DEFAULT 0')
+        ensure_column('players', 'total_coins_earned', 'INTEGER DEFAULT 0')
+        
         ensure_column('raf_events', 'creator_username', 'TEXT')
         ensure_column('player_trophies', 'length', 'REAL DEFAULT 0')
         ensure_column('player_trophies', 'location', 'TEXT')
@@ -5259,6 +5616,24 @@ class Database:
                 )
             ''')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_ufs_user ON user_fish_stats(user_id)')
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+        # Create user_fish_encyclopedia table (энциклопедия пойманных рыб)
+        try:
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_fish_encyclopedia (
+                    user_id BIGINT NOT NULL,
+                    fish_name TEXT NOT NULL,
+                    first_caught_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, fish_name)
+                )
+            ''')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_ufe_user ON user_fish_encyclopedia(user_id)')
             conn.commit()
         except Exception:
             try:
@@ -6774,6 +7149,8 @@ class Database:
     def add_caught_fish(self, user_id: int, chat_id: int, fish_name: str, weight: float, location: str, length: float = 0):
         """Добавить пойманную рыбу"""
         normalized_name = fish_name.strip() if isinstance(fish_name, str) else fish_name
+        is_trash = False
+        
         # Normalize fish_name to canonical name from `fish` table when possible
         try:
             with self._connect() as conn:
@@ -6783,6 +7160,12 @@ class Database:
                 r = cur.fetchone()
                 if r:
                     normalized_name = r[0]
+                else:
+                    # Проверяем, это мусор?
+                    cur.execute("SELECT name FROM trash WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1", (normalized_name,))
+                    r = cur.fetchone()
+                    if r:
+                        is_trash = True
         except Exception:
             # If normalization fails, continue with provided name
             pass
@@ -6806,6 +7189,9 @@ class Database:
                 (user_id, chat_id_to_store, normalized_name, float(weight), float(length), location)
             )
             saved = cursor.fetchone()
+            
+            # Обновляем статистику пользователя
+            self.update_player_fish_stats(user_id, normalized_name, float(weight), is_trash)
 
         if saved:
             logger.info(
@@ -7249,7 +7635,7 @@ class Database:
         return info
     
     def mark_fish_as_sold(self, fish_ids: List[int]):
-        """Пометить рыбу как проданную"""
+        """Пометить рыбу как проданную и удалить из базы"""
         if not fish_ids:
             return
 
@@ -7266,9 +7652,10 @@ class Database:
                 placeholders = ','.join('?' * len(chunk))
 
                 # Для динамических цен учитываем только реальную рыбу (не мусор).
+                # Сначала получаем информацию о рыбе перед удалением
                 cursor.execute(
                     f'''
-                    SELECT cf.fish_name, COALESCE(cf.weight, 0)
+                    SELECT cf.fish_name, COALESCE(cf.weight, 0), cf.user_id
                     FROM caught_fish cf
                     JOIN fish f ON LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(f.name))
                     WHERE cf.id IN ({placeholders}) AND COALESCE(cf.sold, 0) = 0
@@ -7277,9 +7664,9 @@ class Database:
                 )
                 pre_sale_rows = cursor.fetchall() or []
 
+                # Удаляем рыбу вместо пометки как проданная
                 cursor.execute(f'''
-                    UPDATE caught_fish 
-                    SET sold = 1, sold_at = CURRENT_TIMESTAMP
+                    DELETE FROM caught_fish 
                     WHERE id IN ({placeholders})
                 ''', chunk)
                 try:
@@ -7288,14 +7675,18 @@ class Database:
                     updated = -1
                 if isinstance(updated, int) and updated > 0:
                     total_updated += updated
-                    for fish_name, fish_weight in pre_sale_rows:
+                    for fish_name, fish_weight, user_id in pre_sale_rows:
                         sales_to_record.append({
                             'fish_name': str(fish_name or ''),
                             'weight': float(fish_weight or 0.0),
+                            'user_id': int(user_id),
                         })
-                logger.info("mark_fish_as_sold: chunk %s-%s updated %s rows", i, i+len(chunk)-1, updated)
+                logger.info("mark_fish_as_sold: chunk %s-%s deleted %s rows", i, i+len(chunk)-1, updated)
 
             if sales_to_record:
+                # Группируем продажи по пользователям для обновления статистики
+                user_sales: Dict[int, float] = {}
+                
                 for sale in sales_to_record:
                     cursor.execute(
                         '''
@@ -7303,6 +7694,21 @@ class Database:
                         VALUES (?, ?, CURRENT_TIMESTAMP)
                         ''',
                         (sale['fish_name'], sale['weight']),
+                    )
+                    
+                    # Суммируем вес по пользователям
+                    user_id = sale['user_id']
+                    user_sales[user_id] = user_sales.get(user_id, 0.0) + sale['weight']
+                
+                # Обновляем статистику продаж для каждого пользователя
+                for user_id, total_weight in user_sales.items():
+                    cursor.execute(
+                        '''
+                        UPDATE players 
+                        SET total_weight_sold = COALESCE(total_weight_sold, 0) + ?
+                        WHERE user_id = ?
+                        ''',
+                        (float(total_weight), int(user_id))
                     )
 
                 day_key = datetime.utcnow().date().isoformat()
@@ -7340,49 +7746,84 @@ class Database:
 
             conn.commit()
             logger.info("mark_fish_as_sold: total ids=%s total_updated=%s", len(fish_ids), total_updated)
+            
+            # TODO: После ручного тестирования добавить VACUUM для очистки мертвых строк
+            # После коммита выполняем VACUUM для очистки мертвых строк (только для PostgreSQL)
+            # if self.is_postgres:
+            #     try:
+            #         # VACUUM нельзя выполнить внутри транзакции, поэтому используем отдельное соединение
+            #         import psycopg2
+            #         vacuum_conn = psycopg2.connect(self._get_db_url())
+            #         vacuum_conn.autocommit = True
+            #         vacuum_cursor = vacuum_conn.cursor()
+            #         vacuum_cursor.execute('VACUUM (ANALYZE) caught_fish')
+            #         vacuum_cursor.close()
+            #         vacuum_conn.close()
+            #         logger.info("VACUUM executed on caught_fish table")
+            #     except Exception as e:
+            #         logger.warning("Failed to execute VACUUM on caught_fish: %s", e)
     
     def get_player_stats(self, user_id: int, chat_id: int) -> Dict[str, Any]:
-        """Получить статистику игрока"""
+        """Получить статистику игрока из таблицы players и энциклопедии"""
         with self._connect() as conn:
             cursor = conn.cursor()
             
-            # Общая статистика (caught_fish + player_trophies)
+            # Получаем статистику из таблицы players
             cursor.execute('''
-                WITH all_catches AS (
-                    SELECT fish_name, weight, sold FROM caught_fish WHERE user_id = ?
-                    UNION ALL
-                    SELECT fish_name, weight, 0 as sold FROM player_trophies WHERE user_id = ?
-                )
                 SELECT 
-                    COUNT(*) as total_fish, 
-                    COALESCE(SUM(weight), 0) as total_weight,
-                    COUNT(DISTINCT LOWER(TRIM(fish_name))) as unique_fish
-                FROM all_catches ac
-                JOIN fish f ON LOWER(TRIM(ac.fish_name)) = LOWER(TRIM(f.name))
-            ''', (user_id, user_id))
+                    total_fish_caught,
+                    total_weight_caught,
+                    total_weight_sold,
+                    total_coins_earned,
+                    total_trash_caught,
+                    total_trash_weight
+                FROM players
+                WHERE user_id = ?
+            ''', (int(user_id),))
             
-            stats = cursor.fetchone()
-
-            cursor.execute('''
-                SELECT COALESCE(SUM(weight), 0) as trash_weight
-                FROM caught_fish cf
-                LEFT JOIN fish f ON LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(f.name))
-                WHERE cf.user_id = ? AND f.name IS NULL
-            ''', (user_id,))
-            trash_weight_row = cursor.fetchone()
-            trash_weight = trash_weight_row[0] if trash_weight_row else 0
-
-            cursor.execute('''
-                SELECT COUNT(*), COALESCE(SUM(weight), 0)
-                FROM caught_fish cf
-                JOIN fish f ON LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(f.name))
-                WHERE cf.user_id = ? AND cf.sold = 1
-            ''', (user_id,))
-            sold_row = cursor.fetchone()
-            sold_count = sold_row[0] if sold_row else 0
-            sold_weight = sold_row[1] if sold_row else 0
+            player_stats = cursor.fetchone()
             
-            # Самая большая рыба (с учетом трофеев)
+            if not player_stats:
+                return {
+                    'total_fish': 0,
+                    'total_weight': 0.0,
+                    'unique_fish': 0,
+                    'trash_weight': 0.0,
+                    'sold_count': 0,
+                    'sold_weight': 0.0,
+                    'biggest_fish': None,
+                    'total_coins_earned': 0,
+                    'total_trash_caught': 0
+                }
+            
+            total_fish_caught = int(player_stats[0] or 0)
+            total_weight_caught = float(player_stats[1] or 0.0)
+            total_weight_sold = float(player_stats[2] or 0.0)
+            total_coins_earned = int(player_stats[3] or 0)
+            total_trash_caught = int(player_stats[4] or 0)
+            total_trash_weight = float(player_stats[5] or 0.0)
+            
+            # Получаем количество уникальных рыб из энциклопедии
+            cursor.execute(
+                'SELECT * FROM user_fish_encyclopedia WHERE user_id = ?',
+                (int(user_id),)
+            )
+            row = cursor.fetchone()
+            
+            unique_fish = 0
+            if row:
+                # Получаем имена колонок
+                column_names = [desc[0] for desc in cursor.description]
+                
+                # Считаем количество колонок со значением 1
+                for col_name in column_names:
+                    if col_name.startswith('fish_'):
+                        col_index = column_names.index(col_name)
+                        value = row[col_index]
+                        if value == 1:
+                            unique_fish += 1
+            
+            # Самая большая рыба (с учетом трофеев и текущего инвентаря)
             cursor.execute('''
                 WITH all_valid_catches AS (
                     SELECT fish_name, weight FROM caught_fish WHERE user_id = ?
@@ -7392,19 +7833,21 @@ class Database:
                 SELECT fish_name, weight FROM all_valid_catches 
                 WHERE LOWER(TRIM(fish_name)) IN (SELECT LOWER(TRIM(name)) FROM fish)
                 ORDER BY weight DESC LIMIT 1
-            ''', (user_id, user_id))
+            ''', (int(user_id), int(user_id)))
             
             biggest = cursor.fetchone()
             
             return {
-                'total_fish': stats[0] or 0,
-                'total_weight': stats[1] or 0,
-                'unique_fish': stats[2] or 0,
+                'total_fish': total_fish_caught,
+                'total_weight': total_weight_caught,
+                'unique_fish': unique_fish,
                 'biggest_fish': biggest[0] if biggest else None,
                 'biggest_weight': biggest[1] if biggest else 0,
-                'trash_weight': trash_weight or 0,
-                'sold_fish_count': sold_count or 0,
-                'sold_fish_weight': sold_weight or 0
+                'trash_weight': total_trash_weight,
+                'sold_fish_count': 0,  # Больше не храним количество проданной рыбы
+                'sold_fish_weight': total_weight_sold,
+                'total_coins_earned': total_coins_earned,
+                'total_trash_caught': total_trash_caught
             }
 
     def get_total_fish_species(self) -> int:
@@ -10177,50 +10620,42 @@ class Database:
         if safe_user_id > 0:
             with self._connect() as conn:
                 cursor = conn.cursor()
-                # 1. Рыбы из таблицы caught_fish (включая проданные)
+                # Используем новую таблицу user_fish_encyclopedia с колонками для каждой рыбы
                 cursor.execute(
-                    '''
-                    SELECT DISTINCT LOWER(TRIM(fish_name))
-                    FROM caught_fish
-                    WHERE user_id = ?
-                    ''',
-                    (safe_user_id,),
+                    'SELECT * FROM user_fish_encyclopedia WHERE user_id = ?',
+                    (safe_user_id,)
                 )
-                rows_caught = cursor.fetchall() or []
-                for row in rows_caught:
-                    if row and row[0]:
-                        caught_name_set.add(str(row[0]))
-
-                # 2. Рыбы из таблицы player_trophies (трофеи)
-                cursor.execute(
-                    '''
-                    SELECT DISTINCT LOWER(TRIM(fish_name))
-                    FROM player_trophies
-                    WHERE user_id = ?
-                    ''',
-                    (safe_user_id,),
-                )
-                rows_trophies = cursor.fetchall() or []
-                for row in rows_trophies:
-                    if row and row[0]:
-                        caught_name_set.add(str(row[0]))
-
-                # 3. Рыбы из таблицы user_fish_stats (историческая статистика, если есть)
-                try:
-                    cursor.execute(
-                        '''
-                        SELECT DISTINCT LOWER(TRIM(fish_name))
-                        FROM user_fish_stats
-                        WHERE user_id = ?
-                        ''',
-                        (safe_user_id,),
-                    )
-                    rows_stats = cursor.fetchall() or []
-                    for row in rows_stats:
-                        if row and row[0]:
-                            caught_name_set.add(str(row[0]))
-                except Exception:
-                    pass
+                row = cursor.fetchone()
+                
+                if row:
+                    # Получаем имена колонок
+                    column_names = [desc[0] for desc in cursor.description]
+                    
+                    # Получаем список всех рыб для маппинга
+                    cursor.execute('SELECT name FROM fish ORDER BY name')
+                    all_fish = cursor.fetchall()
+                    
+                    # Создаем маппинг: имя колонки -> имя рыбы
+                    column_to_fish = {}
+                    for fish_row in all_fish:
+                        fish_name = str(fish_row[0] or '').strip()
+                        if not fish_name:
+                            continue
+                        safe_column_name = 'fish_' + ''.join(
+                            c if c.isalnum() or c == '_' else '_' 
+                            for c in fish_name.lower()
+                        )
+                        column_to_fish[safe_column_name] = fish_name
+                    
+                    # Проверяем какие рыбы пойманы (значение = 1)
+                    for col_name in column_names:
+                        if col_name.startswith('fish_'):
+                            col_index = column_names.index(col_name)
+                            value = row[col_index]
+                            if value == 1:
+                                fish_name = column_to_fish.get(col_name)
+                                if fish_name:
+                                    caught_name_set.add(fish_name.lower().strip())
 
         with self._connect() as conn:
             cursor = conn.cursor()
