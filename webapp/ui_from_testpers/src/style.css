@@ -815,10 +815,10 @@ svg {
 /* Floating sell button */
 .shop-floating-btn {
   position: fixed;
-  bottom: 80px;
+  bottom: 90px;
   right: 20px;
-  width: 140px;
-  height: 140px;
+  width: 70px;
+  height: 70px;
   border-radius: 50%;
   background: linear-gradient(135deg, #00b4d8, #0096c7);
   border: none;
@@ -827,23 +827,30 @@ svg {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  font-size: 16px;
-  font-weight: 900;
-  letter-spacing: 1px;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
   cursor: pointer;
-  box-shadow: 0 8px 24px rgba(0, 180, 216, 0.5);
+  box-shadow: 0 4px 16px rgba(0, 180, 216, 0.5);
   transition: all 0.3s ease;
   z-index: 50;
 }
 
 .shop-floating-btn:active {
   transform: scale(0.95);
-  box-shadow: 0 4px 12px rgba(0, 180, 216, 0.4);
+  box-shadow: 0 2px 8px rgba(0, 180, 216, 0.4);
 }
 
 .shop-floating-btn svg {
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+  width: 28px;
+  height: 28px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.3));
+}
+
+.shop-floating-btn span {
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .shop-container {
