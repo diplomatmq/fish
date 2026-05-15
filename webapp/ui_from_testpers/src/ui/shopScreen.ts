@@ -278,18 +278,35 @@ export class ShopScreen {
   private async makeTrophies(ids: number[]): Promise<void> {
     try {
       let successCount = 0;
+      let insufficientCoins = false;
+      let requiredCoins = 0;
+      let currentCoins = 0;
+      
       for (const id of ids) {
-        const res = await fetchApi<{ok?: boolean}>('/api/make-trophy', {
+        const res = await fetchApi<{ok?: boolean; error?: string; required?: number; current?: number}>('/api/make-trophy', {
           method: 'POST',
           body: JSON.stringify({ id })
         });
-        if (res?.ok) successCount++;
+        
+        if (res?.ok) {
+          successCount++;
+        } else if (res?.error === 'insufficient_coins') {
+          insufficientCoins = true;
+          requiredCoins = res.required || 10000;
+          currentCoins = res.current || 0;
+          break;
+        }
       }
       
-      if (successCount > 0) {
+      if (insufficientCoins) {
+        alert(`Недостаточно монет!\nТребуется: ${requiredCoins} 🪙\nУ вас: ${currentCoins} 🪙`);
+      } else if (successCount > 0) {
         tgService.haptic('success');
-        alert(`Создано трофеев: ${successCount}`);
+        alert(`Создано трофеев: ${successCount}\nСписано: ${successCount * 10000} 🪙`);
         await this.loadInventory();
+        
+        // Обновляем профиль
+        window.dispatchEvent(new CustomEvent('refresh-profile'));
       }
     } catch(e) {
       alert('Ошибка при создании трофеев');

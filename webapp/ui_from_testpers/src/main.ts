@@ -9,6 +9,7 @@ import './adventures.css';
 import './guilds.css';
 import './friends.css';
 import './rating.css';
+import './captcha.css';
 
 import { buildLayout, buildEntryOverlay, hideEntryOverlay, bindQuickActions, bindTrophyButton } from './ui/layout';
 import { ProfilePanel }   from './ui/profile';
@@ -21,6 +22,7 @@ import { GuildsScreen } from './ui/guildsScreen';
 import { FriendsScreen } from './ui/friendsScreen';
 import { RatingScreen } from './ui/ratingScreen';
 import { ResultsScreen } from './ui/resultsScreen';
+import { CaptchaScreen } from './ui/captchaScreen';
 import { ParticleSystem } from './animations/particles';
 import { ParallaxController } from './animations/effects';
 
@@ -29,6 +31,25 @@ import { loadClans } from './modules/guildsData';
 import { loadEncyclopedia } from './modules/encyclopediaData';
 import { loadTrophies, ACTIVE_TROPHY_ID } from './modules/trophiesData';
 
+// ── Check if captcha mode ──────────────────────────────────────────────────
+const urlParams = new URLSearchParams(window.location.search);
+const captchaMode = urlParams.get('captcha_mode');
+
+if (captchaMode === 'antibot') {
+  // Captcha mode - show only captcha screen
+  const captchaScreen = new CaptchaScreen();
+  const captchaEl = captchaScreen.getElement();
+  document.body.innerHTML = '';
+  document.body.appendChild(captchaEl);
+  captchaScreen.init();
+} else {
+  // Normal mode - show full app
+  initNormalMode();
+}
+
+function initNormalMode() {
+
+function initNormalMode() {
 // ── Entry overlay (shown during boot) ──────────────────────────────────────
 const entryOverlay = buildEntryOverlay();
 
@@ -230,3 +251,4 @@ hideEntryOverlay(entryOverlay, 1600);
 // Unused variable lint guard
 void tabBar;
 void app;
+}

@@ -493,15 +493,11 @@ def _get_verified_user_from_request() -> tuple[Optional[dict], Optional[str]]:
 
 @app.get("/")
 def index():
-	captcha_mode = request.args.get("captcha_mode")
-	if captcha_mode:
-		return render_template("index.html", captcha_mode=captcha_mode)
-	
-	# Priority 2: Serve built Vite application from ui_from_testpers/dist
+	# Serve built Vite application from ui_from_testpers/dist
 	if (TRANSFERRED_UI_DIST / "index.html").exists():
 		return send_from_directory(str(TRANSFERRED_UI_DIST), "index.html")
 		
-	# Fallback if not built
+	# Fallback to template
 	return render_template("index.html")
 
 
@@ -834,9 +830,22 @@ def make_trophy():
 	if db is None:
 		return jsonify({"ok": False, "error": "db_unavailable"}), 500
 	
+	TROPHY_COST = 10000
+	
 	try:
 		with db._connect() as conn:
 			cursor = conn.cursor()
+			
+			# Проверяем баланс игрока
+			cursor.execute('SELECT coins FROM players WHERE user_id = ?', (user_id,))
+			player_row = cursor.fetchone()
+			if not player_row:
+				return jsonify({"ok": False, "error": "player_not_found"}), 404
+			
+			current_coins = int(player_row[0] or 0)
+			if current_coins < TROPHY_COST:
+				return jsonify({"ok": False, "error": "insufficient_coins", "required": TROPHY_COST, "current": current_coins}), 400
+			
 			# Проверяем рыбу
 			cursor.execute('SELECT fish_name, weight, length, location FROM caught_fish WHERE id = ? AND user_id = ? AND sold = 0', (fish_id, user_id))
 			row = cursor.fetchone()
@@ -851,11 +860,14 @@ def make_trophy():
 				VALUES (?, ?, ?, ?, ?)
 			''', (user_id, fish_name, weight, length, location))
 			
+			# Списываем монеты
+			cursor.execute('UPDATE players SET coins = coins - ? WHERE user_id = ?', (TROPHY_COST, user_id))
+			
 			# Удаляем из инвентаря
 			cursor.execute('DELETE FROM caught_fish WHERE id = ?', (fish_id,))
 			conn.commit()
 			
-			return jsonify({"ok": True})
+			return jsonify({"ok": True, "coins_spent": TROPHY_COST})
 	except Exception as e:
 		logger.exception("API make-trophy failed")
 		return jsonify({"ok": False, "error": "internal_error"}), 500
