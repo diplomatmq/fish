@@ -57,11 +57,7 @@ export class ShopScreen {
         </div>
       </div>
       <button id="shop-sell-btn" class="shop-floating-btn" style="display:none;">
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path>
-          <line x1="3" y1="6" x2="21" y2="6"></line>
-        </svg>
-        <span>ПРОДАТЬ</span>
+        ПРОДАТЬ
       </button>
       <div id="shop-select-actions" class="shop-select-actions" style="display:none;">
         <div class="select-info">Выбрано: <span id="select-count">0</span></div>
