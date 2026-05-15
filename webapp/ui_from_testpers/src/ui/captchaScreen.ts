@@ -233,9 +233,11 @@ export class CaptchaScreen {
         tgService.haptic('success');
         this.showStatus('success', '✅ Капча пройдена! Ограничение снято.');
         
-        // Закрываем апку через 2 секунды
+        // Показываем сообщение и закрываем через 2 секунды
         setTimeout(() => {
-          tgService.close();
+          if (window.Telegram?.WebApp) {
+            window.Telegram.WebApp.close?.();
+          }
         }, 2000);
       } else {
         const error = data?.error || 'wrong_answer';

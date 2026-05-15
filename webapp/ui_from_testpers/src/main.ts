@@ -48,8 +48,6 @@ if (captchaMode === 'antibot') {
 }
 
 function initNormalMode() {
-
-function initNormalMode() {
 // ── Entry overlay (shown during boot) ──────────────────────────────────────
 const entryOverlay = buildEntryOverlay();
 
