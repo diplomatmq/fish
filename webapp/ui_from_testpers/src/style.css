@@ -798,14 +798,54 @@ svg {
   to   { opacity: 0.9; }
 }
 /* Shop Redesign */
-.shop-header { display: flex; justify-content: space-between; align-items: center; padding: 0 20px; margin-bottom: 10px; }
-.shop-header .page-title { margin: 0; font-size: 20px; }
-.shop-header #shop-sell-btn { 
-  padding: 6px 12px; 
-  font-size: 12px; 
-  min-width: auto;
-  height: auto;
+.shop-header { 
+  display: flex; 
+  justify-content: center; 
+  align-items: center; 
+  padding: 20px; 
+  margin-bottom: 10px; 
 }
+.shop-header .page-title { 
+  margin: 0; 
+  font-size: 24px; 
+  font-weight: 900;
+  letter-spacing: 2px;
+}
+
+/* Floating sell button */
+.shop-floating-btn {
+  position: fixed;
+  bottom: 80px;
+  right: 20px;
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #00b4d8, #0096c7);
+  border: none;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 180, 216, 0.5);
+  transition: all 0.3s ease;
+  z-index: 50;
+}
+
+.shop-floating-btn:active {
+  transform: scale(0.95);
+  box-shadow: 0 4px 12px rgba(0, 180, 216, 0.4);
+}
+
+.shop-floating-btn svg {
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+}
+
 .shop-container {
   position: relative;
   height: 100%;
@@ -836,7 +876,20 @@ svg {
   color: #fff;
   text-shadow: 0 1px 2px rgba(0,0,0,0.5);
 }
-.select-buttons { display: flex; gap: 10px; }
+.select-buttons { 
+  display: flex; 
+  gap: 12px; 
+  width: 100%;
+  max-width: 400px;
+}
+.select-buttons .glass-btn {
+  flex: 1;
+  padding: 16px 24px;
+  font-size: 16px;
+  font-weight: 700;
+  border-radius: 16px;
+  min-height: 56px;
+}
 .inventory-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; padding: 10px; }
 .inv-card { position: relative; padding: 12px; border-radius: 16px; border-top: 2px solid var(--card-color); display: flex; flex-direction: column; align-items: center; text-align: center; cursor: pointer; transition: transform 0.2s; }
 .inv-card:active { transform: scale(0.95); }
@@ -848,20 +901,27 @@ svg {
 .inv-rarity { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
 .inv-weight { font-size: 12px; color: #aaa; margin-top: 4px; }
 .inv-price { margin-top: auto; padding-top: 8px; font-weight: bold; color: #ffd700; font-size: 16px; }
-.sell-options { display: flex; flex-direction: column; gap: 10px; padding: 10px 0; }
+.sell-options { display: flex; flex-direction: column; gap: 12px; padding: 16px 0; }
 .sell-opt-btn { 
-  font-size: 14px; 
-  font-weight: bold; 
+  font-size: 16px; 
+  font-weight: 700; 
   text-align: left; 
   justify-content: flex-start;
   background: rgba(0, 0, 0, 0.5);
-  padding: 12px 16px;
-  border-radius: 8px;
+  padding: 16px 20px;
+  border-radius: 16px;
   transition: all 0.2s;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .sell-opt-btn:hover {
   background: rgba(0, 0, 0, 0.7);
   transform: translateX(4px);
+}
+.sell-opt-btn:active {
+  transform: scale(0.98);
 }
 .select-indicator { position: absolute; top: 5px; left: 5px; font-size: 20px; }
 .primary-btn { background: linear-gradient(45deg, #1e88e5, #00acc1); border: none; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
@@ -905,6 +965,46 @@ svg {
 .fish-action-buttons {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 10px 0;
+  gap: 12px;
+  padding: 16px 0;
+}
+
+/* Base button styles */
+.glass-btn {
+  padding: 14px 20px;
+  font-size: 15px;
+  font-weight: 700;
+  border-radius: 14px;
+  min-height: 52px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.glass-btn:active {
+  transform: scale(0.98);
+}
+
+.fish-action-buttons .glass-btn {
+  padding: 16px 24px;
+  font-size: 16px;
+  font-weight: 700;
+  border-radius: 16px;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.fish-action-buttons .primary-btn {
+  background: linear-gradient(135deg, #00b4d8, #0096c7);
+  box-shadow: 0 4px 12px rgba(0, 180, 216, 0.4);
+  border: none;
 }
