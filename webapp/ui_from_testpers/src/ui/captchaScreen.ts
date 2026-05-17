@@ -47,6 +47,11 @@ export class CaptchaScreen {
         </div>
         
         <div id="captcha-content" style="display:none;">
+          <div class="captcha-block captcha-question-block">
+            <h3>❓ Вопрос</h3>
+            <p id="captcha-question" class="captcha-question">Загрузка вопроса...</p>
+          </div>
+
           <div class="captcha-block">
             <h3>💡 Подсказка</h3>
             <ul id="captcha-map" class="captcha-map"></ul>
@@ -158,6 +163,7 @@ export class CaptchaScreen {
     if (!this.challenge) return;
 
     const content = this.el.querySelector('#captcha-content') as HTMLElement;
+    const questionEl = this.el.querySelector('#captcha-question');
     const mapEl = this.el.querySelector('#captcha-map');
     const stepsEl = this.el.querySelector('#captcha-steps');
 
@@ -165,11 +171,21 @@ export class CaptchaScreen {
     content.style.display = 'block';
     this.showStatus('', '');
 
+    // Рендерим вопрос (ГЛАВНОЕ!)
+    if (questionEl && this.challenge.question) {
+      questionEl.textContent = this.challenge.question;
+      console.log('Captcha question:', this.challenge.question);
+    } else {
+      console.warn('No question in challenge:', this.challenge);
+    }
+
     // Рендерим карту (подсказки)
     if (mapEl && this.challenge.map) {
       mapEl.innerHTML = Object.entries(this.challenge.map)
         .map(([key, value]) => `<li><strong>${key}</strong> = ${value}</li>`)
         .join('');
+    } else if (mapEl) {
+      mapEl.innerHTML = '<li style="opacity: 0.6;">Подсказок нет</li>';
     }
 
     // Рендерим шаги (условия)
@@ -177,6 +193,8 @@ export class CaptchaScreen {
       stepsEl.innerHTML = this.challenge.steps
         .map(step => `<li>${step}</li>`)
         .join('');
+    } else if (stepsEl) {
+      stepsEl.innerHTML = '<li style="opacity: 0.6;">Условий нет</li>';
     }
   }
 
@@ -211,7 +229,8 @@ export class CaptchaScreen {
 
   private async submitAnswer(answer: string): Promise<void> {
     if (!answer.trim()) {
-      alert('Введите ответ');
+      tgService.haptic('error');
+      this.showStatus('error', '❌ Введите ответ');
       return;
     }
 
@@ -221,13 +240,25 @@ export class CaptchaScreen {
     this.showStatus('loading', '⏳ Проверка ответа...');
 
     try {
-      const data = await fetchApi<{ ok: boolean; error?: string }>('/api/captcha/solve', {
+      const response = await fetch('/api/captcha/solve', {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           token: this.token,
           answer: answer.trim()
         })
       });
+
+      let data: { ok: boolean; error?: string } | null = null;
+      
+      try {
+        data = await response.json();
+      } catch (jsonError) {
+        console.error('Failed to parse JSON response:', jsonError);
+        throw new Error('Invalid server response');
+      }
 
       if (data && data.ok) {
         tgService.haptic('success');
@@ -254,7 +285,7 @@ export class CaptchaScreen {
     } catch (e) {
       console.error('Failed to submit captcha:', e);
       tgService.haptic('error');
-      this.showStatus('error', '❌ Ошибка отправки ответа. Попробуйте еще раз.');
+      this.showStatus('error', '❌ Ошибка отправки ответа. Проверьте соединение и попробуйте еще раз.');
     } finally {
       this.loading = false;
     }

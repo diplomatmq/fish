@@ -79,6 +79,20 @@
   color: #fff;
 }
 
+.captcha-question-block {
+  background: rgba(33, 150, 243, 0.15);
+  border: 2px solid rgba(33, 150, 243, 0.3);
+}
+
+.captcha-question {
+  font-size: 16px;
+  line-height: 1.6;
+  color: #fff;
+  font-weight: 500;
+  margin: 0;
+  padding: 8px 0;
+}
+
 .captcha-map {
   list-style: none;
   padding: 0;

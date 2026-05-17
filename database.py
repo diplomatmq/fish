@@ -3293,10 +3293,19 @@ class Database:
                 payload_data = {}
 
         remaining_seconds = max(0, int((expires_at - now).total_seconds()))
+        
+        # Извлекаем данные капчи из payload
+        question = str(payload_data.get("prompt") or "Ответьте на вопрос")
+        map_data = payload_data.get("map") or {}
+        steps = payload_data.get("steps") or []
+        
         return {
             "ok": True,
             "challenge": {
                 "token": active_token,
+                "question": question,
+                "map": map_data,
+                "steps": steps,
                 "difficulty": max(1, int(row.get("active_difficulty") or 1)),
                 "expires_at": self._to_utc_iso(expires_at),
                 "remaining_seconds": remaining_seconds,

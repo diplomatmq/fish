@@ -11523,8 +11523,10 @@ class FishBot:
                 'waiting_bait_quantity',
             )
         )
-        if not has_active_text_flow and not FISH_MESSAGE_TRIGGER_RE.match(message.text or ""):
-            return
+        # Если нет активного текстового потока и сообщение не соответствует паттерну - игнорируем
+        if not has_active_text_flow:
+            if not FISH_MESSAGE_TRIGGER_RE.match(message.text or ""):
+                return
 
         async def _dispatch_triggered_action() -> None:
             try:
@@ -13200,15 +13202,33 @@ class FishBot:
         logger.info(f"Using group_message_id for user {user_id}: {group_message_id}")
 
         # Отправляем изображение рыбы - в ответ на сообщение с кнопкой
-        sticker_message = await self._send_catch_image(
-            chat_id=group_chat_id,
-            item_name=fish['name'],
-            item_type="fish",
-            reply_to_message_id=group_message_id
-        )
+        sticker_message = None
+        try:
+            sticker_message = await self._send_catch_image(
+                chat_id=group_chat_id,
+                item_name=fish['name'],
+                item_type="fish",
+                reply_to_message_id=group_message_id
+            )
+        except Exception as e:
+            logger.warning(f"Could not send guaranteed catch image for {fish['name']}: {e}")
 
         # Всегда отправляем текстовое сообщение о рыбе (вынесено из блока стикера)
-        await self._safe_send_message(chat_id=group_chat_id, text=message, reply_to_message_id=sticker_message.message_id if sticker_message else group_message_id)
+        try:
+            await self._safe_send_message(
+                chat_id=group_chat_id, 
+                text=message, 
+                reply_to_message_id=sticker_message.message_id if sticker_message else group_message_id
+            )
+            logger.info(f"Guaranteed catch message sent successfully for user {user_id} in chat {group_chat_id}")
+        except Exception as e:
+            logger.error(f"Failed to send guaranteed catch message for user {user_id}: {e}", exc_info=True)
+            # Пытаемся отправить без reply_to
+            try:
+                await self._safe_send_message(chat_id=group_chat_id, text=message)
+                logger.info(f"Guaranteed catch message sent without reply_to for user {user_id}")
+            except Exception as e2:
+                logger.error(f"Failed to send guaranteed catch message even without reply_to for user {user_id}: {e2}", exc_info=True)
 
         try:
             await self._maybe_process_duel_catch(
@@ -13438,7 +13458,8 @@ class FishBot:
             logger.warning(f"Сетевая ошибка Telegram API: {error}")
             return
 
-        logger.error(f"Update {update} caused error {error}")
+        # Логируем полную информацию об ошибке
+        logger.error(f"Update {update} caused error {error}", exc_info=error)
         
         # Проверяем тип ошибки
         if isinstance(error, (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError)):
@@ -13447,6 +13468,10 @@ class FishBot:
             logger.error("Таймаут подключения к Telegram API. Попробуйте позже.")
         elif isinstance(error, aiohttp.ClientResponseError):
             logger.error(f"HTTP ошибка: {error}")
+        elif isinstance(error, TypeError) and "'async_generator' object is not iterable" in str(error):
+            logger.error(f"Async generator error: {error}", exc_info=True)
+            # Не отправляем сообщение пользователю для этой ошибки
+            return
         else:
             logger.error(f"Неизвестная ошибка: {type(error).__name__}: {error}")
         
