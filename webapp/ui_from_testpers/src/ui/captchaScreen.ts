@@ -240,25 +240,14 @@ export class CaptchaScreen {
     this.showStatus('loading', '⏳ Проверка ответа...');
 
     try {
-      const response = await fetch('/api/captcha/solve', {
+      // Используем fetchApi для автоматического добавления заголовков авторизации
+      const data = await fetchApi<{ ok: boolean; error?: string }>('/api/captcha/solve', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify({
           token: this.token,
           answer: answer.trim()
         })
       });
-
-      let data: { ok: boolean; error?: string } | null = null;
-      
-      try {
-        data = await response.json();
-      } catch (jsonError) {
-        console.error('Failed to parse JSON response:', jsonError);
-        throw new Error('Invalid server response');
-      }
 
       if (data && data.ok) {
         tgService.haptic('success');
