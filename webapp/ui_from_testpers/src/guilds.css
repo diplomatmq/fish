@@ -8,7 +8,7 @@
 
 /* ── Header ── */
 .guilds-header {
-  display: flex; gap: 10px; flex-shrink: 0;
+  display: flex; gap: 10px; flex-shrink: 0; flex-wrap: wrap;
 }
 .guild-create-btn {
   flex: 1; height: 48px;
@@ -40,7 +40,16 @@
 }
 .guild-info { flex: 1; }
 .guild-name { font-size: 15px; font-weight: 800; margin-bottom: 2px; }
-.guild-meta { font-size: 11px; color: var(--text-muted); display: flex; gap: 10px; }
+.guild-meta { font-size: 11px; color: var(--text-muted); display: flex; gap: 10px; flex-wrap: wrap; row-gap: 4px; }
+
+.guild-rating-btn {
+  flex: 0 0 auto; height: 48px; padding: 0 16px;
+  background: linear-gradient(135deg, #00b4d8 0%, #4d908e 100%);
+  border: none; border-radius: var(--radius-md);
+  color: #fff; font-family: inherit; font-size: 12px; font-weight: 800;
+  letter-spacing: 1px; cursor: pointer;
+  box-shadow: 0 4px 15px rgba(0, 180, 216, 0.35);
+}
 
 /* ── My Guild Screen ── */
 .my-guild-stats {
@@ -83,6 +92,37 @@
   color: #ff8080; font-family: inherit; font-size: 12px; font-weight: 800;
   letter-spacing: 1.5px; cursor: pointer;
 }
+
+/* ── Members List ── */
+.members-panel { padding: 12px; margin-bottom: 12px; }
+.members-list { display: flex; flex-direction: column; gap: 8px; }
+.member-row {
+  display: grid; grid-template-columns: 32px 1fr auto auto; gap: 8px; align-items: center;
+  padding: 6px 8px; border-radius: 10px; background: rgba(255,255,255,0.04);
+}
+.member-rank { font-size: 10px; color: var(--gold); font-weight: 800; }
+.member-name { font-size: 12px; font-weight: 700; }
+.member-meta { font-size: 10px; color: var(--text-muted); }
+.member-weight { font-size: 11px; font-weight: 800; color: var(--teal-glow); }
+.members-empty { font-size: 11px; color: var(--text-muted); padding: 6px 4px; }
+
+/* ── Rating View ── */
+.guild-rating-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.guild-rating-card { display: grid; grid-template-columns: 36px 46px 1fr; gap: 10px; align-items: center; padding: 10px 12px; cursor: pointer; }
+.guild-rank { font-size: 12px; font-weight: 900; color: var(--gold); }
+.guild-rating-members { padding: 10px 12px; margin-top: -4px; }
+
+/* ── Tournament Section ── */
+.tournament-block { padding: 12px; margin-bottom: 12px; }
+.tournament-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.tournament-title { font-size: 13px; font-weight: 800; }
+.tournament-range { font-size: 10px; color: var(--text-muted); }
+.tournament-list { display: flex; flex-direction: column; gap: 8px; }
+.tournament-row { display: grid; grid-template-columns: 32px 1fr auto; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 10px; background: rgba(255,255,255,0.04); }
+.tournament-rank { font-size: 10px; color: var(--gold); font-weight: 800; }
+.tournament-name { font-size: 12px; font-weight: 700; }
+.tournament-weight { font-size: 11px; font-weight: 800; color: var(--teal-glow); }
+.tournament-form { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 
 /* ── Create Modal ── */
 .artel-form { display: flex; flex-direction: column; gap: 18px; }

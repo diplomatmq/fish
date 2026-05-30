@@ -436,14 +436,12 @@ LIVE_BAIT_NAME = "Живец"
 
 CLAN_MEMBER_LIMITS = {
     1: 5,
-    2: 8,
-    3: 12,
-    4: 16,
-    5: 20,
+    2: 10,
+    3: 20,
 }
 
 CLAN_UPGRADE_REQUIREMENTS = {
-    2: {"Коряга": 8, "Консервная банка": 12},
+    2: {"Деревянная доска": 200, "Поломанная удочка": 100},
     3: {"Ботинок": 12, "Пластиковая бутылка": 20, "Веревка": 10},
     4: {"Поломанная удочка": 20, "Рыболовная сетка": 16, "Ржавый крючок": 24},
     5: {"Старая шина": 16, "Кусок трубы": 12, "Старый якорь": 8, "Деревянная доска": 20},
@@ -1437,6 +1435,18 @@ class Database:
             for uid in distribution_members:
                 player = self.get_player(uid, 0)
                 usernames[uid] = player.get('username', f'id{uid}') if player else f'id{uid}'
+            clan_by_user: Dict[int, Optional[int]] = {}
+            if distribution_members:
+                try:
+                    placeholders = ','.join('?' for _ in distribution_members)
+                    cursor.execute(
+                        f'SELECT user_id, clan_id FROM clan_members WHERE user_id IN ({placeholders})',
+                        tuple(int(uid) for uid in distribution_members),
+                    )
+                    for row in cursor.fetchall() or []:
+                        clan_by_user[int(row[0] or 0)] = int(row[1] or 0)
+                except Exception:
+                    clan_by_user = {}
             # Раздать рыбу
             idx = 0
             results = []
@@ -1495,10 +1505,11 @@ class Database:
 
                     # Используем сохраненную локацию, если она есть
                     final_location = catch_location if catch_location else "Море"
+                    clan_id = clan_by_user.get(int(uid)) or None
                     cursor.execute('''
-                        INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, location, length, caught_at, sold)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-                    ''', (uid, item_chat_id, fish_name, weight, final_location, length, catch_time))
+                        INSERT INTO caught_fish (user_id, chat_id, clan_id, fish_name, weight, location, length, caught_at, sold)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+                    ''', (uid, item_chat_id, clan_id, fish_name, weight, final_location, length, catch_time))
                     inserted_count += 1
                     logger.info(f"[boat] Записана рыба: user_id={uid}, chat_id={item_chat_id}, fish_name={fish_name}, weight={weight}, location={final_location}, length={length}, caught_at={catch_time}")
                 if user_catch:
@@ -2625,6 +2636,78 @@ class Database:
                 clan['max_members'] = self.get_clan_member_limit(int(clan.get('level') or 1))
             return result
 
+    def get_clan_catch_totals(self, clan_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        safe_ids: List[int] = []
+        for cid in clan_ids or []:
+            try:
+                val = int(cid)
+            except (TypeError, ValueError):
+                continue
+            if val > 0:
+                safe_ids.append(val)
+
+        if not safe_ids:
+            return {}
+
+        placeholders = ','.join('?' for _ in safe_ids)
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                SELECT clan_id, COALESCE(SUM(weight), 0) AS total_weight, COUNT(id) AS total_fish
+                FROM caught_fish
+                WHERE clan_id IN ({placeholders})
+                GROUP BY clan_id
+                ''',
+                safe_ids,
+            )
+            rows = cursor.fetchall() or []
+
+        result: Dict[int, Dict[str, Any]] = {}
+        for clan_id, total_weight, total_fish in rows:
+            result[int(clan_id or 0)] = {
+                'total_weight': float(total_weight or 0),
+                'total_fish': int(total_fish or 0),
+            }
+        return result
+
+    def get_clan_member_weights(self, clan_id: int) -> List[Dict[str, Any]]:
+        safe_clan_id = int(clan_id)
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    cm.user_id,
+                    cm.role,
+                    COALESCE(MAX(p.username), '') AS username,
+                    COALESCE(MAX(p.level), 0) AS level,
+                    COALESCE(SUM(cf.weight), 0) AS total_weight
+                FROM clan_members cm
+                LEFT JOIN players p ON p.user_id = cm.user_id
+                LEFT JOIN caught_fish cf
+                    ON cf.user_id = cm.user_id AND cf.clan_id = cm.clan_id
+                WHERE cm.clan_id = ?
+                GROUP BY cm.user_id, cm.role
+                ORDER BY total_weight DESC, cm.role DESC, cm.user_id ASC
+                ''',
+                (safe_clan_id,),
+            )
+            rows = cursor.fetchall() or []
+
+        result: List[Dict[str, Any]] = []
+        for user_id, role, username, level, total_weight in rows:
+            result.append(
+                {
+                    'user_id': int(user_id or 0),
+                    'role': str(role or 'member'),
+                    'username': str(username or '') or f"id{int(user_id or 0)}",
+                    'level': int(level or 0),
+                    'total_weight': float(total_weight or 0),
+                }
+            )
+        return result
+
     def get_clan_donations(self, clan_id: int) -> Dict[str, int]:
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -2648,6 +2731,14 @@ class Database:
             return {'ok': False, 'reason': 'name_too_short'}
         if len(clean_name) > 32:
             return {'ok': False, 'reason': 'name_too_long'}
+
+        active_tournament = None
+        try:
+            active_tournament = self.get_active_clan_tournament()
+        except Exception:
+            active_tournament = None
+        if active_tournament:
+            return {'ok': False, 'reason': 'tournament_active', 'tournament': active_tournament}
 
         if self.get_clan_by_user(owner_user_id):
             return {'ok': False, 'reason': 'already_in_clan'}
@@ -2796,7 +2887,10 @@ class Database:
                 if new_leader_row:
                     new_leader_id = int(new_leader_row[0])
                     # Transfer leadership
-                    cursor.execute('UPDATE clan_members SET role = "leader" WHERE user_id = ? AND clan_id = ?', (new_leader_id, clan_id))
+                    cursor.execute(
+                        'UPDATE clan_members SET role = ? WHERE user_id = ? AND clan_id = ?',
+                        ('leader', new_leader_id, clan_id),
+                    )
                     cursor.execute('UPDATE clans SET owner_user_id = ? WHERE id = ?', (new_leader_id, clan_id))
                 else:
                     # No other members, but user said "она остается"
@@ -2809,6 +2903,34 @@ class Database:
             conn.commit()
 
         return {'ok': True, 'disbanded': False}
+
+    def remove_clan_member(self, leader_user_id: int, member_user_id: int) -> Dict[str, Any]:
+        leader_clan = self.get_clan_by_user(leader_user_id)
+        if not leader_clan:
+            return {'ok': False, 'reason': 'not_in_clan'}
+        if str(leader_clan.get('role') or 'member') != 'leader':
+            return {'ok': False, 'reason': 'not_leader'}
+
+        safe_member_id = int(member_user_id)
+        if safe_member_id == int(leader_user_id):
+            return {'ok': False, 'reason': 'cannot_remove_self'}
+
+        target_clan = self.get_clan_by_user(safe_member_id)
+        if not target_clan or int(target_clan.get('id') or 0) != int(leader_clan.get('id') or 0):
+            return {'ok': False, 'reason': 'member_not_found'}
+
+        if str(target_clan.get('role') or 'member') == 'leader':
+            return {'ok': False, 'reason': 'cannot_remove_leader'}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'DELETE FROM clan_members WHERE user_id = ? AND clan_id = ?',
+                (safe_member_id, int(leader_clan.get('id'))),
+            )
+            conn.commit()
+
+        return {'ok': True}
 
     def upgrade_clan(self, user_id: int) -> Dict[str, Any]:
         clan = self.get_clan_by_user(user_id)
@@ -4882,6 +5004,7 @@ class Database:
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
                     chat_id BIGINT DEFAULT 0,
+                    clan_id BIGINT,
                     fish_name TEXT NOT NULL,
                     weight REAL NOT NULL,
                     length REAL DEFAULT 0,
@@ -4899,6 +5022,14 @@ class Database:
             except Exception:
                 try:
                     cursor.execute("ALTER TABLE caught_fish ADD COLUMN chat_id BIGINT DEFAULT 0")
+                except:
+                    pass
+            # Ensure `clan_id` column exists
+            try:
+                cursor.execute("ALTER TABLE caught_fish ADD COLUMN IF NOT EXISTS clan_id BIGINT")
+            except Exception:
+                try:
+                    cursor.execute("ALTER TABLE caught_fish ADD COLUMN clan_id BIGINT")
                 except:
                     pass
             # Ensure `is_trash` column exists
@@ -5604,6 +5735,36 @@ class Database:
                 cursor.execute(f'ALTER TABLE {table} ADD COLUMN {col} {col_def}')
                 conn.commit()
 
+        # Add caught_fish.clan_id once and backfill existing rows for current members
+        try:
+            cf_cols = get_columns('caught_fish')
+            if 'clan_id' not in cf_cols:
+                cursor.execute('ALTER TABLE caught_fish ADD COLUMN clan_id BIGINT')
+                conn.commit()
+                try:
+                    cursor.execute(
+                        '''
+                        UPDATE caught_fish
+                        SET clan_id = (
+                            SELECT clan_id FROM clan_members cm
+                            WHERE cm.user_id = caught_fish.user_id
+                            LIMIT 1
+                        )
+                        WHERE clan_id IS NULL
+                        '''
+                    )
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
         ensure_column('trash', 'sticker_id', 'TEXT')
         ensure_column('caught_fish', 'length', 'REAL DEFAULT 0')
         ensure_column('caught_fish', 'sold', 'INTEGER DEFAULT 0')
@@ -5698,6 +5859,7 @@ class Database:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_cf_user_sold_name ON caught_fish(user_id, sold, fish_name)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_cf_caught_at ON caught_fish(caught_at DESC)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_cf_fish_name ON caught_fish(fish_name)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_cf_clan_caught_at ON caught_fish(clan_id, caught_at DESC)')
             conn.commit()
         except Exception:
             try:
@@ -6037,6 +6199,22 @@ class Database:
                 pass
             try:
                 cursor.execute("ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS prize_places INTEGER DEFAULT 10")
+            except Exception:
+                pass
+
+            # Ensure clan_tournaments table exists
+            try:
+                cursor.execute(
+                    '''CREATE TABLE IF NOT EXISTS clan_tournaments (
+                        id SERIAL PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        starts_at TIMESTAMP NOT NULL,
+                        ends_at TIMESTAMP NOT NULL,
+                        created_by BIGINT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )'''
+                )
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_clan_tournaments_dates ON clan_tournaments(starts_at, ends_at)')
             except Exception:
                 pass
 
@@ -7233,11 +7411,19 @@ class Database:
 
         with self._connect() as conn:
             cursor = conn.cursor()
+            clan_id = None
+            try:
+                cursor.execute('SELECT clan_id FROM clan_members WHERE user_id = %s LIMIT 1', (int(user_id),))
+                clan_row = cursor.fetchone()
+                if clan_row and clan_row[0] is not None:
+                    clan_id = int(clan_row[0])
+            except Exception:
+                clan_id = None
             cursor.execute(
-                'INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, length, location)'
-                ' VALUES (%s, %s, %s, %s, %s, %s)'
-                ' RETURNING id, user_id, chat_id, fish_name, weight, length, location, caught_at',
-                (user_id, chat_id_to_store, normalized_name, float(weight), float(length), location)
+                'INSERT INTO caught_fish (user_id, chat_id, clan_id, fish_name, weight, length, location)'
+                ' VALUES (%s, %s, %s, %s, %s, %s, %s)'
+                ' RETURNING id, user_id, chat_id, clan_id, fish_name, weight, length, location, caught_at',
+                (user_id, chat_id_to_store, clan_id, normalized_name, float(weight), float(length), location)
             )
             saved = cursor.fetchone()
             
@@ -7246,18 +7432,19 @@ class Database:
 
         if saved:
             logger.info(
-                "add_caught_fish SAVED IN DB: id=%s user_id=%s chat_id=%s fish=%s weight=%s length=%s location=%s caught_at=%s",
-                saved[0], saved[1], saved[2], saved[3], saved[4], saved[5], saved[6], saved[7]
+                "add_caught_fish SAVED IN DB: id=%s user_id=%s chat_id=%s clan_id=%s fish=%s weight=%s length=%s location=%s caught_at=%s",
+                saved[0], saved[1], saved[2], saved[3], saved[4], saved[5], saved[6], saved[7], saved[8]
             )
             return {
                 'id': saved[0],
                 'user_id': saved[1],
                 'chat_id': saved[2],
-                'fish_name': saved[3],
-                'weight': saved[4],
-                'length': saved[5],
-                'location': saved[6],
-                'caught_at': saved[7],
+                'clan_id': saved[3],
+                'fish_name': saved[4],
+                'weight': saved[5],
+                'length': saved[6],
+                'location': saved[7],
+                'caught_at': saved[8],
             }
         else:
             logger.warning(
@@ -7310,11 +7497,19 @@ class Database:
 
         with self._connect() as conn:
             cursor = conn.cursor()
+            clan_id = None
+            try:
+                cursor.execute('SELECT clan_id FROM clan_members WHERE user_id = %s LIMIT 1', (uid,))
+                clan_row = cursor.fetchone()
+                if clan_row and clan_row[0] is not None:
+                    clan_id = int(clan_row[0])
+            except Exception:
+                clan_id = None
             cursor.execute(
-                'INSERT INTO caught_fish (user_id, chat_id, fish_name, weight, length, location, caught_at, sold) '
-                'VALUES (%s, %s, %s, %s, %s, %s, %s, 0) '
-                'RETURNING id, user_id, chat_id, fish_name, weight, length, location, caught_at, sold',
-                (uid, chat_id_to_store, normalized_name, weight_value, length_value, normalized_location, caught_at_value)
+                'INSERT INTO caught_fish (user_id, chat_id, clan_id, fish_name, weight, length, location, caught_at, sold) '
+                'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0) '
+                'RETURNING id, user_id, chat_id, clan_id, fish_name, weight, length, location, caught_at, sold',
+                (uid, chat_id_to_store, clan_id, normalized_name, weight_value, length_value, normalized_location, caught_at_value)
             )
             saved = cursor.fetchone()
 
@@ -7327,20 +7522,21 @@ class Database:
             return None
 
         logger.info(
-            "add_caught_fish_owner_manual saved: id=%s user_id=%s chat_id=%s fish=%s weight=%s length=%s location=%s caught_at=%s sold=%s",
-            saved[0], saved[1], saved[2], saved[3], saved[4], saved[5], saved[6], saved[7], saved[8]
+            "add_caught_fish_owner_manual saved: id=%s user_id=%s chat_id=%s clan_id=%s fish=%s weight=%s length=%s location=%s caught_at=%s sold=%s",
+            saved[0], saved[1], saved[2], saved[3], saved[4], saved[5], saved[6], saved[7], saved[8], saved[9]
         )
 
         return {
             'id': saved[0],
             'user_id': saved[1],
             'chat_id': saved[2],
-            'fish_name': saved[3],
-            'weight': saved[4],
-            'length': saved[5],
-            'location': saved[6],
-            'caught_at': saved[7],
-            'sold': saved[8],
+            'clan_id': saved[3],
+            'fish_name': saved[4],
+            'weight': saved[5],
+            'length': saved[6],
+            'location': saved[7],
+            'caught_at': saved[8],
+            'sold': saved[9],
         }
     
     def remove_caught_fish(self, fish_id: int):
@@ -10955,6 +11151,18 @@ class Database:
                         'min_level': int(row[5] or 0),
                     }
 
+        totals_by_clan = self.get_clan_catch_totals(clan_ids)
+
+        members_by_clan: Dict[int, List[Dict[str, Any]]] = {}
+        my_clan_id = 0
+        if my_clan:
+            try:
+                my_clan_id = int(my_clan.get('id') or 0)
+                if my_clan_id > 0:
+                    members_by_clan[my_clan_id] = self.get_clan_member_weights(my_clan_id)
+            except Exception:
+                logger.exception("Failed to load clan members for user_id=%s", user_id)
+
         def _merge_profile(clan: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
             if not clan:
                 return None
@@ -10968,6 +11176,45 @@ class Database:
             merged = {**clan, **profile}
             if cid in requests_by_clan:
                 merged['requests'] = requests_by_clan.get(cid, [])
+            totals = totals_by_clan.get(cid, {})
+            merged['total_catch_weight'] = float(totals.get('total_weight', 0) or 0)
+            merged['total_catch_count'] = int(totals.get('total_fish', 0) or 0)
+            if 'max_members' not in merged:
+                merged['max_members'] = self.get_clan_member_limit(int(merged.get('level') or 1))
+
+            if cid == my_clan_id:
+                current_level = int(merged.get('level') or 1)
+                requirements = self.get_clan_upgrade_requirements(current_level + 1)
+                donations = self.get_clan_donations(cid)
+                upgrade_progress: List[Dict[str, Any]] = []
+                can_upgrade = False
+                if requirements:
+                    can_upgrade = True
+                    for item_name, required_qty in requirements.items():
+                        current_qty = int(donations.get(item_name, 0) or 0)
+                        if current_qty < int(required_qty):
+                            can_upgrade = False
+                        upgrade_progress.append(
+                            {
+                                'item': str(item_name),
+                                'required': int(required_qty),
+                                'current': int(current_qty),
+                            }
+                        )
+                merged['upgrade_progress'] = upgrade_progress
+                merged['can_upgrade'] = bool(can_upgrade)
+
+            members = members_by_clan.get(cid)
+            if members is not None:
+                merged['members'] = members
+                merged['members_count'] = len(members)
+                merged['member_count'] = len(members)
+            else:
+                members_count = merged.get('members_count')
+                if members_count is None:
+                    members_count = merged.get('member_count')
+                merged['members_count'] = int(members_count or 0)
+                merged['member_count'] = int(members_count or 0)
             return merged
 
         return {
@@ -11174,6 +11421,170 @@ class Database:
             conn.commit()
 
         return {'ok': True, 'request_id': safe_request_id, 'status': next_status}
+
+    def create_clan_tournament(self, title: str, starts_at: datetime, ends_at: datetime, created_by: int) -> Dict[str, Any]:
+        safe_title = str(title or '').strip()
+        if not safe_title:
+            return {'ok': False, 'reason': 'title_required'}
+        if not isinstance(starts_at, datetime) or not isinstance(ends_at, datetime):
+            return {'ok': False, 'reason': 'invalid_dates'}
+        if starts_at >= ends_at:
+            return {'ok': False, 'reason': 'invalid_range'}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO clan_tournaments (title, starts_at, ends_at, created_by, created_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                RETURNING id, title, starts_at, ends_at, created_by, created_at
+                ''',
+                (safe_title, starts_at, ends_at, int(created_by)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                conn.rollback()
+                return {'ok': False, 'reason': 'create_failed'}
+            conn.commit()
+
+        return {
+            'ok': True,
+            'tournament': {
+                'id': int(row[0]),
+                'title': str(row[1] or ''),
+                'starts_at': row[2],
+                'ends_at': row[3],
+                'created_by': int(row[4] or 0),
+                'created_at': row[5],
+            },
+        }
+
+    def list_clan_tournaments(self, limit: int = 10) -> List[Dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 10), 50))
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, title, starts_at, ends_at, created_by, created_at
+                FROM clan_tournaments
+                ORDER BY starts_at DESC, id DESC
+                LIMIT ?
+                ''',
+                (safe_limit,),
+            )
+            rows = cursor.fetchall() or []
+
+        result: List[Dict[str, Any]] = []
+        for row in rows:
+            result.append(
+                {
+                    'id': int(row[0] or 0),
+                    'title': str(row[1] or ''),
+                    'starts_at': row[2],
+                    'ends_at': row[3],
+                    'created_by': int(row[4] or 0),
+                    'created_at': row[5],
+                }
+            )
+        return result
+
+    def get_clan_tournament(self, tournament_id: int) -> Optional[Dict[str, Any]]:
+        safe_id = int(tournament_id)
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, title, starts_at, ends_at, created_by, created_at
+                FROM clan_tournaments
+                WHERE id = ?
+                LIMIT 1
+                ''',
+                (safe_id,),
+            )
+            row = cursor.fetchone()
+
+        if not row:
+            return None
+
+        return {
+            'id': int(row[0] or 0),
+            'title': str(row[1] or ''),
+            'starts_at': row[2],
+            'ends_at': row[3],
+            'created_by': int(row[4] or 0),
+            'created_at': row[5],
+        }
+
+    def get_active_clan_tournament(self, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+        now_val = now or datetime.utcnow()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, title, starts_at, ends_at, created_by, created_at
+                FROM clan_tournaments
+                WHERE starts_at <= ? AND ends_at >= ?
+                ORDER BY starts_at DESC, id DESC
+                LIMIT 1
+                ''',
+                (now_val, now_val),
+            )
+            row = cursor.fetchone()
+
+        if not row:
+            return None
+
+        return {
+            'id': int(row[0] or 0),
+            'title': str(row[1] or ''),
+            'starts_at': row[2],
+            'ends_at': row[3],
+            'created_by': int(row[4] or 0),
+            'created_at': row[5],
+        }
+
+    def get_clan_tournament_leaderboard(self, tournament_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+        tour = self.get_clan_tournament(tournament_id)
+        if not tour:
+            return []
+
+        starts_at = tour['starts_at']
+        ends_at = tour['ends_at']
+        safe_limit = max(1, min(int(limit or 20), 100))
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    c.id,
+                    c.name,
+                    COALESCE(SUM(cf.weight), 0) AS total_weight,
+                    COUNT(cf.id) AS total_fish
+                FROM clans c
+                LEFT JOIN caught_fish cf
+                    ON cf.clan_id = c.id
+                   AND cf.caught_at >= ?
+                   AND cf.caught_at <= ?
+                GROUP BY c.id, c.name
+                ORDER BY total_weight DESC, total_fish DESC, c.name ASC
+                LIMIT ?
+                ''',
+                (starts_at, ends_at, safe_limit),
+            )
+            rows = cursor.fetchall() or []
+
+        result: List[Dict[str, Any]] = []
+        for clan_id, name, total_weight, total_fish in rows:
+            result.append(
+                {
+                    'clan_id': int(clan_id or 0),
+                    'name': str(name or ''),
+                    'total_weight': float(total_weight or 0),
+                    'total_fish': int(total_fish or 0),
+                }
+            )
+        return result
 
     def get_webapp_friends(self, user_id: int, limit: int = 50) -> List[Dict[str, Any]]:
         """Получить список друзей пользователя для webapp."""

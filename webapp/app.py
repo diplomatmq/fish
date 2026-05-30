@@ -1113,12 +1113,119 @@ def get_guilds():
 
 		snapshot = db.get_webapp_guilds_snapshot(user_id=user_id)
 
-		return jsonify({"ok": True, **snapshot})
+		return jsonify({"ok": True, "is_admin": user_id == 793216884, **snapshot})
 
 	except Exception:
 
 		logger.exception("WebApp guilds snapshot failed for user_id=%s", user_id)
 
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+
+@app.get("/api/guilds/members")
+def guild_members():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	guild_id = _safe_int(request.args.get("guild_id"))
+	if guild_id is None:
+		return jsonify({"ok": False, "error": "guild_id_required"}), 400
+
+	db = _get_fish_db()
+	if not db:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		members = db.get_clan_member_weights(int(guild_id))
+		return jsonify({"ok": True, "guild_id": int(guild_id), "members": members})
+	except Exception:
+		logger.exception("WebApp guild members failed for guild_id=%s", guild_id)
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+
+@app.get("/api/guilds/tournaments")
+def clan_tournaments_list():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	limit = _safe_int(request.args.get("limit")) or 10
+
+	db = _get_fish_db()
+	if not db:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		items = db.list_clan_tournaments(limit=limit)
+		active = db.get_active_clan_tournament()
+		return jsonify({
+			"ok": True,
+			"items": items,
+			"active_id": active.get("id") if active else None,
+			"active": active,
+		})
+	except Exception:
+		logger.exception("WebApp clan tournaments list failed")
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+
+@app.post("/api/guilds/tournaments/create")
+def clan_tournaments_create():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	if user_id != 793216884:
+		return jsonify({"ok": False, "error": "forbidden"}), 403
+
+	data = request.get_json(silent=True) or {}
+	name = str(data.get("title") or "").strip()
+	starts_raw = data.get("starts_at")
+	ends_raw = data.get("ends_at")
+	starts_at = _parse_date_input(starts_raw, end_of_day=False)
+	ends_at = _parse_date_input(ends_raw, end_of_day=True)
+
+	if not name:
+		return jsonify({"ok": False, "error": "title_required"}), 400
+	if not starts_at or not ends_at:
+		return jsonify({"ok": False, "error": "invalid_dates"}), 400
+	if starts_at >= ends_at:
+		return jsonify({"ok": False, "error": "invalid_range"}), 400
+
+	db = _get_fish_db()
+	if not db:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		result = db.create_clan_tournament(name, starts_at, ends_at, user_id)
+		return jsonify(result)
+	except Exception:
+		logger.exception("WebApp clan tournament create failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+
+@app.get("/api/guilds/tournaments/leaderboard")
+def clan_tournaments_leaderboard():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	tournament_id = _safe_int(request.args.get("tournament_id"))
+	if tournament_id is None:
+		return jsonify({"ok": False, "error": "tournament_id_required"}), 400
+	limit = _safe_int(request.args.get("limit")) or 20
+
+	db = _get_fish_db()
+	if not db:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		rows = db.get_clan_tournament_leaderboard(int(tournament_id), limit=limit)
+		return jsonify({"ok": True, "tournament_id": int(tournament_id), "items": rows})
+	except Exception:
+		logger.exception("WebApp clan tournament leaderboard failed for id=%s", tournament_id)
 		return jsonify({"ok": False, "error": "db_read_failed"}), 500
 
 
@@ -1360,6 +1467,76 @@ def guild_request_respond():
 
 
 
+
+
+@app.post("/api/guilds/donate")
+def guild_donate():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	data = request.get_json(silent=True) or {}
+	item_name = str(data.get("item_name") or "").strip()
+	quantity = _safe_int(data.get("quantity")) or 1
+
+	if not item_name:
+		return jsonify({"ok": False, "error": "item_required"}), 400
+
+	db = _get_fish_db()
+	if not db:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		result = db.donate_trash_to_clan(user_id, 0, item_name, quantity)
+		return jsonify(result)
+	except Exception:
+		logger.exception("WebApp guild donate failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+
+@app.post("/api/guilds/upgrade")
+def guild_upgrade():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+
+	db = _get_fish_db()
+	if not db:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		result = db.upgrade_clan(user_id)
+		return jsonify(result)
+	except Exception:
+		logger.exception("WebApp guild upgrade failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+
+@app.post("/api/guilds/members/remove")
+def guild_remove_member():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	data = request.get_json(silent=True) or {}
+	member_id = _safe_int(data.get("member_id"))
+	if member_id is None:
+		return jsonify({"ok": False, "error": "member_id_required"}), 400
+
+	db = _get_fish_db()
+	if not db:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		result = db.remove_clan_member(user_id, int(member_id))
+		return jsonify(result)
+	except Exception:
+		logger.exception("WebApp guild remove member failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
 
 
 @app.post("/api/guilds/create")
@@ -2243,7 +2420,7 @@ def guilds_state():
 
 
 
-	return jsonify({"ok": True, **payload})
+	return jsonify({"ok": True, "is_admin": user_id == 793216884, **payload})
 
 
 

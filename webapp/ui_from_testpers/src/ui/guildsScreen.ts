@@ -1,11 +1,35 @@
-import { guilds, createGuild, joinGuild, leaveGuild, currentUserGuildId, currentUserIsOwner, GUILD_AVATARS, GUILD_COLORS, Guild, loadClans, respondClanRequest } from '../modules/guildsData';
+import {
+  guilds,
+  createGuild,
+  joinGuild,
+  leaveGuild,
+  currentUserGuildId,
+  currentUserIsOwner,
+  currentUserIsAdmin,
+  GUILD_AVATARS,
+  GUILD_COLORS,
+  Guild,
+  GuildMember,
+  ClanTournament,
+  ClanTournamentEntry,
+  loadClans,
+  loadClanMembers,
+  loadClanTournaments,
+  loadClanTournamentLeaderboard,
+  createClanTournament,
+  donateToGuild,
+  upgradeGuild,
+  removeGuildMember,
+  respondClanRequest
+} from '../modules/guildsData';
 import { tgService } from '../modules/telegram';
-import { USER_PROFILE } from '../data';
 import { getIcon } from './icons';
+
+const SHOW_GUILD_UPGRADES = true;
 
 export class GuildsScreen {
   private el: HTMLElement;
-  private view: 'list' | 'create' | 'manage' = 'list';
+  private view: 'list' | 'create' | 'manage' | 'rating' = 'list';
   private loading = false;
 
   // Creation State
@@ -14,6 +38,19 @@ export class GuildsScreen {
   private selectedColor = GUILD_COLORS[0];
   private selectedType: 'open' | 'invite' = 'open';
   private selectedMinLevel = 0;
+
+  // Rating State
+  private expandedClanId: string | null = null;
+  private memberLoadingId: string | null = null;
+
+  // Tournament State
+  private tournaments: ClanTournament[] = [];
+  private activeTournament: ClanTournament | null = null;
+  private activeTournamentId: string | null = null;
+  private tournamentLeaderboard: ClanTournamentEntry[] = [];
+  private tournamentTitle = '';
+  private tournamentStarts = '';
+  private tournamentEnds = '';
 
   constructor() {
     this.el = this.buildShell();
@@ -37,18 +74,62 @@ export class GuildsScreen {
     this.render();
   }
 
+  private formatWeight(value: number): string {
+    const safe = Number(value || 0);
+    return safe.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  private formatDate(value: string): string {
+    if (!value) return '';
+    const raw = String(value);
+    if (raw.includes('T')) {
+      return raw.replace('T', ' ').slice(0, 16);
+    }
+    return raw.slice(0, 16);
+  }
+
+  private async loadTournaments(): Promise<void> {
+    const data = await loadClanTournaments();
+    this.tournaments = data.items || [];
+    this.activeTournamentId = data.activeId || null;
+    this.activeTournament = data.active || (this.activeTournamentId ? this.tournaments.find(t => t.id === this.activeTournamentId) || null : null);
+    if (this.activeTournamentId) {
+      this.tournamentLeaderboard = await loadClanTournamentLeaderboard(this.activeTournamentId);
+    } else {
+      this.tournamentLeaderboard = [];
+    }
+  }
+
+  private async openRating(): Promise<void> {
+    this.loading = true;
+    this.render();
+    await loadClans();
+    await this.loadTournaments();
+    this.expandedClanId = null;
+    this.memberLoadingId = null;
+    this.view = 'rating';
+    this.loading = false;
+    this.render();
+  }
+
   private render(): void {
     if (this.loading) {
       this.el.innerHTML = '<div style="display:flex; justify-content:center; align-items:center; height:100%; color:white;">Загрузка...</div>';
       return;
     }
+    if (this.view === 'rating') {
+      this.renderRating();
+      return;
+    }
     if (currentUserGuildId) {
       this.renderManage();
-    } else if (this.view === 'create') {
-      this.renderCreate();
-    } else {
-      this.renderList();
+      return;
     }
+    if (this.view === 'create') {
+      this.renderCreate();
+      return;
+    }
+    this.renderList();
   }
 
   // ── LIST VIEW ──
@@ -57,6 +138,7 @@ export class GuildsScreen {
       <h1 class="page-title">АРТЕЛИ</h1>
       <div class="guilds-header">
         <button class="guild-create-btn" id="guild-create-trigger">СОЗДАТЬ АРТЕЛЬ</button>
+        <button class="guild-rating-btn" id="guild-rating-trigger">РЕЙТИНГ</button>
       </div>
       <div class="guild-list">
         ${guilds.map(g => `
@@ -66,7 +148,8 @@ export class GuildsScreen {
               <div class="guild-name">${g.name}</div>
               <div class="guild-meta">
                 <span>⭐ Ур. ${g.level}</span>
-                <span>👤 ${g.members.length}/${g.capacity}</span>
+                <span>👤 ${g.memberCount}/${g.capacity}</span>
+                <span>⚖️ ${this.formatWeight(g.totalWeight)} кг</span>
                 <span>${g.type === 'open' ? '🔓 Открыто' : '🔒 По приглашению'}</span>
                 ${g.type === 'open' && g.minLevel > 0 ? `<span style="color: var(--gold)">⬆️ Ур. ${g.minLevel}+</span>` : ''}
               </div>
@@ -81,6 +164,24 @@ export class GuildsScreen {
       this.view = 'create';
       this.render();
       tgService.haptic('medium');
+    });
+
+    this.el.querySelector('#guild-rating-trigger')?.addEventListener('click', () => {
+      this.openRating();
+      tgService.haptic('medium');
+    });
+
+    this.el.querySelectorAll('.member-remove-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const memberId = btn.getAttribute('data-id');
+        if (!memberId) return;
+        if (!confirm('Удалить участника из артели?')) return;
+        const success = await removeGuildMember(memberId);
+        tgService.haptic(success ? 'heavy' : 'error');
+        if (success) {
+          await this.init();
+        }
+      });
     });
 
     this.el.querySelectorAll('.guild-card').forEach(card => {
@@ -101,6 +202,173 @@ export class GuildsScreen {
           alert('Не удалось вступить в артель.');
         }
       });
+    });
+  }
+
+  private renderMemberPreview(members: GuildMember[], limit = 8): string {
+    const sorted = [...(members || [])].sort((a, b) => b.totalWeight - a.totalWeight);
+    const items = sorted.slice(0, limit);
+    if (!items.length) {
+      return '<div class="members-empty">Нет данных об участниках.</div>';
+    }
+    return items.map((m, idx) => `
+      <div class="member-row">
+        <div class="member-rank">#${idx + 1}</div>
+        <div class="member-name">${m.name}${m.role === 'leader' ? ' 👑' : ''}</div>
+        <div class="member-meta">Ур. ${m.level}</div>
+        <div class="member-weight">${this.formatWeight(m.totalWeight)} кг</div>
+      </div>
+    `).join('');
+  }
+
+  private renderTournamentSection(): string {
+    const active = this.activeTournament;
+    const leaderboard = this.tournamentLeaderboard || [];
+    const activeRange = active ? `${this.formatDate(active.startsAt)} → ${this.formatDate(active.endsAt)}` : '';
+    const leaderboardHtml = leaderboard.length ? leaderboard.map((row, idx) => `
+      <div class="tournament-row">
+        <div class="tournament-rank">#${idx + 1}</div>
+        <div class="tournament-name">${row.name}</div>
+        <div class="tournament-weight">${this.formatWeight(row.totalWeight)} кг</div>
+      </div>
+    `).join('') : '<div class="members-empty">Пока нет улова в турнире.</div>';
+
+    const createForm = currentUserIsAdmin ? `
+      <div class="glass tournament-form">
+        <p class="form-label" style="margin-bottom: 10px;">Создать турнир артелей</p>
+        <div class="form-group">
+          <label class="form-label">Название</label>
+          <input type="text" id="tournament-title" class="form-input" maxlength="32" placeholder="Название турнира" value="${this.tournamentTitle}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Дата начала</label>
+          <input type="date" id="tournament-start" class="form-input" value="${this.tournamentStarts}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Дата окончания</label>
+          <input type="date" id="tournament-end" class="form-input" value="${this.tournamentEnds}">
+        </div>
+        <button class="guild-create-btn" id="tournament-create">СОЗДАТЬ ТУРНИР</button>
+      </div>
+    ` : '';
+
+    return `
+      <div class="tournament-block glass">
+        <div class="tournament-header">
+          <div>
+            <div class="tournament-title">Турнир артелей</div>
+            <div class="tournament-range">${active ? activeRange : 'Нет активного турнира'}</div>
+          </div>
+        </div>
+        ${active ? `<div class="tournament-list">${leaderboardHtml}</div>` : '<div class="members-empty">Создайте турнир, чтобы начать соревнование.</div>'}
+      </div>
+      ${createForm}
+    `;
+  }
+
+  private renderRating(): void {
+    const ranked = [...guilds].sort((a, b) => b.totalWeight - a.totalWeight);
+    this.el.innerHTML = `
+      <h1 class="page-title">РЕЙТИНГ АРТЕЛЕЙ</h1>
+      <div class="guilds-header">
+        <button class="guild-leave-btn" id="rating-back">НАЗАД</button>
+        <button class="guild-rating-btn" id="rating-refresh">ОБНОВИТЬ</button>
+      </div>
+      <div class="guild-rating-list">
+        ${ranked.map((g, idx) => `
+          <div class="guild-rating-card glass" data-id="${g.id}">
+            <div class="guild-rank">#${idx + 1}</div>
+            <div class="guild-avatar" style="--border-color: ${g.borderColor}">${getIcon(g.avatar)}</div>
+            <div class="guild-info">
+              <div class="guild-name">${g.name}</div>
+              <div class="guild-meta">
+                <span>👤 ${g.memberCount}</span>
+                <span>⚖️ ${this.formatWeight(g.totalWeight)} кг</span>
+              </div>
+            </div>
+          </div>
+          ${this.expandedClanId === g.id ? `
+            <div class="guild-rating-members glass">
+              <div class="form-label" style="margin-bottom: 8px;">Топ рыболовов</div>
+              ${this.memberLoadingId === g.id ? '<div class="members-empty">Загрузка...</div>' : this.renderMemberPreview(g.members)}
+            </div>
+          ` : ''}
+        `).join('')}
+      </div>
+      ${this.renderTournamentSection()}
+    `;
+
+    this.el.querySelector('#rating-back')?.addEventListener('click', () => {
+      this.view = currentUserGuildId ? 'manage' : 'list';
+      this.render();
+      tgService.haptic('medium');
+    });
+
+    this.el.querySelector('#rating-refresh')?.addEventListener('click', () => {
+      this.openRating();
+      tgService.haptic('medium');
+    });
+
+    this.el.querySelectorAll('.guild-rating-card').forEach(card => {
+      card.addEventListener('click', async () => {
+        const id = card.getAttribute('data-id');
+        if (!id) return;
+        if (this.expandedClanId === id) {
+          this.expandedClanId = null;
+          this.render();
+          return;
+        }
+        this.expandedClanId = id;
+        const guild = guilds.find(g => g.id === id);
+        if (guild && (!guild.members || guild.members.length === 0)) {
+          this.memberLoadingId = id;
+          this.render();
+          await loadClanMembers(id);
+          this.memberLoadingId = null;
+        }
+        this.render();
+      });
+    });
+
+    const titleInput = this.el.querySelector('#tournament-title') as HTMLInputElement | null;
+    if (titleInput) {
+      titleInput.addEventListener('input', () => {
+        this.tournamentTitle = titleInput.value;
+      });
+    }
+
+    const startInput = this.el.querySelector('#tournament-start') as HTMLInputElement | null;
+    if (startInput) {
+      startInput.addEventListener('input', () => {
+        this.tournamentStarts = startInput.value;
+      });
+    }
+
+    const endInput = this.el.querySelector('#tournament-end') as HTMLInputElement | null;
+    if (endInput) {
+      endInput.addEventListener('input', () => {
+        this.tournamentEnds = endInput.value;
+      });
+    }
+
+    this.el.querySelector('#tournament-create')?.addEventListener('click', async () => {
+      const title = this.tournamentTitle.trim();
+      if (!title || !this.tournamentStarts || !this.tournamentEnds) {
+        alert('Заполните название и даты турнира.');
+        return;
+      }
+      const created = await createClanTournament(title, this.tournamentStarts, this.tournamentEnds);
+      if (created) {
+        this.tournamentTitle = '';
+        this.tournamentStarts = '';
+        this.tournamentEnds = '';
+        await this.loadTournaments();
+        this.render();
+        tgService.haptic('heavy');
+      } else {
+        alert('Не удалось создать турнир.');
+        tgService.haptic('error');
+      }
     });
   }
 
@@ -223,15 +491,51 @@ export class GuildsScreen {
   private renderManage(): void {
     const guild = guilds.find(g => g.id === currentUserGuildId)!;
     const isOwner = currentUserIsOwner;
+    const members: GuildMember[] = [...(guild.members || [])].sort((a, b) => b.totalWeight - a.totalWeight);
+    const upgradeItems = guild.upgradeProgress || [];
+    const upgradeBlock = SHOW_GUILD_UPGRADES ? `
+      <div class="glass" style="padding: 12px; margin-bottom: 12px;">
+        <p class="form-label" style="margin-bottom: 10px; color: var(--gold); font-size: 10px;">
+          ${upgradeItems.length ? `Улучшение до ур. ${guild.level + 1}` : 'Максимальный уровень'}
+        </p>
+        ${upgradeItems.length ? `
+          <div class="upgrade-section">
+            ${upgradeItems.map((p, idx) => `
+              <div class="upgrade-item">
+                <div class="upgrade-main">
+                  <div class="upgrade-labels">
+                    <span>${p.item}</span>
+                    <span>${p.current}/${p.required}</span>
+                  </div>
+                  <div class="upgrade-bar">
+                    <div class="upgrade-fill" style="width: ${(p.current / p.required) * 100}%"></div>
+                  </div>
+                </div>
+                <button class="donate-btn" data-idx="${idx}">ВКЛАД</button>
+              </div>
+            `).join('')}
+          </div>
+          ${isOwner ? `
+            <button class="guild-create-btn" id="guild-upgrade" ${guild.canUpgrade ? '' : 'disabled'}>
+              ${guild.canUpgrade ? 'УЛУЧШИТЬ' : 'НУЖНЫ РЕСУРСЫ'}
+            </button>
+          ` : ''}
+        ` : '<div class="members-empty">Артель на максимальном уровне.</div>'}
+      </div>
+    ` : '';
 
     this.el.innerHTML = `
       <h1 class="page-title">${guild.name.toUpperCase()}</h1>
+
+      <div class="guilds-header">
+        <button class="guild-rating-btn" id="guild-rating-trigger">РЕЙТИНГ АРТЕЛЕЙ</button>
+      </div>
       
       <div class="glass" style="padding: 12px; display:flex; align-items:center; gap:12px; margin-bottom:12px;">
          <div class="guild-avatar" style="width:64px; height:64px; font-size:32px; --border-color:${guild.borderColor}">${getIcon(guild.avatar)}</div>
          <div class="guild-info">
            <div class="guild-name" style="font-size:17px;">Уровень ${guild.level}</div>
-           <div class="guild-meta" style="font-size:10px;">${guild.members.length}/${guild.capacity} участников</div>
+           <div class="guild-meta" style="font-size:10px;">${guild.memberCount}/${guild.capacity} участников</div>
          </div>
       </div>
 
@@ -241,30 +545,27 @@ export class GuildsScreen {
           <div class="stat-lab">Доступ</div>
         </div>
         <div class="glass stat-box">
-          <div class="stat-val">⭐</div>
-          <div class="stat-lab">Топ 100</div>
+          <div class="stat-val">${this.formatWeight(guild.totalWeight)} кг</div>
+          <div class="stat-lab">Улов</div>
         </div>
       </div>
 
-      <div class="glass" style="padding: 12px; margin-bottom: 12px;">
-        <p class="form-label" style="margin-bottom: 10px; color: var(--gold); font-size: 10px;">Улучшение до ур. ${guild.level + 1}</p>
-        <div class="upgrade-section">
-          ${guild.upgradeProgress.map((p, idx) => `
-            <div class="upgrade-item">
-              <div class="upgrade-main">
-                <div class="upgrade-labels">
-                  <span>${p.item}</span>
-                  <span>${p.current}/${p.required}</span>
-                </div>
-                <div class="upgrade-bar">
-                  <div class="upgrade-fill" style="width: ${(p.current / p.required) * 100}%"></div>
-                </div>
-              </div>
-              <button class="donate-btn" data-idx="${idx}">ВКЛАД</button>
+      <div class="glass members-panel">
+        <p class="form-label" style="margin-bottom: 10px;">Участники</p>
+        <div class="members-list">
+          ${members.length ? members.map((m, idx) => `
+            <div class="member-row">
+              <div class="member-rank">#${idx + 1}</div>
+              <div class="member-name">${m.name}${m.role === 'leader' ? ' 👑' : ''}</div>
+              <div class="member-meta">Ур. ${m.level}</div>
+              <div class="member-weight">${this.formatWeight(m.totalWeight)} кг</div>
+              ${isOwner && m.role !== 'leader' ? `<button class="member-remove-btn" data-id="${m.userId}">✕</button>` : ''}
             </div>
-          `).join('')}
+          `).join('') : '<div class="members-empty">Пока нет участников.</div>'}
         </div>
       </div>
+
+      ${upgradeBlock}
 
       ${isOwner && guild.requests.length > 0 ? `
         <div class="glass" style="padding: 12px; margin-bottom: 12px;">
@@ -300,15 +601,31 @@ export class GuildsScreen {
       }
     });
 
-    this.el.querySelectorAll('.donate-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const idx = parseInt(btn.getAttribute('data-idx')!, 10);
-        const p = guild.upgradeProgress[idx];
-        p.current = Math.min(p.required, p.current + Math.floor(Math.random() * 5) + 1);
-        tgService.haptic('selection');
-        this.render();
-      });
+    this.el.querySelector('#guild-rating-trigger')?.addEventListener('click', () => {
+      this.openRating();
+      tgService.haptic('medium');
     });
+
+    if (SHOW_GUILD_UPGRADES) {
+      this.el.querySelectorAll('.donate-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = parseInt(btn.getAttribute('data-idx')!, 10);
+          const p = guild.upgradeProgress[idx];
+          donateToGuild(p.item, 1).then(success => {
+            tgService.haptic(success ? 'selection' : 'error');
+            if (success) this.render();
+          });
+        });
+      });
+
+      this.el.querySelector('#guild-upgrade')?.addEventListener('click', async () => {
+        const success = await upgradeGuild();
+        tgService.haptic(success ? 'heavy' : 'error');
+        if (success) {
+          await this.init();
+        }
+      });
+    }
 
     this.el.querySelectorAll('.req-btn--yes').forEach(btn => {
       btn.addEventListener('click', async () => {

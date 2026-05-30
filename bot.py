@@ -368,6 +368,9 @@ CLAN_DONATABLE_ITEMS = {
     "веревка": "Веревка",
 }
 
+# Temporarily hide clan upgrades (keep logic for later re-enable)
+ENABLE_CLAN_UPGRADES = True
+
 DYNAMITE_COOLDOWN_HOURS = 8
 DYNAMITE_BATCH_ROLLS = 12
 DYNAMITE_SKIP_COST_STARS = 15
@@ -10141,8 +10144,13 @@ class FishBot:
             info = await _run_sync(db.get_clan_info, int(clan['id']))
             donations = info.get('donations', {}) if info else {}
             donation_line = ", ".join([f"{k}: {v}" for k, v in donations.items() if int(v or 0) > 0]) or "пока пусто"
-            next_req = await _run_sync(db.get_clan_upgrade_requirements, int(info.get('level', 1)) + 1) if info else {}
-            req_line = ", ".join([f"{k} x{v}" for k, v in next_req.items()]) or "максимальный уровень"
+            upgrade_line = ""
+            commands_line = "Команды: /guild members, /guild donate <предмет> [кол-во]"
+            if ENABLE_CLAN_UPGRADES:
+                next_req = await _run_sync(db.get_clan_upgrade_requirements, int(info.get('level', 1)) + 1) if info else {}
+                req_line = ", ".join([f"{k} x{v}" for k, v in next_req.items()]) or "максимальный уровень"
+                upgrade_line = f"Для апгрейда: {req_line}\n"
+                commands_line = "Команды: /guild members, /guild donate <предмет> [кол-во], /guild upgrade"
 
             await update.message.reply_text(
                 "🏗️ Артель\n\n"
@@ -10151,8 +10159,8 @@ class FishBot:
                 f"Участники: {info.get('member_count')}/{info.get('max_members')}\n"
                 f"Ваша роль: {clan.get('role')}\n"
                 f"Вклад мусора: {donation_line}\n"
-                f"Для апгрейда: {req_line}\n\n"
-                "Команды: /guild members, /guild donate <предмет> [кол-во], /guild upgrade"
+                f"{upgrade_line}\n"
+                f"{commands_line}"
             )
             return
 
@@ -10170,6 +10178,14 @@ class FishBot:
                     await update.message.reply_text("❌ Вы уже состоите в артели.")
                 elif reason == 'name_too_short':
                     await update.message.reply_text("❌ Название артели слишком короткое.")
+                elif reason == 'not_enough_coins':
+                    cost = created.get('cost')
+                    await update.message.reply_text(f"❌ Недостаточно монет. Нужно {cost} 🪙.")
+                elif reason == 'tournament_active':
+                    tournament = created.get('tournament') or {}
+                    ends_at = str(tournament.get('ends_at') or '').replace('T', ' ')
+                    suffix = f" до {ends_at}" if ends_at else ""
+                    await update.message.reply_text(f"❌ Во время турнира нельзя создавать артели{suffix}.")
                 else:
                     await update.message.reply_text("❌ Не удалось создать артель. Возможно, имя занято.")
                 return
@@ -10257,6 +10273,9 @@ class FishBot:
             return
 
         if action == 'upgrade':
+            if not ENABLE_CLAN_UPGRADES:
+                await update.message.reply_text("⏸️ Улучшение артелей временно скрыто.")
+                return
             upgrade = await _run_sync(db.upgrade_clan, user_id)
             if not upgrade.get('ok'):
                 reason = upgrade.get('reason')
@@ -10286,8 +10305,8 @@ class FishBot:
             "/guild create <название>\n"
             "/guild join <название>\n"
             "/guild members\n"
-            "/guild donate <доска|удочка> [кол-во]\n"
-            "/guild upgrade"
+            "/guild donate <доска|удочка> [кол-во]"
+            + ("\n/guild upgrade" if ENABLE_CLAN_UPGRADES else "")
         )
     
     async def net_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
