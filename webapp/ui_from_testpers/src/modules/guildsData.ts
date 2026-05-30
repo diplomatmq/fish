@@ -84,6 +84,7 @@ const mapMember = (member: any): GuildMember => ({
 export async function loadClans(): Promise<void> {
   try {
     const data = await fetchApi<any>('/api/guilds');
+    console.log('[DEBUG] /api/guilds response:', JSON.stringify(data, null, 2));
     if (data && data.ok) {
       currentUserIsAdmin = Boolean(data.is_admin);
       const myClanData = data.my_clan;
@@ -408,4 +409,5 @@ export async function loadClanTournamentLeaderboard(tournamentId: string): Promi
 export function setMockUserGuild(id: string | null, isOwner = false) {
   currentUserGuildId = id;
   currentUserIsOwner = isOwner;
+}
 }

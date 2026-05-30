@@ -2634,6 +2634,7 @@ class Database:
             result = [dict(zip(columns, row)) for row in rows]
             for clan in result:
                 clan['max_members'] = self.get_clan_member_limit(int(clan.get('level') or 1))
+            logger.info("[DEBUG] list_clans returned %s clans: %s", len(result), [{"id": c.get("id"), "name": c.get("name"), "members_count": c.get("members_count"), "max_members": c.get("max_members")} for c in result])
             return result
 
     def get_clan_catch_totals(self, clan_ids: List[int]) -> Dict[int, Dict[str, Any]]:
@@ -11240,10 +11241,12 @@ class Database:
                 merged['member_count'] = int(members_count or 0)
             return merged
 
-        return {
+        snapshot = {
             'my_clan': _merge_profile(my_clan),
             'items': [_merge_profile(clan) for clan in clans if clan],
         }
+        logger.info("[DEBUG] get_webapp_guilds_snapshot items: %s", [{"id": i.get("id"), "name": i.get("name"), "members_count": i.get("members_count"), "max_members": i.get("max_members")} for i in snapshot.get("items", [])])
+        return snapshot
 
     def save_webapp_clan_profile(
         self,

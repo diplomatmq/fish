@@ -66,7 +66,7 @@ export class GuildsScreen {
               <div class="guild-name">${g.name}</div>
               <div class="guild-meta">
                 <span>⭐ Ур. ${g.level}</span>
-                <span>👤 ${g.members.length}/${g.capacity}</span>
+                <span>👤 ${g.memberCount}/${g.capacity}</span>
                 <span>${g.type === 'open' ? '🔓 Открыто' : '🔒 По приглашению'}</span>
                 ${g.type === 'open' && g.minLevel > 0 ? `<span style="color: var(--gold)">⬆️ Ур. ${g.minLevel}+</span>` : ''}
               </div>
@@ -231,7 +231,7 @@ export class GuildsScreen {
          <div class="guild-avatar" style="width:64px; height:64px; font-size:32px; --border-color:${guild.borderColor}">${getIcon(guild.avatar)}</div>
          <div class="guild-info">
            <div class="guild-name" style="font-size:17px;">Уровень ${guild.level}</div>
-           <div class="guild-meta" style="font-size:10px;">${guild.members.length}/${guild.capacity} участников</div>
+           <div class="guild-meta" style="font-size:10px;">${guild.memberCount}/${guild.capacity} участников</div>
          </div>
       </div>
 

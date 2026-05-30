@@ -31,6 +31,7 @@ export interface Guild {
   members: GuildMember[];
   requests: GuildRequest[];
   upgradeProgress: GuildUpgradeRequirement[];
+  memberCount: number;
   capacity: number;
   minLevel: number;
 }
@@ -47,12 +48,16 @@ export let guilds: Guild[] = [];
 export let currentUserGuildId: string | null = null;
 export let currentUserIsOwner = false;
 
+const CLAN_CAPACITY_BY_LEVEL: Record<number, number> = { 1: 5, 2: 10, 3: 20 };
+
 export async function loadClans(): Promise<void> {
   try {
     const data = await fetchApi<any>('/api/guilds');
+    console.log('[DEBUG] /api/guilds response:', JSON.stringify(data, null, 2));
     if (data && data.ok) {
       const myClanData = data.my_clan;
       if (myClanData) {
+        const members = Array.isArray(myClanData.members) ? myClanData.members : [];
         const guild: Guild = {
           id: String(myClanData.id),
           name: myClanData.name,
@@ -60,10 +65,11 @@ export async function loadClans(): Promise<void> {
           borderColor: myClanData.color_hex || '#00b4d8',
           type: myClanData.access_type || 'open',
           level: myClanData.level || 1,
-          members: [], // В снимке нет списка участников, его можно догрузить отдельно если нужно
+          members,
           requests: [],
           upgradeProgress: [],
-          capacity: 20,
+          memberCount: members.length || Number(myClanData.members_count ?? myClanData.member_count ?? 0),
+          capacity: Number(myClanData.max_members) || CLAN_CAPACITY_BY_LEVEL[myClanData.level || 1] || 5,
           minLevel: myClanData.min_level || 0
         };
         guilds = [guild];
@@ -80,7 +86,8 @@ export async function loadClans(): Promise<void> {
           members: [],
           requests: [],
           upgradeProgress: [],
-          capacity: 20,
+          memberCount: Number(g.members_count ?? g.member_count ?? 0),
+          capacity: Number(g.max_members) || CLAN_CAPACITY_BY_LEVEL[g.level || 1] || 5,
           minLevel: g.min_level || 0
         }));
         currentUserGuildId = null;
