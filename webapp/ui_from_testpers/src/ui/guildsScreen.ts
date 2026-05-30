@@ -29,7 +29,7 @@ const SHOW_GUILD_UPGRADES = true;
 
 export class GuildsScreen {
   private el: HTMLElement;
-  private view: 'list' | 'create' | 'manage' | 'rating' = 'list';
+  private view: 'list' | 'create' | 'manage' | 'rating' | 'detail' = 'list';
   private loading = false;
 
   // Creation State
@@ -38,6 +38,10 @@ export class GuildsScreen {
   private selectedColor = GUILD_COLORS[0];
   private selectedType: 'open' | 'invite' = 'open';
   private selectedMinLevel = 0;
+
+  // Detail State
+  private selectedGuildId: string | null = null;
+  private detailLoading = false;
 
   // Rating State
   private expandedClanId: string | null = null;

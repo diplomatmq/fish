@@ -2622,8 +2622,13 @@ class Database:
             cursor.execute(
                 '''
                 SELECT c.id, c.name, c.owner_user_id, c.level, c.created_at,
-                       (SELECT COUNT(*) FROM clan_members m WHERE m.clan_id = c.id) AS members_count
+                       COALESCE(cm.member_count, 0) AS members_count
                 FROM clans c
+                LEFT JOIN (
+                    SELECT clan_id, COUNT(*) AS member_count
+                    FROM clan_members
+                    GROUP BY clan_id
+                ) cm ON cm.clan_id = c.id
                 ORDER BY c.level DESC, c.created_at ASC
                 LIMIT ?
                 ''',
@@ -11177,6 +11182,27 @@ class Database:
 
         totals_by_clan = self.get_clan_catch_totals(clan_ids)
 
+        # Fallback: get member counts directly from clan_members table
+        member_counts: Dict[int, int] = {}
+        if clan_ids:
+            placeholders = ','.join('?' for _ in clan_ids)
+            try:
+                with self._connect() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        f'''
+                        SELECT clan_id, COUNT(*) AS cnt
+                        FROM clan_members
+                        WHERE clan_id IN ({placeholders})
+                        GROUP BY clan_id
+                        ''',
+                        clan_ids,
+                    )
+                    for row in cursor.fetchall() or []:
+                        member_counts[int(row[0] or 0)] = int(row[1] or 0)
+            except Exception:
+                logger.exception("Failed to load member counts for guilds snapshot")
+
         members_by_clan: Dict[int, List[Dict[str, Any]]] = {}
         my_clan_id = 0
         if my_clan:
@@ -11234,11 +11260,16 @@ class Database:
                 merged['members_count'] = len(members)
                 merged['member_count'] = len(members)
             else:
-                members_count = merged.get('members_count')
-                if members_count is None:
-                    members_count = merged.get('member_count')
-                merged['members_count'] = int(members_count or 0)
-                merged['member_count'] = int(members_count or 0)
+                direct_count = member_counts.get(cid)
+                if direct_count is not None:
+                    merged['members_count'] = direct_count
+                    merged['member_count'] = direct_count
+                else:
+                    members_count = merged.get('members_count')
+                    if members_count is None:
+                        members_count = merged.get('member_count')
+                    merged['members_count'] = int(members_count or 0)
+                    merged['member_count'] = int(members_count or 0)
             return merged
 
         snapshot = {
