@@ -97,7 +97,7 @@
 .members-panel { padding: 12px; margin-bottom: 12px; }
 .members-list { display: flex; flex-direction: column; gap: 8px; }
 .member-row {
-  display: grid; grid-template-columns: 32px 1fr auto auto; gap: 8px; align-items: center;
+  display: grid; grid-template-columns: 32px 1fr auto auto auto; gap: 8px; align-items: center;
   padding: 6px 8px; border-radius: 10px; background: rgba(255,255,255,0.04);
 }
 .member-rank { font-size: 10px; color: var(--gold); font-weight: 800; }
@@ -105,6 +105,14 @@
 .member-meta { font-size: 10px; color: var(--text-muted); }
 .member-weight { font-size: 11px; font-weight: 800; color: var(--teal-glow); }
 .members-empty { font-size: 11px; color: var(--text-muted); padding: 6px 4px; }
+.member-remove-btn {
+  width: 24px; height: 24px; border-radius: 50%; border: none;
+  background: rgba(255, 60, 60, 0.3); color: #ff4444;
+  font-size: 12px; font-weight: 800; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.2s;
+}
+.member-remove-btn:active { background: rgba(255, 60, 60, 0.6); }
 
 /* ── Rating View ── */
 .guild-rating-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }

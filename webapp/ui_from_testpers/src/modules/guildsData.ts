@@ -71,6 +71,8 @@ export interface ClanTournamentEntry {
   totalFish: number;
 }
 
+const CLAN_CAPACITY_BY_LEVEL: Record<number, number> = { 1: 5, 2: 10, 3: 20 };
+
 const mapMember = (member: any): GuildMember => ({
   userId: String(member.user_id ?? member.userId ?? ''),
   name: String(member.username || member.name || 'user'),
@@ -112,8 +114,8 @@ export async function loadClans(): Promise<void> {
             userAvatar: String(request.user_avatar || '👤')
           })),
           upgradeProgress,
-          memberCount: Number(myClanData.members_count ?? myClanData.member_count ?? members.length || 0),
-          capacity: Number(myClanData.max_members || 20),
+          memberCount: members.length || Number(myClanData.members_count ?? myClanData.member_count ?? 0),
+          capacity: Number(myClanData.max_members) || CLAN_CAPACITY_BY_LEVEL[myClanData.level || 1] || 5,
           minLevel: myClanData.min_level || 0,
           totalWeight: Number(myClanData.total_catch_weight || 0),
           totalFish: Number(myClanData.total_catch_count || 0),
@@ -134,7 +136,7 @@ export async function loadClans(): Promise<void> {
           requests: [],
           upgradeProgress: [],
           memberCount: Number(g.members_count ?? g.member_count ?? 0),
-          capacity: Number(g.max_members || 20),
+          capacity: Number(g.max_members) || CLAN_CAPACITY_BY_LEVEL[g.level || 1] || 5,
           minLevel: g.min_level || 0,
           totalWeight: Number(g.total_catch_weight || 0),
           totalFish: Number(g.total_catch_count || 0),

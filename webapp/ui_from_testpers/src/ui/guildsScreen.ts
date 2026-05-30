@@ -70,6 +70,10 @@ export class GuildsScreen {
     this.loading = true;
     this.render();
     await loadClans();
+    // Load members for user's guild to get accurate count and list
+    if (currentUserGuildId) {
+      await loadClanMembers(currentUserGuildId);
+    }
     this.loading = false;
     this.render();
   }
@@ -169,19 +173,6 @@ export class GuildsScreen {
     this.el.querySelector('#guild-rating-trigger')?.addEventListener('click', () => {
       this.openRating();
       tgService.haptic('medium');
-    });
-
-    this.el.querySelectorAll('.member-remove-btn').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const memberId = btn.getAttribute('data-id');
-        if (!memberId) return;
-        if (!confirm('Удалить участника из артели?')) return;
-        const success = await removeGuildMember(memberId);
-        tgService.haptic(success ? 'heavy' : 'error');
-        if (success) {
-          await this.init();
-        }
-      });
     });
 
     this.el.querySelectorAll('.guild-card').forEach(card => {
@@ -492,6 +483,7 @@ export class GuildsScreen {
     const guild = guilds.find(g => g.id === currentUserGuildId)!;
     const isOwner = currentUserIsOwner;
     const members: GuildMember[] = [...(guild.members || [])].sort((a, b) => b.totalWeight - a.totalWeight);
+    const actualMemberCount = members.length || guild.memberCount;
     const upgradeItems = guild.upgradeProgress || [];
     const upgradeBlock = SHOW_GUILD_UPGRADES ? `
       <div class="glass" style="padding: 12px; margin-bottom: 12px;">
@@ -535,7 +527,7 @@ export class GuildsScreen {
          <div class="guild-avatar" style="width:64px; height:64px; font-size:32px; --border-color:${guild.borderColor}">${getIcon(guild.avatar)}</div>
          <div class="guild-info">
            <div class="guild-name" style="font-size:17px;">Уровень ${guild.level}</div>
-           <div class="guild-meta" style="font-size:10px;">${guild.memberCount}/${guild.capacity} участников</div>
+           <div class="guild-meta" style="font-size:10px;">${actualMemberCount}/${guild.capacity} участников</div>
          </div>
       </div>
 
@@ -645,6 +637,19 @@ export class GuildsScreen {
         if (!requestId) return;
         const success = await respondClanRequest(requestId, 'decline');
         tgService.haptic(success ? 'medium' : 'error');
+        if (success) {
+          await this.init();
+        }
+      });
+    });
+
+    this.el.querySelectorAll('.member-remove-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const memberId = btn.getAttribute('data-id');
+        if (!memberId) return;
+        if (!confirm('Удалить участника из артели?')) return;
+        const success = await removeGuildMember(memberId);
+        tgService.haptic(success ? 'heavy' : 'error');
         if (success) {
           await this.init();
         }

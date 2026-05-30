@@ -2673,27 +2673,50 @@ class Database:
 
     def get_clan_member_weights(self, clan_id: int) -> List[Dict[str, Any]]:
         safe_clan_id = int(clan_id)
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT
-                    cm.user_id,
-                    cm.role,
-                    COALESCE(MAX(p.username), '') AS username,
-                    COALESCE(MAX(p.level), 0) AS level,
-                    COALESCE(SUM(cf.weight), 0) AS total_weight
-                FROM clan_members cm
-                LEFT JOIN players p ON p.user_id = cm.user_id
-                LEFT JOIN caught_fish cf
-                    ON cf.user_id = cm.user_id AND cf.clan_id = cm.clan_id
-                WHERE cm.clan_id = ?
-                GROUP BY cm.user_id, cm.role
-                ORDER BY total_weight DESC, cm.role DESC, cm.user_id ASC
-                ''',
-                (safe_clan_id,),
-            )
-            rows = cursor.fetchall() or []
+        rows = []
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT
+                        cm.user_id,
+                        cm.role,
+                        COALESCE(MAX(p.username), '') AS username,
+                        COALESCE(MAX(p.level), 0) AS level,
+                        COALESCE(SUM(cf.weight), 0) AS total_weight
+                    FROM clan_members cm
+                    LEFT JOIN players p ON p.user_id = cm.user_id
+                    LEFT JOIN caught_fish cf
+                        ON cf.user_id = cm.user_id AND cf.clan_id = cm.clan_id
+                    WHERE cm.clan_id = ?
+                    GROUP BY cm.user_id, cm.role
+                    ORDER BY total_weight DESC, cm.role DESC, cm.user_id ASC
+                    ''',
+                    (safe_clan_id,),
+                )
+                rows = cursor.fetchall() or []
+        except Exception:
+            # Fallback: query without caught_fish join (in case clan_id column missing)
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT
+                        cm.user_id,
+                        cm.role,
+                        COALESCE(MAX(p.username), '') AS username,
+                        COALESCE(MAX(p.level), 0) AS level,
+                        0 AS total_weight
+                    FROM clan_members cm
+                    LEFT JOIN players p ON p.user_id = cm.user_id
+                    WHERE cm.clan_id = ?
+                    GROUP BY cm.user_id, cm.role
+                    ORDER BY cm.role DESC, cm.user_id ASC
+                    ''',
+                    (safe_clan_id,),
+                )
+                rows = cursor.fetchall() or []
 
         result: List[Dict[str, Any]] = []
         for user_id, role, username, level, total_weight in rows:

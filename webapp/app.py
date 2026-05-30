@@ -1138,7 +1138,7 @@ def guild_members():
 
 	try:
 		members = db.get_clan_member_weights(int(guild_id))
-		return jsonify({"ok": True, "guild_id": int(guild_id), "members": members})
+		return jsonify({"ok": True, "guild_id": int(guild_id), "members": members, "members_count": len(members)})
 	except Exception:
 		logger.exception("WebApp guild members failed for guild_id=%s", guild_id)
 		return jsonify({"ok": False, "error": "db_read_failed"}), 500
