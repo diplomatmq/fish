@@ -175,6 +175,10 @@ svg {
 }
 .screen::-webkit-scrollbar { display: none; }
 
+body.guild-modal-open .screen.is-active {
+  overflow: hidden;
+}
+
 .screen--empty {
   align-items: stretch;
 }

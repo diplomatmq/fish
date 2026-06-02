@@ -34,6 +34,7 @@ type GuildTab = 'my' | 'list' | 'rating' | 'tournament' | 'create';
 
 export class GuildsScreen {
   private el: HTMLElement;
+  private modalHost: HTMLElement;
   private tab: GuildTab = 'list';
   private loading = false;
 
@@ -60,6 +61,10 @@ export class GuildsScreen {
 
   constructor() {
     this.el = this.buildShell();
+    this.modalHost = document.createElement('div');
+    this.modalHost.id = 'guild-modals-root';
+    this.modalHost.className = 'guild-modals-root';
+    document.body.appendChild(this.modalHost);
   }
 
   getElement(): HTMLElement { return this.el; }
@@ -153,15 +158,25 @@ export class GuildsScreen {
         ${this.tab === 'rating' ? this.renderRatingContent() : ''}
         ${this.tab === 'tournament' ? this.renderTournamentContent() : ''}
       </div>
-      ${this.renderClanModal()}
-      ${this.showAdminTournamentForm ? this.renderAdminTournamentModal() : ''}
     `;
 
     this.bindTabs();
     this.bindTabContent();
     this.bindAdminFab();
-    this.bindClanModal();
-    if (this.showAdminTournamentForm) this.bindAdminTournamentModal();
+    this.renderModals();
+  }
+
+  private renderModals(): void {
+    if (this.showAdminTournamentForm) {
+      this.modalHost.innerHTML = this.renderAdminTournamentModalHtml();
+      this.bindAdminTournamentModal();
+    } else if (this.clanModalGuildId) {
+      this.modalHost.innerHTML = this.renderClanModalHtml();
+      this.bindClanModal();
+    } else {
+      this.modalHost.innerHTML = '';
+    }
+    document.body.classList.toggle('guild-modal-open', Boolean(this.modalHost.innerHTML));
   }
 
   private bindTabs(): void {
@@ -188,8 +203,10 @@ export class GuildsScreen {
 
   private bindAdminFab(): void {
     this.el.querySelector('#guild-admin-tournament')?.addEventListener('click', () => {
+      this.clanModalGuildId = null;
+      this.clanModalMembers = [];
       this.showAdminTournamentForm = true;
-      this.render();
+      this.renderModals();
       tgService.haptic('medium');
     });
   }
@@ -297,12 +314,12 @@ export class GuildsScreen {
         this.clanModalTournament = false;
         this.clanModalLoading = true;
         this.clanModalMembers = [];
-        this.render();
+        this.renderModals();
         await loadClanMembers(id);
         const g2 = guilds.find(g => g.id === id);
         this.clanModalMembers = g2?.members || [];
         this.clanModalLoading = false;
-        this.render();
+        this.renderModals();
       });
     });
   }
@@ -352,17 +369,16 @@ export class GuildsScreen {
         this.clanModalTournament = true;
         this.clanModalLoading = true;
         this.clanModalMembers = [];
-        this.render();
+        this.renderModals();
         this.clanModalMembers = await loadClanTournamentMembers(id, this.visibleTournament.id);
         this.clanModalLoading = false;
-        this.render();
+        this.renderModals();
       });
     });
   }
 
-  // ── CLAN MODAL ──
-  private renderClanModal(): string {
-    if (!this.clanModalGuildId) return '';
+  // ── CLAN MODAL (on document.body) ──
+  private renderClanModalHtml(): string {
     const weightLabel = this.clanModalTournament ? 'Улов за турнир' : 'Улов в артели';
     const membersHtml = this.clanModalLoading
       ? '<div class="members-empty">Загрузка...</div>'
@@ -379,12 +395,13 @@ export class GuildsScreen {
 
     return `
       <div class="guild-modal-backdrop" id="clan-modal-backdrop">
-        <div class="guild-modal glass">
+        <div class="guild-modal-sheet" role="dialog" aria-modal="true">
+          <div class="guild-modal-handle"></div>
           <div class="guild-modal-header">
             <div class="guild-modal-title">${this.clanModalGuildName}</div>
-            <button type="button" class="guild-modal-close" id="clan-modal-close">✕</button>
+            <button type="button" class="guild-modal-close" id="clan-modal-close" aria-label="Закрыть">✕</button>
           </div>
-          <p class="form-label" style="margin-bottom:8px;">Участники · ${weightLabel}</p>
+          <p class="form-label guild-modal-sub">Участники · ${weightLabel}</p>
           <div class="members-list modal-members">${membersHtml}</div>
         </div>
       </div>
@@ -395,22 +412,23 @@ export class GuildsScreen {
     const close = () => {
       this.clanModalGuildId = null;
       this.clanModalMembers = [];
-      this.render();
+      this.renderModals();
     };
-    this.el.querySelector('#clan-modal-close')?.addEventListener('click', close);
-    this.el.querySelector('#clan-modal-backdrop')?.addEventListener('click', (e) => {
+    this.modalHost.querySelector('#clan-modal-close')?.addEventListener('click', close);
+    this.modalHost.querySelector('#clan-modal-backdrop')?.addEventListener('click', (e) => {
       if (e.target === e.currentTarget) close();
     });
   }
 
   // ── ADMIN TOURNAMENT MODAL ──
-  private renderAdminTournamentModal(): string {
+  private renderAdminTournamentModalHtml(): string {
     return `
       <div class="guild-modal-backdrop" id="admin-tournament-backdrop">
-        <div class="guild-modal glass tournament-form">
+        <div class="guild-modal-sheet tournament-form" role="dialog" aria-modal="true">
+          <div class="guild-modal-handle"></div>
           <div class="guild-modal-header">
             <div class="guild-modal-title">Новый турнир</div>
-            <button type="button" class="guild-modal-close" id="admin-tournament-close">✕</button>
+            <button type="button" class="guild-modal-close" id="admin-tournament-close" aria-label="Закрыть">✕</button>
           </div>
           <div class="form-group">
             <label class="form-label">Название</label>
@@ -433,23 +451,23 @@ export class GuildsScreen {
   private bindAdminTournamentModal(): void {
     const close = () => {
       this.showAdminTournamentForm = false;
-      this.render();
+      this.renderModals();
     };
-    this.el.querySelector('#admin-tournament-close')?.addEventListener('click', close);
-    this.el.querySelector('#admin-tournament-backdrop')?.addEventListener('click', (e) => {
+    this.modalHost.querySelector('#admin-tournament-close')?.addEventListener('click', close);
+    this.modalHost.querySelector('#admin-tournament-backdrop')?.addEventListener('click', (e) => {
       if (e.target === e.currentTarget) close();
     });
 
-    const titleInput = this.el.querySelector('#tournament-title') as HTMLInputElement | null;
+    const titleInput = this.modalHost.querySelector('#tournament-title') as HTMLInputElement | null;
     titleInput?.addEventListener('input', () => { this.tournamentTitle = titleInput.value; });
 
-    const startInput = this.el.querySelector('#tournament-start') as HTMLInputElement | null;
+    const startInput = this.modalHost.querySelector('#tournament-start') as HTMLInputElement | null;
     startInput?.addEventListener('input', () => { this.tournamentStarts = startInput.value; });
 
-    const endInput = this.el.querySelector('#tournament-end') as HTMLInputElement | null;
+    const endInput = this.modalHost.querySelector('#tournament-end') as HTMLInputElement | null;
     endInput?.addEventListener('input', () => { this.tournamentEnds = endInput.value; });
 
-    this.el.querySelector('#tournament-create')?.addEventListener('click', async () => {
+    this.modalHost.querySelector('#tournament-create')?.addEventListener('click', async () => {
       const title = this.tournamentTitle.trim();
       if (!title || !this.tournamentStarts || !this.tournamentEnds) {
         alert('Заполните название и даты.');
