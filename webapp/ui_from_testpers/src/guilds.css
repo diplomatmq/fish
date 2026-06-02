@@ -26,7 +26,10 @@
   background: rgba(0, 180, 216, 0.2); border-color: var(--teal);
   color: var(--teal-glow);
 }
-.guild-tab-content { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; }
+.guild-tab-content {
+  display: flex; flex-direction: column; gap: 12px;
+  flex-shrink: 0;
+}
 
 .guild-section-hint {
   font-size: 10px; color: var(--text-muted); line-height: 1.4; margin: 0 0 4px;
@@ -64,19 +67,22 @@
 }
 .tournament-row:active { transform: scale(0.98); }
 
-.guild-admin-fab {
-  position: fixed; right: 16px; bottom: 88px; z-index: 50;
-  width: 44px; height: 44px; border-radius: 50%; border: none;
-  background: linear-gradient(135deg, var(--gold), var(--gold-dark));
-  box-shadow: 0 4px 16px rgba(244, 168, 46, 0.5);
-  font-size: 20px; cursor: pointer;
+.guild-admin-create-btn {
+  width: 100%; height: 44px; margin-bottom: 10px; flex-shrink: 0;
+  border: 1px solid rgba(244, 168, 46, 0.55); border-radius: var(--radius-md);
+  background: linear-gradient(135deg, rgba(244, 168, 46, 0.35) 0%, rgba(192, 125, 16, 0.45) 100%);
+  color: #fff; font-family: inherit; font-size: 11px; font-weight: 800;
+  letter-spacing: 0.8px; cursor: pointer;
+  box-shadow: 0 4px 14px rgba(244, 168, 46, 0.35);
 }
-.guild-admin-fab:active { transform: scale(0.92); }
+.guild-admin-create-btn:active { transform: scale(0.98); }
 
 .guild-modal-backdrop {
   position: fixed; inset: 0; z-index: 100;
   background: rgba(0, 8, 20, 0.75); backdrop-filter: blur(4px);
   display: flex; align-items: flex-end; justify-content: center; padding: 16px;
+  pointer-events: auto;
+  touch-action: pan-y;
 }
 .guild-modal {
   width: 100%; max-width: 420px; max-height: 70vh; overflow-y: auto;

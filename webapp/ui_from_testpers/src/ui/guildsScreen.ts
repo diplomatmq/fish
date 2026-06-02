@@ -137,20 +137,22 @@ export class GuildsScreen {
       return;
     }
 
-    const adminFab = currentUserIsAdmin ? `
-      <button type="button" class="guild-admin-fab" id="guild-admin-tournament" title="Создать турнир">🏆</button>
+    const adminBar = currentUserIsAdmin ? `
+      <button type="button" class="guild-admin-create-btn" id="guild-admin-tournament">
+        🏆 СОЗДАТЬ ТУРНИР АРТЕЛЕЙ
+      </button>
     ` : '';
 
     this.el.innerHTML = `
       <h1 class="page-title">АРТЕЛИ</h1>
       ${this.renderTabs()}
+      ${adminBar}
       <div class="guild-tab-content">
         ${this.tab === 'my' ? this.renderManageContent() : ''}
         ${this.tab === 'list' ? this.renderListContent() : ''}
         ${this.tab === 'rating' ? this.renderRatingContent() : ''}
         ${this.tab === 'tournament' ? this.renderTournamentContent() : ''}
       </div>
-      ${adminFab}
       ${this.renderClanModal()}
       ${this.showAdminTournamentForm ? this.renderAdminTournamentModal() : ''}
     `;

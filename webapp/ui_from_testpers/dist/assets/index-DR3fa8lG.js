@@ -546,17 +546,19 @@
         `).join("")}
       </div>
     `}render(){if(this.loading){this.el.innerHTML='<div class="guild-loading">Загрузка...</div>';return}if(this.tab==="create"){this.renderCreate();return}const t=F?`
-      <button type="button" class="guild-admin-fab" id="guild-admin-tournament" title="Создать турнир">🏆</button>
+      <button type="button" class="guild-admin-create-btn" id="guild-admin-tournament">
+        🏆 СОЗДАТЬ ТУРНИР АРТЕЛЕЙ
+      </button>
     `:"";this.el.innerHTML=`
       <h1 class="page-title">АРТЕЛИ</h1>
       ${this.renderTabs()}
+      ${t}
       <div class="guild-tab-content">
         ${this.tab==="my"?this.renderManageContent():""}
         ${this.tab==="list"?this.renderListContent():""}
         ${this.tab==="rating"?this.renderRatingContent():""}
         ${this.tab==="tournament"?this.renderTournamentContent():""}
       </div>
-      ${t}
       ${this.renderClanModal()}
       ${this.showAdminTournamentForm?this.renderAdminTournamentModal():""}
     `,this.bindTabs(),this.bindTabContent(),this.bindAdminFab(),this.bindClanModal(),this.showAdminTournamentForm&&this.bindAdminTournamentModal()}bindTabs(){this.el.querySelectorAll(".guild-tab").forEach(t=>{t.addEventListener("click",async()=>{const e=t.getAttribute("data-tab");!e||e===this.tab||(this.tab=e,o.haptic("medium"),(e==="rating"||e==="tournament"||e==="my")&&(this.loading=!0,this.render(),await $(),await this.refreshTournaments(),m&&await z(m),this.loading=!1),this.render())})})}bindAdminFab(){var t;(t=this.el.querySelector("#guild-admin-tournament"))==null||t.addEventListener("click",()=>{this.showAdminTournamentForm=!0,this.render(),o.haptic("medium")})}renderListContent(){const t=g.length?g.map(e=>`
