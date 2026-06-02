@@ -182,10 +182,6 @@ svg {
   display: flex;
 }
 
-/* Экраны со своей внутренней прокруткой (артели) */
-.screen.guilds-screen.is-active {
-  overflow: hidden;
-}
 .screen::-webkit-scrollbar { display: none; }
 
 body.guild-modal-open {
@@ -877,6 +873,45 @@ body.guild-modal-open .screen.is-active {
 }
 .shop-content {
   padding-bottom: 120px; /* Отступ для панели действий */
+}
+
+/* Guilds (Artels) — прокрутка как в лавке */
+.screen.guilds-screen.is-active {
+  overflow: hidden;
+  padding-bottom: calc(var(--safe-bottom) + 72px);
+}
+
+.guilds-header {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 8px 12px 4px;
+  flex-shrink: 0;
+}
+
+.guilds-header .page-title {
+  margin: 0;
+}
+
+.guilds-toolbar {
+  flex-shrink: 0;
+  padding: 0 0 8px;
+}
+
+.guild-container {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+}
+
+.guild-content {
+  padding-bottom: 100px;
 }
 .shop-select-actions { 
   position: fixed; 

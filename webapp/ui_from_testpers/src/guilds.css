@@ -5,32 +5,22 @@
 .guilds-screen {
   gap: 0;
   position: relative;
-  min-height: 0;
-}
-
-.guilds-screen > .page-title,
-.guilds-screen > .guild-tabs,
-.guilds-screen > .guild-admin-create-btn {
-  flex-shrink: 0;
-}
-
-.guild-scroll-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  -webkit-overflow-scrolling: touch;
-  touch-action: pan-y;
-  overscroll-behavior-y: contain;
 }
 
 .guild-loading {
-  display: flex; justify-content: center; align-items: center;
-  height: 100%; color: white; font-size: 14px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 40vh;
+  color: white;
+  font-size: 14px;
 }
 
 .guild-tabs {
-  display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
 }
 .guild-tab {
   flex: 1; min-width: 72px; height: 40px; padding: 0 8px;
@@ -47,13 +37,6 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 12px 0 24px;
-}
-
-.guild-list,
-.guild-rating-list,
-.tournament-list {
-  padding-bottom: 8px;
 }
 
 .guild-section-hint {

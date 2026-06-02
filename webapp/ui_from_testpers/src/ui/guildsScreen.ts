@@ -145,10 +145,6 @@ export class GuildsScreen {
   }
 
   private render(): void {
-    if (this.loading) {
-      this.el.innerHTML = '<div class="guild-loading">Загрузка...</div>';
-      return;
-    }
     if (this.tab === 'create') {
       this.renderCreate();
       return;
@@ -160,16 +156,26 @@ export class GuildsScreen {
       </button>
     ` : '';
 
-    this.el.innerHTML = `
-      <h1 class="page-title">АРТЕЛИ</h1>
-      ${this.renderTabs()}
-      ${adminBar}
-      <div class="guild-scroll-body">
-        <div class="guild-tab-content">
+    const inner = this.loading
+      ? '<div class="guild-loading">Загрузка...</div>'
+      : `<div class="guild-tab-content">
           ${this.tab === 'my' ? this.renderManageContent() : ''}
           ${this.tab === 'list' ? this.renderListContent() : ''}
           ${this.tab === 'rating' ? this.renderRatingContent() : ''}
           ${this.tab === 'tournament' ? this.renderTournamentContent() : ''}
+        </div>`;
+
+    this.el.innerHTML = `
+      <div class="guilds-header">
+        <h1 class="page-title">АРТЕЛИ</h1>
+      </div>
+      <div class="guilds-toolbar">
+        ${this.renderTabs()}
+        ${adminBar}
+      </div>
+      <div class="guild-container">
+        <div class="guild-content">
+          ${inner}
         </div>
       </div>
     `;
@@ -696,8 +702,11 @@ export class GuildsScreen {
   // ── CREATE ──
   private renderCreate(): void {
     this.el.innerHTML = `
-      <h1 class="page-title">НОВАЯ АРТЕЛЬ</h1>
-      <div class="guild-scroll-body">
+      <div class="guilds-header">
+        <h1 class="page-title">НОВАЯ АРТЕЛЬ</h1>
+      </div>
+      <div class="guild-container">
+        <div class="guild-content">
       <div class="glass artel-form" style="padding: 20px;">
         <div class="form-group">
           <label class="form-label">Название (макс. 14)</label>
@@ -733,6 +742,7 @@ export class GuildsScreen {
           <button type="button" class="guild-create-btn" id="create-confirm" style="flex:2">СОЗДАТЬ</button>
         </div>
       </div>
+        </div>
       </div>
     `;
 
