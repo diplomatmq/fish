@@ -11600,6 +11600,91 @@ class Database:
             'created_at': row[5],
         }
 
+    def get_visible_clan_tournament(self, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+        """Турнир виден с даты начала до конца + 1 сутки (для кнопки и просмотра итогов)."""
+        now_val = now or datetime.utcnow()
+        if getattr(now_val, 'tzinfo', None) is not None:
+            now_val = now_val.replace(tzinfo=None)
+
+        candidates = self.list_clan_tournaments(limit=20)
+        for tour in candidates:
+            starts_at = tour.get('starts_at')
+            ends_at = tour.get('ends_at')
+            if not starts_at or not ends_at:
+                continue
+            if isinstance(starts_at, str):
+                try:
+                    starts_at = datetime.fromisoformat(starts_at.replace('Z', '+00:00'))
+                except ValueError:
+                    continue
+            if isinstance(ends_at, str):
+                try:
+                    ends_at = datetime.fromisoformat(ends_at.replace('Z', '+00:00'))
+                except ValueError:
+                    continue
+            if getattr(starts_at, 'tzinfo', None) is not None:
+                starts_at = starts_at.replace(tzinfo=None)
+            if getattr(ends_at, 'tzinfo', None) is not None:
+                ends_at = ends_at.replace(tzinfo=None)
+            if now_val < starts_at:
+                continue
+            grace_until = ends_at + timedelta(days=1)
+            if now_val > grace_until:
+                continue
+            phase = 'active' if now_val <= ends_at else 'grace'
+            return {**tour, 'phase': phase, 'grace_until': grace_until}
+        return None
+
+    def get_clan_tournament_member_weights(self, clan_id: int, tournament_id: int) -> List[Dict[str, Any]]:
+        tour = self.get_clan_tournament(tournament_id)
+        if not tour:
+            return []
+
+        starts_at = tour['starts_at']
+        ends_at = tour['ends_at']
+        safe_clan_id = int(clan_id)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    cm.user_id,
+                    cm.role,
+                    COALESCE(MAX(p.username), '') AS username,
+                    COALESCE(MAX(p.level), 0) AS level,
+                    COALESCE((
+                        SELECT SUM(cf.weight)
+                        FROM caught_fish cf
+                        WHERE cf.clan_id = cm.clan_id
+                          AND cf.user_id = cm.user_id
+                          AND cf.caught_at >= ?
+                          AND cf.caught_at <= ?
+                    ), 0) AS tournament_weight
+                FROM clan_members cm
+                LEFT JOIN players p ON p.user_id = cm.user_id
+                WHERE cm.clan_id = ?
+                GROUP BY cm.user_id, cm.role
+                ORDER BY tournament_weight DESC, cm.role DESC, cm.user_id ASC
+                ''',
+                (starts_at, ends_at, safe_clan_id),
+            )
+            rows = cursor.fetchall() or []
+
+        result: List[Dict[str, Any]] = []
+        for user_id, role, username, level, tournament_weight in rows:
+            result.append(
+                {
+                    'user_id': int(user_id or 0),
+                    'role': str(role or 'member'),
+                    'username': str(username or '') or f"id{int(user_id or 0)}",
+                    'level': int(level or 0),
+                    'tournament_weight': float(tournament_weight or 0),
+                    'total_weight': float(tournament_weight or 0),
+                }
+            )
+        return result
+
     def get_clan_tournament_leaderboard(self, tournament_id: int, limit: int = 20) -> List[Dict[str, Any]]:
         tour = self.get_clan_tournament(tournament_id)
         if not tour:

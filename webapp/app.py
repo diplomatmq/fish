@@ -1159,11 +1159,15 @@ def clan_tournaments_list():
 	try:
 		items = db.list_clan_tournaments(limit=limit)
 		active = db.get_active_clan_tournament()
+		visible = db.get_visible_clan_tournament()
 		return jsonify({
 			"ok": True,
 			"items": items,
 			"active_id": active.get("id") if active else None,
 			"active": active,
+			"visible_id": visible.get("id") if visible else None,
+			"visible": visible,
+			"phase": visible.get("phase") if visible else None,
 		})
 	except Exception:
 		logger.exception("WebApp clan tournaments list failed")
@@ -1226,6 +1230,33 @@ def clan_tournaments_leaderboard():
 		return jsonify({"ok": True, "tournament_id": int(tournament_id), "items": rows})
 	except Exception:
 		logger.exception("WebApp clan tournament leaderboard failed for id=%s", tournament_id)
+		return jsonify({"ok": False, "error": "db_read_failed"}), 500
+
+
+@app.get("/api/guilds/tournaments/members")
+def clan_tournament_members():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	guild_id = _safe_int(request.args.get("guild_id"))
+	tournament_id = _safe_int(request.args.get("tournament_id"))
+	if guild_id is None or tournament_id is None:
+		return jsonify({"ok": False, "error": "guild_id_and_tournament_id_required"}), 400
+
+	db = _get_fish_db()
+	if not db:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		members = db.get_clan_tournament_member_weights(int(guild_id), int(tournament_id))
+		return jsonify({"ok": True, "guild_id": int(guild_id), "tournament_id": int(tournament_id), "members": members})
+	except Exception:
+		logger.exception(
+			"WebApp clan tournament members failed guild_id=%s tournament_id=%s",
+			guild_id,
+			tournament_id,
+		)
 		return jsonify({"ok": False, "error": "db_read_failed"}), 500
 
 
