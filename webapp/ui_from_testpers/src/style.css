@@ -64,8 +64,12 @@ html, body {
 /* ── App root ─────────────────────────────────────────────────────────────── */
 #app {
   position: relative;
-  width: 100%; height: 100%;
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ── Custom Icons Support ── */
@@ -149,15 +153,19 @@ svg {
    ════════════════════════════════════════════════════════════════════════════ */
 .screens-wrap {
   position: relative;
-  width: 100%; height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
   z-index: 10;
 }
 
 .screen {
-  position: absolute; inset: 0;
+  position: absolute;
+  inset: 0;
   display: none;
   flex-direction: column;
   align-items: stretch;
+  min-height: 0;
   padding:
     calc(var(--safe-top) + 14px)
     14px
@@ -173,10 +181,20 @@ svg {
 .screen.is-active {
   display: flex;
 }
+
+/* Экраны со своей внутренней прокруткой (артели) */
+.screen.guilds-screen.is-active {
+  overflow: hidden;
+}
 .screen::-webkit-scrollbar { display: none; }
+
+body.guild-modal-open {
+  overflow: hidden;
+}
 
 body.guild-modal-open .screen.is-active {
   overflow: hidden;
+  pointer-events: none;
 }
 
 .screen--empty {

@@ -5,13 +5,23 @@
 .guilds-screen {
   gap: 0;
   position: relative;
-  overflow: hidden;
+  min-height: 0;
 }
 
 .guilds-screen > .page-title,
 .guilds-screen > .guild-tabs,
 .guilds-screen > .guild-admin-create-btn {
   flex-shrink: 0;
+}
+
+.guild-scroll-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
 }
 
 .guild-loading {
@@ -34,17 +44,16 @@
   color: var(--teal-glow);
 }
 .guild-tab-content {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior-y: contain;
-  touch-action: pan-y;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding-top: 12px;
+  padding: 12px 0 24px;
+}
+
+.guild-list,
+.guild-rating-list,
+.tournament-list {
+  padding-bottom: 8px;
 }
 
 .guild-section-hint {
@@ -177,6 +186,43 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.guild-modal-sheet.tournament-form #tournament-create {
+  width: 100%;
+  min-height: 52px;
+  margin-top: 4px;
+  font-size: 13px;
+  letter-spacing: 1px;
+}
+
+.member-row--excess {
+  border: 1px solid rgba(255, 120, 80, 0.45);
+  background: rgba(255, 80, 60, 0.12);
+}
+
+.guild-over-capacity-banner {
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 120, 80, 0.5);
+  background: rgba(255, 80, 60, 0.15);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #ffb199;
+}
+
+.guild-upgrade-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.guild-upgrade-actions .guild-create-btn {
+  width: 100%;
+  min-height: 48px;
 }
 
 /* ── Header ── */

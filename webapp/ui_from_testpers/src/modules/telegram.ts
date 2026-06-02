@@ -14,6 +14,8 @@ declare global {
 interface TelegramWebApp {
   ready(): void;
   expand(): void;
+  disableVerticalSwipes?(): void;
+  enableVerticalSwipes?(): void;
   close?(): void;
   setHeaderColor(color: string): void;
   setBackgroundColor(color: string): void;
@@ -41,6 +43,7 @@ class TelegramService {
     if (this.tg) {
       this.tg.ready();
       this.tg.expand();
+      this.tg.disableVerticalSwipes?.();
       this.tg.setHeaderColor('#0a1628');
       this.tg.setBackgroundColor('#0a1628');
     }

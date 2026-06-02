@@ -48,6 +48,8 @@ if (captchaMode === 'antibot') {
 }
 
 function initNormalMode() {
+document.body.classList.remove('guild-modal-open');
+
 // ── Entry overlay (shown during boot) ──────────────────────────────────────
 const entryOverlay = buildEntryOverlay();
 
@@ -160,7 +162,11 @@ const tabBar   = new TabBar(tabbarMount, screensWrap);
 // Lazy-init screens on first visit
 tabBar.onChange((_prev, next) => {
   console.log(`Screen transition: ${_prev} -> ${next}`);
-  
+
+  if (_prev === 'guilds') {
+    guildsScreen.closeModals();
+  }
+
   // Hide/show TabBar based on screen
   const tabBarEl = document.getElementById('tab-bar');
   if (tabBarEl) {

@@ -8,6 +8,8 @@ import './book.css';
 import './adventures.css';
 import './guilds.css';
 import './friends.css';
+import './rating.css';
+import './captcha.css';
 
 import { buildLayout, buildEntryOverlay, hideEntryOverlay, bindQuickActions, bindTrophyButton } from './ui/layout';
 import { ProfilePanel }   from './ui/profile';
@@ -18,14 +20,35 @@ import { BookScreen }     from './ui/bookScreen';
 import { ShopScreen }     from './ui/shopScreen';
 import { GuildsScreen } from './ui/guildsScreen';
 import { FriendsScreen } from './ui/friendsScreen';
+import { RatingScreen } from './ui/ratingScreen';
+import { ResultsScreen } from './ui/resultsScreen';
+import { CaptchaScreen } from './ui/captchaScreen';
 import { ParticleSystem } from './animations/particles';
 import { ParallaxController } from './animations/effects';
 
 import { loadFriends } from './modules/friendsData';
 import { loadClans } from './modules/guildsData';
 import { loadEncyclopedia } from './modules/encyclopediaData';
-import { fetchApi } from './modules/api';
-import type { FishData } from './types';
+import { loadTrophies, ACTIVE_TROPHY_ID } from './modules/trophiesData';
+
+// ── Check if captcha mode ──────────────────────────────────────────────────
+const urlParams = new URLSearchParams(window.location.search);
+const captchaMode = urlParams.get('captcha_mode');
+
+if (captchaMode === 'antibot') {
+  // Captcha mode - show only captcha screen
+  const captchaScreen = new CaptchaScreen();
+  const captchaEl = captchaScreen.getElement();
+  document.body.innerHTML = '';
+  document.body.appendChild(captchaEl);
+  captchaScreen.init();
+} else {
+  // Normal mode - show full app
+  initNormalMode();
+}
+
+function initNormalMode() {
+document.body.classList.remove('guild-modal-open');
 
 // ── Entry overlay (shown during boot) ──────────────────────────────────────
 const entryOverlay = buildEntryOverlay();
@@ -50,87 +73,37 @@ profileMount.appendChild(profilePanel.getElement());
 // ── Initial Data Loading ──────────────────────────────────────────────────────
 async function initAppData() {
   try {
-    const [profileData] = await Promise.all([
-      fetchApi<any>('/api/profile'),
+    await Promise.all([
       loadFriends(),
       loadClans(),
       loadEncyclopedia()
     ]);
     console.log('Initial data loaded');
-
-    // Load trophies
-    const trophiesResponse = await fetchApi<any>('/api/trophies');
-    if (trophiesResponse && trophiesResponse.items) {
-      const trophies: FishData[] = trophiesResponse.items
-        .filter((t: any) => t.id !== 'none')
-        .map((t: any) => ({
-          id: t.image_url ? t.image_url.split('/').pop() : 'fishdef.webp',
-          emoji: '🐟',
-          name: t.fish_name,
-          latinName: t.rarity || 'Обычная',
-          rarity: mapRarity(t.rarity),
-          rarityLabel: t.rarity || 'Обычная',
-          rarityStars: mapStars(t.rarity),
-          weight: `${t.weight} кг`,
-          depth: `${t.length} см`
-        }));
-      
-      let activeIdx = trophies.findIndex((t: any, i: number) => {
-          const apiTrophy = trophiesResponse.items.filter((x: any) => x.id !== 'none')[i];
-          return apiTrophy && apiTrophy.is_active;
-      });
-      if (activeIdx === -1) activeIdx = 0;
-
-      carousel.setTrophies(trophies, activeIdx);
-      trophyModal.setTrophies(trophies);
-    }
-
   } catch (e) {
     console.error('Failed to load initial data:', e);
   }
-}
-
-function mapRarity(r: string): any {
-  const m: any = { 'Обычная': 'common', 'Редкая': 'rare', 'Эпическая': 'epic', 'Легендарная': 'legendary' };
-  return m[r] || 'common';
-}
-function mapStars(r: string): string {
-  const m: any = { 'Обычная': '★★', 'Редкая': '★★★', 'Эпическая': '★★★★', 'Легендарная': '★★★★★' };
-  return m[r] || '★★';
 }
 
 initAppData();
 
 // ── Fish carousel ──────────────────────────────────────────────────────────────
 const carouselMount = document.getElementById('carousel-mount')!;
-const carousel = new FishCarousel(carouselMount, 0);
+const carousel = new FishCarousel(carouselMount, 2);
 
 // ── Trophy modal ───────────────────────────────────────────────────────────────
 const screensWrap  = document.getElementById('screens-wrap') as HTMLElement;
 const trophyModal  = new TrophyModal();
 
-trophyModal.onSelect(async (index) => {
-  const fish = trophyModal.fish[index];
-  if (fish) {
-    // We need the original API ID here, but our mapped FishData uses filename as ID.
-    // Let's refetch or store IDs. For now, we'll just update local carousel.
-    carousel.goTo(index);
-    
-    // Attempt to sync with server
-    try {
-        const trophiesResponse = await fetchApi<any>('/api/trophies');
-        const apiTrophies = trophiesResponse.items.filter((x: any) => x.id !== 'none');
-        const selectedId = apiTrophies[index]?.id;
-        if (selectedId) {
-            await fetchApi('/api/trophy/select', {
-                method: 'POST',
-                body: JSON.stringify({ trophy_id: selectedId })
-            });
-        }
-    } catch (e) {
-        console.error('Failed to sync trophy selection:', e);
-    }
-  }
+async function refreshTrophies(): Promise<void> {
+  const items = await loadTrophies();
+  carousel.setFishData(items, ACTIVE_TROPHY_ID);
+  trophyModal.setItems(carousel.getItems());
+}
+
+void refreshTrophies();
+
+trophyModal.onSelect((index) => {
+  carousel.goTo(index);
 });
 
 bindTrophyButton(() => {
@@ -165,17 +138,45 @@ const oldFriendsPlaceholder = document.getElementById('screen-friends');
 if (oldFriendsPlaceholder) oldFriendsPlaceholder.replaceWith(friendsScreenEl);
 else screensWrap.appendChild(friendsScreenEl);
 
+// ── Rating screen ──────────────────────────────────────────────────────────────
+const ratingScreen = new RatingScreen();
+const ratingScreenEl = ratingScreen.getElement();
+screensWrap.appendChild(ratingScreenEl);
+
+// ── Results screen ─────────────────────────────────────────────────────────────
+const resultsScreen = new ResultsScreen();
+const resultsScreenEl = resultsScreen.getElement();
+screensWrap.appendChild(resultsScreenEl);
+
 let bookInitialized = false;
 let shopInitialized = false;
 let guildsInitialized = false;
 let friendsInitialized = false;
+let ratingInitialized = false;
+let resultsInitialized = false;
 
-// ── Tab bar ────────────────────────────────────────────────────────────────────
+// ── Shop screen ────────────────────────────────────────────────────────────────────
 const tabbarMount = document.getElementById('tabbar-mount')!;
 const tabBar   = new TabBar(tabbarMount, screensWrap);
 
 // Lazy-init screens on first visit
 tabBar.onChange((_prev, next) => {
+  console.log(`Screen transition: ${_prev} -> ${next}`);
+
+  if (_prev === 'guilds') {
+    guildsScreen.closeModals();
+  }
+
+  // Hide/show TabBar based on screen
+  const tabBarEl = document.getElementById('tab-bar');
+  if (tabBarEl) {
+    if (next === 'rating' || next === 'results') {
+      tabBarEl.classList.add('hide-tabbar');
+    } else {
+      tabBarEl.classList.remove('hide-tabbar');
+    }
+  }
+  
   if (next === 'book' && !bookInitialized) {
     bookScreen.init();
     bookInitialized = true;
@@ -191,11 +192,59 @@ tabBar.onChange((_prev, next) => {
   if (next === 'friends' && !friendsInitialized) {
     friendsScreen.init();
     friendsInitialized = true;
+  } else if (next === 'friends' && friendsInitialized) {
+    friendsScreen.init();
+  }
+  if (next === 'rating' && !ratingInitialized) {
+    ratingScreen.init();
+    ratingInitialized = true;
+  } else if (next === 'rating' && ratingInitialized) {
+    ratingScreen.init();
+  }
+  if (next === 'results' && !resultsInitialized) {
+    resultsScreen.init();
+    resultsInitialized = true;
+  } else if (next === 'results' && resultsInitialized) {
+    resultsScreen.init();
+  }
+  
+  // ИСПРАВЛЕНИЕ: При возврате на home - сбрасываем анимации и показываем контент
+  if (next === 'home') {
+    const homeScreen = document.getElementById('screen-home');
+    if (homeScreen) {
+      // Находим все элементы с анимацией slide-up
+      const animatedElements = homeScreen.querySelectorAll('.slide-up');
+      
+      animatedElements.forEach((el) => {
+        const element = el as HTMLElement;
+        // Сбрасываем анимацию и принудительно показываем элемент
+        element.style.animation = 'none';
+        element.style.opacity = '1';
+        element.style.transform = 'translateY(0)';
+      });
+    }
   }
 });
 
 // ── Quick action buttons ────────────────────────────────────────────────────
-bindQuickActions();
+bindQuickActions(
+  () => tabBar.switchTo('rating'),
+  () => tabBar.switchTo('results')
+);
+
+// ── Navigate home event listener ───────────────────────────────────────────
+window.addEventListener('navigate-home', () => {
+  console.log('Navigate home event received');
+  
+  // Показываем TabBar
+  const tabBarEl = document.getElementById('tab-bar');
+  if (tabBarEl) {
+    tabBarEl.classList.remove('hide-tabbar');
+  }
+  
+  // Переключаемся на главный экран
+  tabBar.switchTo('home');
+});
 
 // ── Animate progress bar after boot sequence ──────────────────────────────────
 setTimeout(() => profilePanel.animateProgress(0), 2000);
@@ -206,3 +255,4 @@ hideEntryOverlay(entryOverlay, 1600);
 // Unused variable lint guard
 void tabBar;
 void app;
+}

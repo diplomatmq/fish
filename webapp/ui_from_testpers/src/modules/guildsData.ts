@@ -7,6 +7,7 @@ export interface GuildMember {
   level: number;
   role: 'leader' | 'member' | 'officer' | 'owner';
   totalWeight: number;
+  joinedAt?: string;
 }
 
 export interface GuildRequest {
@@ -73,7 +74,7 @@ export interface ClanTournamentEntry {
   totalFish: number;
 }
 
-const CLAN_CAPACITY_BY_LEVEL: Record<number, number> = { 1: 5, 2: 10, 3: 20 };
+const CLAN_CAPACITY_BY_LEVEL: Record<number, number> = { 1: 5, 2: 10, 3: 20, 4: 25, 5: 30 };
 
 export function guildCapacityForLevel(level: number, maxMembers?: number): number {
   const fromApi = Number(maxMembers);
@@ -92,7 +93,23 @@ const mapMember = (member: any): GuildMember => ({
   level: Number(member.level || 0),
   role: (member.role || 'member') as GuildMember['role'],
   totalWeight: Number(member.total_weight || member.totalWeight || member.tournament_weight || 0),
+  joinedAt: member.joined_at ? String(member.joined_at) : undefined,
 });
+
+export function guildExcessMemberIds(members: GuildMember[], capacity: number): Set<string> {
+  const total = members.length;
+  const excess = Math.max(0, total - Math.max(1, capacity));
+  if (excess <= 0) return new Set();
+  const candidates = members
+    .filter(m => m.role !== 'leader')
+    .sort((a, b) => {
+      const ta = a.joinedAt ? new Date(a.joinedAt).getTime() : 0;
+      const tb = b.joinedAt ? new Date(b.joinedAt).getTime() : 0;
+      return tb - ta;
+    })
+    .slice(0, excess);
+  return new Set(candidates.map(m => m.userId));
+}
 
 function mapGuildItem(g: any, extra?: Partial<Guild>): Guild {
   const members = Array.isArray(g.members) ? g.members.map(mapMember) : (extra?.members || []);
@@ -326,6 +343,8 @@ export async function donateToGuild(itemName: string, quantity = 1): Promise<boo
     if (data && !data.ok) {
       if (data.reason === 'not_enough_trash') {
         alert(`Недостаточно предметов. Есть ${data.available || 0} из ${data.required || quantity}.`);
+      } else if (data.reason === 'not_in_clan') {
+        alert('Вы не состоите в артели.');
       } else {
         alert(`Ошибка пожертвования: ${data.reason || data.error || 'неизвестная ошибка'}`);
       }
@@ -344,7 +363,17 @@ export async function upgradeGuild(): Promise<boolean> {
       return true;
     }
     if (data && !data.ok) {
-      alert(`Не удалось улучшить артель: ${data.reason || data.error || 'неизвестная ошибка'}`);
+      if (data.reason === 'not_enough_resources' || data.reason === 'not_enough_donations') {
+        const missing = data.missing || {};
+        const lines = Object.entries(missing).map(([item, qty]) => `${item}: не хватает ${qty}`);
+        alert(lines.length ? `Нужно ещё ресурсов:\n${lines.join('\n')}` : 'Не хватает ресурсов для улучшения.');
+      } else if (data.reason === 'max_level') {
+        alert('Артель уже максимального уровня.');
+      } else if (data.reason === 'leader_only' || data.reason === 'not_leader') {
+        alert('Улучшать артель может только лидер.');
+      } else {
+        alert(`Не удалось улучшить артель: ${data.reason || data.error || 'неизвестная ошибка'}`);
+      }
     }
   } catch (e) {
     console.error('Failed to upgrade guild:', e);

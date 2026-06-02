@@ -143,6 +143,13 @@ export class ScreenTransition {
         to.style.transition  = 'opacity 0.38s cubic-bezier(0.25,0.46,0.45,0.94), transform 0.38s cubic-bezier(0.25,0.46,0.45,0.94)';
         to.style.opacity     = '1';
         to.style.transform   = 'scale(1)';
+        window.setTimeout(() => {
+          if (token !== this.transitionToken) return;
+          from.style.transform = '';
+          to.style.transform = '';
+          from.style.transition = '';
+          to.style.transition = '';
+        }, 400);
       });
     }, 300);
   }

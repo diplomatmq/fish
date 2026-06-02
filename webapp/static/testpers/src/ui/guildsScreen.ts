@@ -16,6 +16,8 @@ import {
   loadClans,
   loadClanMembers,
   guildMemberCount,
+  guildCapacityForLevel,
+  guildExcessMemberIds,
   loadClanTournaments,
   loadClanTournamentLeaderboard,
   loadClanTournamentMembers,
@@ -65,9 +67,18 @@ export class GuildsScreen {
     this.modalHost.id = 'guild-modals-root';
     this.modalHost.className = 'guild-modals-root';
     document.body.appendChild(this.modalHost);
+    document.body.classList.remove('guild-modal-open');
   }
 
   getElement(): HTMLElement { return this.el; }
+
+  /** Закрыть модалки (при уходе с вкладки — иначе блокируется всё приложение). */
+  closeModals(): void {
+    this.clanModalGuildId = null;
+    this.clanModalMembers = [];
+    this.showAdminTournamentForm = false;
+    this.renderModals();
+  }
 
   private buildShell(): HTMLElement {
     const s = document.createElement('section');
@@ -78,6 +89,7 @@ export class GuildsScreen {
   }
 
   async init(): Promise<void> {
+    this.closeModals();
     this.loading = true;
     this.tab = currentUserGuildId ? 'my' : 'list';
     this.render();
@@ -152,11 +164,13 @@ export class GuildsScreen {
       <h1 class="page-title">АРТЕЛИ</h1>
       ${this.renderTabs()}
       ${adminBar}
-      <div class="guild-tab-content">
-        ${this.tab === 'my' ? this.renderManageContent() : ''}
-        ${this.tab === 'list' ? this.renderListContent() : ''}
-        ${this.tab === 'rating' ? this.renderRatingContent() : ''}
-        ${this.tab === 'tournament' ? this.renderTournamentContent() : ''}
+      <div class="guild-scroll-body">
+        <div class="guild-tab-content">
+          ${this.tab === 'my' ? this.renderManageContent() : ''}
+          ${this.tab === 'list' ? this.renderListContent() : ''}
+          ${this.tab === 'rating' ? this.renderRatingContent() : ''}
+          ${this.tab === 'tournament' ? this.renderTournamentContent() : ''}
+        </div>
       </div>
     `;
 
@@ -418,6 +432,7 @@ export class GuildsScreen {
     this.modalHost.querySelector('#clan-modal-backdrop')?.addEventListener('click', (e) => {
       if (e.target === e.currentTarget) close();
     });
+    this.modalHost.querySelector('.guild-modal-sheet')?.addEventListener('click', (e) => e.stopPropagation());
   }
 
   // ── ADMIN TOURNAMENT MODAL ──
@@ -457,6 +472,7 @@ export class GuildsScreen {
     this.modalHost.querySelector('#admin-tournament-backdrop')?.addEventListener('click', (e) => {
       if (e.target === e.currentTarget) close();
     });
+    this.modalHost.querySelector('.guild-modal-sheet')?.addEventListener('click', (e) => e.stopPropagation());
 
     const titleInput = this.modalHost.querySelector('#tournament-title') as HTMLInputElement | null;
     titleInput?.addEventListener('input', () => { this.tournamentTitle = titleInput.value; });
@@ -498,30 +514,50 @@ export class GuildsScreen {
     }
 
     const isOwner = currentUserIsOwner;
-    const members = [...(guild.members || [])].sort((a, b) => b.totalWeight - a.totalWeight);
+    const members = [...(guild.members || [])];
     const actualMemberCount = guildMemberCount(members, guild.memberCount);
+    const excessIds = isOwner ? guildExcessMemberIds(members, guild.capacity) : new Set<string>();
+    const excessCount = excessIds.size;
+    const membersSorted = [...members].sort((a, b) => {
+      const ta = a.joinedAt ? new Date(a.joinedAt).getTime() : 0;
+      const tb = b.joinedAt ? new Date(b.joinedAt).getTime() : 0;
+      return ta - tb;
+    });
     const upgradeItems = guild.upgradeProgress || [];
+    const nextCapacity = guildCapacityForLevel(guild.level + 1);
     const rankIdx = [...guilds].sort((a, b) => b.totalWeight - a.totalWeight).findIndex(g => g.id === guild.id);
     const rankLabel = rankIdx >= 0 ? `#${rankIdx + 1}` : '—';
 
     const upgradeBlock = SHOW_GUILD_UPGRADES ? `
       <div class="glass" style="padding: 12px; margin-bottom: 12px;">
         <p class="form-label" style="margin-bottom: 10px; color: var(--gold); font-size: 10px;">
-          ${upgradeItems.length ? `Улучшение до ур. ${guild.level + 1}` : 'Максимальный уровень'}
+          ${upgradeItems.length
+            ? `Улучшение до ур. ${guild.level + 1} · лимит ${nextCapacity} участников`
+            : 'Максимальный уровень артели'}
         </p>
         ${upgradeItems.length ? `
+          <p class="guild-section-hint" style="margin-bottom:8px;">Сдайте мусор из инвентаря в склад артели, затем улучшите.</p>
           <div class="upgrade-section">
-            ${upgradeItems.map((p, idx) => `
+            ${upgradeItems.map((p, idx) => {
+              const pct = p.required > 0 ? Math.min(100, (p.current / p.required) * 100) : 0;
+              return `
               <div class="upgrade-item">
                 <div class="upgrade-main">
                   <div class="upgrade-labels"><span>${p.item}</span><span>${p.current}/${p.required}</span></div>
-                  <div class="upgrade-bar"><div class="upgrade-fill" style="width: ${(p.current / p.required) * 100}%"></div></div>
+                  <div class="upgrade-bar"><div class="upgrade-fill" style="width: ${pct}%"></div></div>
                 </div>
-                <button type="button" class="donate-btn" data-idx="${idx}">ВКЛАД</button>
+                <button type="button" class="donate-btn" data-idx="${idx}">+1</button>
               </div>
-            `).join('')}
+            `;
+            }).join('')}
           </div>
-          ${isOwner ? `<button type="button" class="guild-create-btn" id="guild-upgrade" ${guild.canUpgrade ? '' : 'disabled'}>${guild.canUpgrade ? 'УЛУЧШИТЬ' : 'НУЖНЫ РЕСУРСЫ'}</button>` : ''}
+          ${isOwner ? `
+            <div class="guild-upgrade-actions">
+              <button type="button" class="guild-create-btn" id="guild-upgrade" ${guild.canUpgrade ? '' : 'disabled'}>
+                ${guild.canUpgrade ? `УЛУЧШИТЬ ДО УР. ${guild.level + 1}` : 'СНАЧАЛА СОБЕРИТЕ РЕСУРСЫ'}
+              </button>
+            </div>
+          ` : '<p class="guild-section-hint">Вклады могут делать все участники. Улучшает лидер.</p>'}
         ` : '<div class="members-empty">Артель на максимальном уровне.</div>'}
       </div>
     ` : '';
@@ -552,22 +588,27 @@ export class GuildsScreen {
         </div>
       </div>
 
+      ${upgradeBlock}
+
       <div class="glass members-panel">
         <p class="form-label" style="margin-bottom: 10px;">Участники</p>
+        ${excessCount > 0 ? `
+          <div class="guild-over-capacity-banner">
+            Превышен лимит на ${excessCount} чел. Исключите последних вступивших (отмечены ниже).
+          </div>
+        ` : ''}
         <div class="members-list">
-          ${members.length ? members.map((m, idx) => `
-            <div class="member-row">
+          ${membersSorted.length ? membersSorted.map((m, idx) => `
+            <div class="member-row ${excessIds.has(m.userId) ? 'member-row--excess' : ''}">
               <div class="member-rank">#${idx + 1}</div>
-              <div class="member-name">${m.name}${m.role === 'leader' ? ' 👑' : ''}</div>
+              <div class="member-name">${m.name}${m.role === 'leader' ? ' 👑' : ''}${excessIds.has(m.userId) ? ' <span style="color:#ff8a6a;font-size:9px">лишний</span>' : ''}</div>
               <div class="member-meta">Ур. ${m.level}</div>
               <div class="member-weight">${this.formatWeight(m.totalWeight)} кг</div>
-              ${isOwner && m.role !== 'leader' ? `<button type="button" class="member-remove-btn" data-id="${m.userId}">✕</button>` : ''}
+              ${isOwner && m.role !== 'leader' ? `<button type="button" class="member-remove-btn" data-id="${m.userId}" title="Исключить">✕</button>` : ''}
             </div>
           `).join('') : '<div class="members-empty">Пока нет участников.</div>'}
         </div>
       </div>
-
-      ${upgradeBlock}
 
       ${isOwner && guild.requests.length > 0 ? `
         <div class="glass" style="padding: 12px; margin-bottom: 12px;">
@@ -613,9 +654,9 @@ export class GuildsScreen {
         btn.addEventListener('click', () => {
           const idx = parseInt(btn.getAttribute('data-idx')!, 10);
           const p = guild.upgradeProgress[idx];
-          donateToGuild(p.item, 1).then(success => {
+          donateToGuild(p.item, 1).then(async success => {
             tgService.haptic(success ? 'selection' : 'error');
-            if (success) this.init();
+            if (success) await this.init();
           });
         });
       });
@@ -656,6 +697,7 @@ export class GuildsScreen {
   private renderCreate(): void {
     this.el.innerHTML = `
       <h1 class="page-title">НОВАЯ АРТЕЛЬ</h1>
+      <div class="guild-scroll-body">
       <div class="glass artel-form" style="padding: 20px;">
         <div class="form-group">
           <label class="form-label">Название (макс. 14)</label>
@@ -690,6 +732,7 @@ export class GuildsScreen {
           <button type="button" class="guild-leave-btn" id="create-cancel" style="flex:1">ОТМЕНА</button>
           <button type="button" class="guild-create-btn" id="create-confirm" style="flex:2">СОЗДАТЬ</button>
         </div>
+      </div>
       </div>
     `;
 

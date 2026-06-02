@@ -438,13 +438,21 @@ CLAN_MEMBER_LIMITS = {
     1: 5,
     2: 10,
     3: 20,
+    4: 25,
+    5: 30,
 }
 
+# Ресурсы для перехода на уровень N (ключ = целевой уровень). Сложность растёт с каждым уровнем.
 CLAN_UPGRADE_REQUIREMENTS = {
     2: {"Деревянная доска": 200, "Поломанная удочка": 100},
-    3: {"Ботинок": 12, "Пластиковая бутылка": 20, "Веревка": 10},
-    4: {"Поломанная удочка": 20, "Рыболовная сетка": 16, "Ржавый крючок": 24},
-    5: {"Старая шина": 16, "Кусок трубы": 12, "Старый якорь": 8, "Деревянная доска": 20},
+    3: {"Ботинок": 180, "Пластиковая бутылка": 250, "Веревка": 120},
+    4: {"Поломанная удочка": 350, "Рыболовная сетка": 280, "Ржавый крючок": 300},
+    5: {
+        "Старая шина": 200,
+        "Кусок трубы": 180,
+        "Старый якорь": 120,
+        "Деревянная доска": 400,
+    },
 }
 
 class Database:
@@ -2690,14 +2698,15 @@ class Database:
                         cm.role,
                         COALESCE(MAX(p.username), '') AS username,
                         COALESCE(MAX(p.level), 0) AS level,
-                        COALESCE(SUM(cf.weight), 0) AS total_weight
+                        COALESCE(SUM(cf.weight), 0) AS total_weight,
+                        MIN(cm.joined_at) AS joined_at
                     FROM clan_members cm
                     LEFT JOIN players p ON p.user_id = cm.user_id
                     LEFT JOIN caught_fish cf
                         ON cf.user_id = cm.user_id AND cf.clan_id = cm.clan_id
                     WHERE cm.clan_id = ?
                     GROUP BY cm.user_id, cm.role
-                    ORDER BY total_weight DESC, cm.role DESC, cm.user_id ASC
+                    ORDER BY cm.joined_at ASC, total_weight DESC, cm.user_id ASC
                     ''',
                     (safe_clan_id,),
                 )
@@ -2713,19 +2722,25 @@ class Database:
                         cm.role,
                         COALESCE(MAX(p.username), '') AS username,
                         COALESCE(MAX(p.level), 0) AS level,
-                        0 AS total_weight
+                        0 AS total_weight,
+                        MIN(cm.joined_at) AS joined_at
                     FROM clan_members cm
                     LEFT JOIN players p ON p.user_id = cm.user_id
                     WHERE cm.clan_id = ?
                     GROUP BY cm.user_id, cm.role
-                    ORDER BY cm.role DESC, cm.user_id ASC
+                    ORDER BY cm.joined_at ASC, cm.role DESC, cm.user_id ASC
                     ''',
                     (safe_clan_id,),
                 )
                 rows = cursor.fetchall() or []
 
         result: List[Dict[str, Any]] = []
-        for user_id, role, username, level, total_weight in rows:
+        for row in rows:
+            if len(row) >= 6:
+                user_id, role, username, level, total_weight, joined_at = row
+            else:
+                user_id, role, username, level, total_weight = row
+                joined_at = None
             result.append(
                 {
                     'user_id': int(user_id or 0),
@@ -2733,6 +2748,7 @@ class Database:
                     'username': str(username or '') or f"id{int(user_id or 0)}",
                     'level': int(level or 0),
                     'total_weight': float(total_weight or 0),
+                    'joined_at': joined_at,
                 }
             )
         return result
