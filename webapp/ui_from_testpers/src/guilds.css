@@ -5,6 +5,15 @@
 .guilds-screen {
   gap: 0;
   position: relative;
+  overflow: hidden;
+}
+
+.guilds-screen .guild-list,
+.guilds-screen .guild-rating-list,
+.guilds-screen .tournament-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .guild-loading {

@@ -37,6 +37,8 @@ type GuildTab = 'my' | 'list' | 'rating' | 'tournament' | 'create';
 export class GuildsScreen {
   private el: HTMLElement;
   private modalHost: HTMLElement;
+  private contentEl: HTMLElement | null = null;
+  private toolbarEl: HTMLElement | null = null;
   private tab: GuildTab = 'list';
   private loading = false;
 
@@ -85,6 +87,19 @@ export class GuildsScreen {
     s.id = 'screen-guilds';
     s.className = 'screen guilds-screen';
     s.setAttribute('role', 'main');
+    s.innerHTML = `
+      <div class="guilds-header">
+        <h1 class="page-title" id="guilds-page-title">АРТЕЛИ</h1>
+      </div>
+      <div class="guilds-toolbar" id="guilds-toolbar"></div>
+      <div class="guild-container">
+        <div id="guild-scroll-content" class="guild-content">
+          <div class="guild-loading">Загрузка...</div>
+        </div>
+      </div>
+    `;
+    this.contentEl = s.querySelector('#guild-scroll-content');
+    this.toolbarEl = s.querySelector('#guilds-toolbar');
     return s;
   }
 
@@ -150,35 +165,29 @@ export class GuildsScreen {
       return;
     }
 
+    const titleEl = this.el.querySelector('#guilds-page-title');
+    if (titleEl) titleEl.textContent = 'АРТЕЛИ';
+
     const adminBar = currentUserIsAdmin ? `
       <button type="button" class="guild-admin-create-btn" id="guild-admin-tournament">
         🏆 СОЗДАТЬ ТУРНИР АРТЕЛЕЙ
       </button>
     ` : '';
 
-    const inner = this.loading
-      ? '<div class="guild-loading">Загрузка...</div>'
-      : `<div class="guild-tab-content">
-          ${this.tab === 'my' ? this.renderManageContent() : ''}
-          ${this.tab === 'list' ? this.renderListContent() : ''}
-          ${this.tab === 'rating' ? this.renderRatingContent() : ''}
-          ${this.tab === 'tournament' ? this.renderTournamentContent() : ''}
-        </div>`;
+    if (this.toolbarEl) {
+      this.toolbarEl.innerHTML = `${this.renderTabs()}${adminBar}`;
+    }
 
-    this.el.innerHTML = `
-      <div class="guilds-header">
-        <h1 class="page-title">АРТЕЛИ</h1>
-      </div>
-      <div class="guilds-toolbar">
-        ${this.renderTabs()}
-        ${adminBar}
-      </div>
-      <div class="guild-container">
-        <div class="guild-content">
-          ${inner}
-        </div>
-      </div>
-    `;
+    if (this.contentEl) {
+      this.contentEl.innerHTML = this.loading
+        ? '<div class="guild-loading">Загрузка...</div>'
+        : `<div class="guild-tab-content">
+            ${this.tab === 'my' ? this.renderManageContent() : ''}
+            ${this.tab === 'list' ? this.renderListContent() : ''}
+            ${this.tab === 'rating' ? this.renderRatingContent() : ''}
+            ${this.tab === 'tournament' ? this.renderTournamentContent() : ''}
+          </div>`;
+    }
 
     this.bindTabs();
     this.bindTabContent();
@@ -333,11 +342,10 @@ export class GuildsScreen {
         this.clanModalGuildName = guild?.name || 'Артель';
         this.clanModalTournament = false;
         this.clanModalLoading = true;
-        this.clanModalMembers = [];
+        this.clanModalMembers = guild?.members?.length ? [...guild.members] : [];
         this.renderModals();
-        await loadClanMembers(id);
-        const g2 = guilds.find(g => g.id === id);
-        this.clanModalMembers = g2?.members || [];
+        const members = await loadClanMembers(id);
+        this.clanModalMembers = members.length ? members : (guilds.find(g => g.id === id)?.members || []);
         this.clanModalLoading = false;
         this.renderModals();
       });
@@ -411,7 +419,7 @@ export class GuildsScreen {
               <div class="member-weight">${this.formatWeight(m.totalWeight)} кг</div>
             </div>
           `).join('')
-        : '<div class="members-empty">Нет участников.</div>');
+        : `<div class="members-empty">${this.clanModalGuildId ? 'Не удалось загрузить участников.' : 'Нет участников.'}</div>`);
 
     return `
       <div class="guild-modal-backdrop" id="clan-modal-backdrop">
@@ -701,12 +709,11 @@ export class GuildsScreen {
 
   // ── CREATE ──
   private renderCreate(): void {
-    this.el.innerHTML = `
-      <div class="guilds-header">
-        <h1 class="page-title">НОВАЯ АРТЕЛЬ</h1>
-      </div>
-      <div class="guild-container">
-        <div class="guild-content">
+    const titleEl = this.el.querySelector('#guilds-page-title');
+    if (titleEl) titleEl.textContent = 'НОВАЯ АРТЕЛЬ';
+    if (this.toolbarEl) this.toolbarEl.innerHTML = '';
+
+    const formHtml = `
       <div class="glass artel-form" style="padding: 20px;">
         <div class="form-group">
           <label class="form-label">Название (макс. 14)</label>
@@ -742,9 +749,11 @@ export class GuildsScreen {
           <button type="button" class="guild-create-btn" id="create-confirm" style="flex:2">СОЗДАТЬ</button>
         </div>
       </div>
-        </div>
-      </div>
     `;
+
+    if (this.contentEl) {
+      this.contentEl.innerHTML = formHtml;
+    }
 
     const nameInput = this.el.querySelector('#guild-name-input') as HTMLInputElement;
     nameInput?.addEventListener('input', () => { this.newGuildName = nameInput.value; });

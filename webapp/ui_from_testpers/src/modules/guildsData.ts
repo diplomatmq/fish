@@ -309,6 +309,7 @@ export async function leaveGuild(): Promise<void> {
 }
 
 export async function loadClanMembers(guildId: string): Promise<GuildMember[]> {
+  const cached = guilds.find(g => g.id === guildId);
   try {
     const data = await fetchApi<any>(`/api/guilds/members?guild_id=${encodeURIComponent(guildId)}`);
     if (data && data.ok) {
@@ -324,10 +325,13 @@ export async function loadClanMembers(guildId: string): Promise<GuildMember[]> {
       }
       return members;
     }
+    if (data && !data.ok) {
+      console.error('loadClanMembers:', data.error || data.reason);
+    }
   } catch (e) {
     console.error('Failed to load clan members:', e);
   }
-  return [];
+  return cached?.members?.length ? cached.members : [];
 }
 
 export async function donateToGuild(itemName: string, quantity = 1): Promise<boolean> {

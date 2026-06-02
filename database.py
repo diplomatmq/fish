@@ -2706,7 +2706,7 @@ class Database:
                         ON cf.user_id = cm.user_id AND cf.clan_id = cm.clan_id
                     WHERE cm.clan_id = ?
                     GROUP BY cm.user_id, cm.role
-                    ORDER BY cm.joined_at ASC, total_weight DESC, cm.user_id ASC
+                    ORDER BY MIN(cm.joined_at) ASC, total_weight DESC, cm.user_id ASC
                     ''',
                     (safe_clan_id,),
                 )
@@ -2728,7 +2728,7 @@ class Database:
                     LEFT JOIN players p ON p.user_id = cm.user_id
                     WHERE cm.clan_id = ?
                     GROUP BY cm.user_id, cm.role
-                    ORDER BY cm.joined_at ASC, cm.role DESC, cm.user_id ASC
+                    ORDER BY MIN(cm.joined_at) ASC, cm.role DESC, cm.user_id ASC
                     ''',
                     (safe_clan_id,),
                 )
@@ -11224,10 +11224,15 @@ class Database:
         if my_clan:
             try:
                 my_clan_id = int(my_clan.get('id') or 0)
-                if my_clan_id > 0:
-                    members_by_clan[my_clan_id] = self.get_clan_member_weights(my_clan_id)
             except Exception:
-                logger.exception("Failed to load clan members for user_id=%s", user_id)
+                my_clan_id = 0
+        for cid in clan_ids:
+            if cid <= 0 or cid in members_by_clan:
+                continue
+            try:
+                members_by_clan[cid] = self.get_clan_member_weights(cid)
+            except Exception:
+                logger.exception("Failed to load clan members for clan_id=%s", cid)
 
         def _merge_profile(clan: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
             if not clan:
