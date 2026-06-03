@@ -900,8 +900,8 @@ body.guild-modal-open .screen.is-active {
 
 .guild-container {
   position: relative;
-  flex: 1 1 auto;
-  min-height: 120px;
+  flex: 1 1 0%;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
