@@ -40,7 +40,13 @@ if [ "$SERVICE_MODE_VALUE" = "webapp" ]; then
 
   export GUNICORN_WORKERS="${GUNICORN_WORKERS:-4}"
 
-  echo "Starting webapp mode on ${APP_HOST}:${APP_PORT} with gunicorn workers=${GUNICORN_WORKERS}"
+  # Webhook mode: gunicorn alone cannot serve bot updates — need internal bot on BOT_INTERNAL_WEBHOOK_PORT.
+  if [ "${BOT_USE_WEBHOOK:-1}" != "0" ] && [ -n "${BOT_TOKEN:-}" ]; then
+    echo "Starting webapp+bot (launcher): public port=${APP_PORT}, internal bot webhook port=${BOT_INTERNAL_WEBHOOK_PORT:-9000}"
+    exec python -u launcher.py
+  fi
+
+  echo "Starting webapp-only mode on ${APP_HOST}:${APP_PORT} with gunicorn workers=${GUNICORN_WORKERS}"
 
   exec gunicorn -w "${GUNICORN_WORKERS}" -b "${APP_HOST}:${APP_PORT}" "webapp.app:app" --timeout "${GUNICORN_TIMEOUT:-120}"
 

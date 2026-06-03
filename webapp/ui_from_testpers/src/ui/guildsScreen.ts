@@ -243,7 +243,8 @@ export class GuildsScreen {
 
   private renderLoadError(): string {
     if (!guildsLoadError) return '';
-    return `<div class="guild-load-error glass">Не удалось загрузить артели. Потяните вниз или откройте вкладку снова.<br><span>${guildsLoadError}</span></div>`;
+    return `<div class="guild-load-error glass">Не удалось загрузить артели.<br><span>${guildsLoadError}</span>
+      <button type="button" class="guild-create-btn" id="guild-retry-load" style="margin-top:10px;width:100%;">ПОВТОРИТЬ</button></div>`;
   }
 
   // ── LIST ──
@@ -280,6 +281,15 @@ export class GuildsScreen {
   }
 
   private bindTabContent(): void {
+    this.el.querySelector('#guild-retry-load')?.addEventListener('click', async () => {
+      this.loading = true;
+      this.render();
+      await loadClans();
+      await this.refreshTournaments();
+      this.loading = false;
+      this.render();
+      tgService.haptic('medium');
+    });
     if (this.tab === 'list') this.bindList();
     if (this.tab === 'my') this.bindManage();
     if (this.tab === 'rating') this.bindRating();
