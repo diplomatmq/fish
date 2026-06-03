@@ -51,6 +51,7 @@ export const GUILD_AVATARS = [
 export const GUILD_COLORS  = ['#00b4d8', '#f4a82e', '#9b5de5', '#ff6b6b', '#a5a5a5', '#4d908e'];
 
 export let guilds: Guild[] = [];
+export let guildsLoadError: string | null = null;
 export let myGuild: Guild | null = null;
 export let currentUserGuildId: string | null = null;
 export let currentUserIsOwner = false;
@@ -156,10 +157,11 @@ export function getMyGuild(): Guild | null {
   return guilds.find(g => g.id === currentUserGuildId) || null;
 }
 
-export async function loadClans(): Promise<void> {
+export async function loadClans(): Promise<boolean> {
   try {
     const data = await fetchApi<any>('/api/guilds');
     if (data && data.ok) {
+      guildsLoadError = null;
       currentUserIsAdmin = Boolean(data.is_admin);
       guilds = (data.items || []).map((g: any) => mapGuildItem(g));
 
@@ -195,9 +197,15 @@ export async function loadClans(): Promise<void> {
         currentUserGuildId = null;
         currentUserIsOwner = false;
       }
+      return true;
     }
+    guildsLoadError = String(data?.error || 'load_failed');
+    console.error('loadClans:', guildsLoadError);
+    return false;
   } catch (e) {
+    guildsLoadError = e instanceof Error ? e.message : 'network_error';
     console.error('Failed to load clans:', e);
+    return false;
   }
 }
 

@@ -2706,7 +2706,7 @@ class Database:
                         ON cf.user_id = cm.user_id AND cf.clan_id = cm.clan_id
                     WHERE cm.clan_id = ?
                     GROUP BY cm.user_id, cm.role
-                    ORDER BY MIN(cm.joined_at) ASC, total_weight DESC, cm.user_id ASC
+                    ORDER BY MIN(cm.joined_at) ASC, COALESCE(SUM(cf.weight), 0) DESC, cm.user_id ASC
                     ''',
                     (safe_clan_id,),
                 )
@@ -2748,7 +2748,11 @@ class Database:
                     'username': str(username or '') or f"id{int(user_id or 0)}",
                     'level': int(level or 0),
                     'total_weight': float(total_weight or 0),
-                    'joined_at': joined_at,
+                    'joined_at': (
+                        joined_at.isoformat()
+                        if hasattr(joined_at, 'isoformat')
+                        else (str(joined_at) if joined_at is not None else None)
+                    ),
                 }
             )
         return result
@@ -11219,6 +11223,8 @@ class Database:
             except Exception:
                 logger.exception("Failed to load member counts for guilds snapshot")
 
+        # Полный список участников — только для своей артели (вкладка «Моя»).
+        # Для рейтинга/списка достаточно members_count; детали — /api/guilds/members.
         members_by_clan: Dict[int, List[Dict[str, Any]]] = {}
         my_clan_id = 0
         if my_clan:
@@ -11226,13 +11232,11 @@ class Database:
                 my_clan_id = int(my_clan.get('id') or 0)
             except Exception:
                 my_clan_id = 0
-        for cid in clan_ids:
-            if cid <= 0 or cid in members_by_clan:
-                continue
+        if my_clan_id > 0:
             try:
-                members_by_clan[cid] = self.get_clan_member_weights(cid)
+                members_by_clan[my_clan_id] = self.get_clan_member_weights(my_clan_id)
             except Exception:
-                logger.exception("Failed to load clan members for clan_id=%s", cid)
+                logger.exception("Failed to load clan members for clan_id=%s", my_clan_id)
 
         def _merge_profile(clan: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
             if not clan:
@@ -11293,9 +11297,27 @@ class Database:
                     merged['member_count'] = int(members_count or 0)
             return merged
 
+        items: List[Dict[str, Any]] = []
+        for clan in clans:
+            if not clan:
+                continue
+            try:
+                merged = _merge_profile(clan)
+                if merged:
+                    items.append(merged)
+            except Exception:
+                logger.exception("Failed to merge clan snapshot id=%s", clan.get('id'))
+
+        my_clan_payload: Optional[Dict[str, Any]] = None
+        if my_clan:
+            try:
+                my_clan_payload = _merge_profile(my_clan)
+            except Exception:
+                logger.exception("Failed to merge my_clan snapshot id=%s", my_clan.get('id'))
+
         snapshot = {
-            'my_clan': _merge_profile(my_clan),
-            'items': [_merge_profile(clan) for clan in clans if clan],
+            'my_clan': my_clan_payload,
+            'items': items,
         }
         logger.info("[DEBUG] get_webapp_guilds_snapshot items: %s", [{"id": i.get("id"), "name": i.get("name"), "members_count": i.get("members_count"), "max_members": i.get("max_members")} for i in snapshot.get("items", [])])
         return snapshot

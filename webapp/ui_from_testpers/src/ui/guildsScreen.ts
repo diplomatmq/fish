@@ -15,6 +15,7 @@ import {
   ClanTournamentEntry,
   loadClans,
   loadClanMembers,
+  guildsLoadError,
   guildMemberCount,
   guildCapacityForLevel,
   guildExcessMemberIds,
@@ -215,7 +216,7 @@ export class GuildsScreen {
         if (!tab || tab === this.tab) return;
         this.tab = tab;
         tgService.haptic('medium');
-        if (tab === 'rating' || tab === 'tournament' || tab === 'my') {
+        if (tab === 'list' || tab === 'rating' || tab === 'tournament' || tab === 'my' || guildsLoadError) {
           this.loading = true;
           this.render();
           await loadClans();
@@ -240,8 +241,16 @@ export class GuildsScreen {
     });
   }
 
+  private renderLoadError(): string {
+    if (!guildsLoadError) return '';
+    return `<div class="guild-load-error glass">Не удалось загрузить артели. Потяните вниз или откройте вкладку снова.<br><span>${guildsLoadError}</span></div>`;
+  }
+
   // ── LIST ──
   private renderListContent(): string {
+    if (guildsLoadError) {
+      return `${this.renderLoadError()}<div class="members-empty">Список временно недоступен.</div>`;
+    }
     const list = guilds.length ? guilds.map(g => `
       <div class="guild-card glass" data-id="${g.id}">
         <div class="guild-avatar" style="--border-color: ${g.borderColor}">${getIcon(g.avatar)}</div>
@@ -307,6 +316,9 @@ export class GuildsScreen {
 
   // ── RATING ──
   private renderRatingContent(): string {
+    if (guildsLoadError) {
+      return `${this.renderLoadError()}<div class="members-empty">Рейтинг временно недоступен.</div>`;
+    }
     const ranked = [...guilds].sort((a, b) => b.totalWeight - a.totalWeight);
     return `
       <p class="guild-section-hint">Рейтинг по суммарному весу улова всех участников артели</p>
