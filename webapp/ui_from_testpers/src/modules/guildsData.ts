@@ -331,7 +331,7 @@ export async function loadClanMembers(guildId: string): Promise<GuildMember[]> {
   } catch (e) {
     console.error('Failed to load clan members:', e);
   }
-  return cached?.members?.length ? cached.members : [];
+  return cached?.members?.length ? [...cached.members] : [];
 }
 
 export async function donateToGuild(itemName: string, quantity = 1): Promise<boolean> {

@@ -345,7 +345,9 @@ export class GuildsScreen {
         this.clanModalMembers = guild?.members?.length ? [...guild.members] : [];
         this.renderModals();
         const members = await loadClanMembers(id);
-        this.clanModalMembers = members.length ? members : (guilds.find(g => g.id === id)?.members || []);
+        this.clanModalMembers = members.length
+          ? members
+          : (guilds.find(g => g.id === id)?.members || []);
         this.clanModalLoading = false;
         this.renderModals();
       });
@@ -419,7 +421,7 @@ export class GuildsScreen {
               <div class="member-weight">${this.formatWeight(m.totalWeight)} кг</div>
             </div>
           `).join('')
-        : `<div class="members-empty">${this.clanModalGuildId ? 'Не удалось загрузить участников.' : 'Нет участников.'}</div>`);
+        : '<div class="members-empty">Нет участников.</div>');
 
     return `
       <div class="guild-modal-backdrop" id="clan-modal-backdrop">

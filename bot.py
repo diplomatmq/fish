@@ -59,6 +59,17 @@ _SEND_SEMAPHORE: Optional[asyncio.Semaphore] = None
 SLOW_OPERATION_SECONDS = float(os.getenv("SLOW_OPERATION_SECONDS", "2.0"))
 
 
+_FISH_DISPATCH_SEMAPHORE = None
+
+
+def get_fish_dispatch_semaphore() -> asyncio.Semaphore:
+    """Ограничивает число одновременных обработок «фиш»/рыбалки (защита event loop и БД)."""
+    global _FISH_DISPATCH_SEMAPHORE
+    if _FISH_DISPATCH_SEMAPHORE is None:
+        _FISH_DISPATCH_SEMAPHORE = asyncio.Semaphore(int(os.getenv("TG_FISH_DISPATCH_LIMIT", "48")))
+    return _FISH_DISPATCH_SEMAPHORE
+
+
 def get_send_semaphore() -> asyncio.Semaphore:
     global _SEND_SEMAPHORE
     if _SEND_SEMAPHORE is None:
@@ -1327,7 +1338,9 @@ class FishBot:
         context.user_data.pop('waiting_withdraw_stars', None)
 
         allowed_chats = await _run_sync(db.get_ref_access_chats, user_id)
-        available_stars = sum(await _run_sync(db.get_available_stars_for_withdraw, user_id, chat_id) for chat_id in allowed_chats)
+        available_stars = 0
+        for chat_id in allowed_chats:
+            available_stars += await _run_sync(db.get_available_stars_for_withdraw, user_id, chat_id)
         if amount < 1000:
             await update.message.reply_text("Ошибка: минимальный вывод 1000 звёзд.")
             return
@@ -4481,6 +4494,7 @@ class FishBot:
         except Exception:
             logger.exception("Failed to sync username for user_id=%s chat_id=%s", user_id, chat_id)
     
+    @require_action_lock
     async def fish_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(
             "/fish received: user=%s chat=%s",
@@ -11540,6 +11554,8 @@ class FishBot:
                 'waiting_sell_selection',
                 'waiting_sell_quantity',
                 'waiting_bait_quantity',
+                'waiting_withdraw_stars',
+                'waiting_new_ref',
             )
         )
         # Если нет активного текстового потока и сообщение не соответствует паттерну - игнорируем
@@ -11549,21 +11565,22 @@ class FishBot:
 
         async def _dispatch_triggered_action() -> None:
             try:
-                if re.match(r"^\s*меню\b", message_text):
-                    await self.show_fishing_menu(update, context)
-                    return
-                if re.match(r"^\s*(фиш|fish)\b", message_text):
-                    await self.fish_command(update, context)
-                    return
-                if re.match(r"^\s*(погода|weather)\b", message_text):
-                    await self.weather_command(update, context)
-                    return
-                if re.match(r"^\s*сеть\b", message_text):
-                    await self.net_command(update, context)
-                    return
-                if re.match(r"^\s*(динамит|диномит|dynamite)\b", message_text):
-                    await self.dynamite_command(update, context)
-                    return
+                async with get_fish_dispatch_semaphore():
+                    if re.match(r"^\s*меню\b", message_text):
+                        await self.show_fishing_menu(update, context)
+                        return
+                    if re.match(r"^\s*(фиш|fish)\b", message_text):
+                        await self.fish_command(update, context)
+                        return
+                    if re.match(r"^\s*(погода|weather)\b", message_text):
+                        await self.weather_command(update, context)
+                        return
+                    if re.match(r"^\s*сеть\b", message_text):
+                        await self.net_command(update, context)
+                        return
+                    if re.match(r"^\s*(динамит|диномит|dynamite)\b", message_text):
+                        await self.dynamite_command(update, context)
+                        return
             except Exception:
                 logger.exception("handle_fish_message trigger failed for user=%s chat=%s", getattr(update.effective_user, "id", None), getattr(update.effective_chat, "id", None))
 
