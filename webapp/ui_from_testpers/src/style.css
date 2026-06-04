@@ -875,11 +875,12 @@ body.guild-modal-open .screen.is-active {
   padding-bottom: 120px; /* Отступ для панели действий */
 }
 
-/* Guilds (Artels) — скролл идёт внутри .guild-container */
+/* Guilds (Artels) — скролл как в лавке: сам .screen скроллится */
 .screen.guilds-screen.is-active {
-  overflow: hidden;
+  overflow-y: auto;
   overflow-x: hidden;
-  padding-bottom: 0;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 
 .guilds-header {
@@ -888,6 +889,11 @@ body.guild-modal-open .screen.is-active {
   align-items: center;
   padding: 8px 12px 4px;
   flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: transparent;
+  backdrop-filter: none;
 }
 
 .guilds-header .page-title {
@@ -897,29 +903,23 @@ body.guild-modal-open .screen.is-active {
 .guilds-toolbar {
   flex-shrink: 0;
   padding: 0 0 8px;
+  position: sticky;
+  top: 36px;
+  z-index: 9;
+  background: rgba(7, 18, 32, 0.9);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
+/* guild-container — простой flex-wrapper, скролл идёт на .screen */
 .guild-container {
-  position: relative;
-  flex: 1 1 0%;
-  min-height: 0;
-  overflow-y: scroll;
-  overflow-x: hidden;
-  -webkit-overflow-scrolling: touch;
-  touch-action: pan-y pinch-zoom;
-  overscroll-behavior-y: contain;
-  scrollbar-width: none;
-  will-change: scroll-position;
-  /* Принудительный слой — важно для iOS/Android в Telegram WebApp */
-  -webkit-transform: translateZ(0);
-  transform: translateZ(0);
-}
-.guild-container::-webkit-scrollbar {
-  display: none;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 
 .guild-content {
-  padding-bottom: calc(var(--safe-bottom) + 100px);
+  padding-bottom: 20px;
 }
 .shop-select-actions { 
   position: fixed; 
