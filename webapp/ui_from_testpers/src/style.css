@@ -875,10 +875,11 @@ body.guild-modal-open .screen.is-active {
   padding-bottom: 120px; /* Отступ для панели действий */
 }
 
-/* Guilds (Artels) — прокрутка как в лавке */
+/* Guilds (Artels) — скролл идёт внутри .guild-container */
 .screen.guilds-screen.is-active {
   overflow: hidden;
-  padding-bottom: calc(var(--safe-bottom) + 72px);
+  overflow-x: hidden;
+  padding-bottom: 0;
 }
 
 .guilds-header {
@@ -902,19 +903,23 @@ body.guild-modal-open .screen.is-active {
   position: relative;
   flex: 1 1 0%;
   min-height: 0;
-  overflow-y: auto;
+  overflow-y: scroll;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
-  touch-action: pan-y;
+  touch-action: pan-y pinch-zoom;
   overscroll-behavior-y: contain;
   scrollbar-width: none;
+  will-change: scroll-position;
+  /* Принудительный слой — важно для iOS/Android в Telegram WebApp */
+  -webkit-transform: translateZ(0);
+  transform: translateZ(0);
 }
 .guild-container::-webkit-scrollbar {
   display: none;
 }
 
 .guild-content {
-  padding-bottom: 100px;
+  padding-bottom: calc(var(--safe-bottom) + 100px);
 }
 .shop-select-actions { 
   position: fixed; 
