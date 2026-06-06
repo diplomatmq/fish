@@ -875,7 +875,9 @@ body.guild-modal-open .screen.is-active {
   padding-bottom: 120px; /* Отступ для панели действий */
 }
 
-/* Guilds (Artels) — точно как лавка: guild-container скроллится сам */
+/* ════════════════════════════════════════════════════════════════════════════
+   GUILDS (ARTELS) — по образцу лавки
+   ════════════════════════════════════════════════════════════════════════════ */
 .screen.guilds-screen.is-active {
   overflow: hidden;
   padding-bottom: calc(var(--safe-bottom) + 72px);
@@ -898,10 +900,9 @@ body.guild-modal-open .screen.is-active {
   padding: 0 0 8px;
 }
 
-/* guild-container = аналог shop-container */
-.guild-container {
-  flex: 1;
+.guilds-container {
   position: relative;
+  flex: 1;
   min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
@@ -909,13 +910,15 @@ body.guild-modal-open .screen.is-active {
   touch-action: pan-y;
   scrollbar-width: none;
 }
-.guild-container::-webkit-scrollbar {
+
+.guilds-container::-webkit-scrollbar {
   display: none;
 }
 
-.guild-content {
+.guilds-content {
   padding-bottom: 120px;
 }
+
 .shop-select-actions { 
   position: fixed; 
   bottom: 0; 

@@ -93,13 +93,13 @@ export class GuildsScreen {
         <h1 class="page-title" id="guilds-page-title">АРТЕЛИ</h1>
       </div>
       <div class="guilds-toolbar" id="guilds-toolbar"></div>
-      <div class="guild-container">
-        <div id="guild-scroll-content" class="guild-content">
+      <div class="guilds-container">
+        <div id="guilds-content" class="guilds-content">
           <div class="guild-loading">Загрузка...</div>
         </div>
       </div>
     `;
-    this.contentEl = s.querySelector('#guild-scroll-content');
+    this.contentEl = s.querySelector('#guilds-content');
     this.toolbarEl = s.querySelector('#guilds-toolbar');
     return s;
   }

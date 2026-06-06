@@ -8,19 +8,6 @@
   min-height: 0;
 }
 
-.guilds-header {
-  flex-shrink: 0;
-}
-
-.guilds-toolbar {
-  flex-shrink: 0;
-}
-
-.guild-container {
-  flex: 1;
-  min-height: 0;
-}
-
 .guilds-screen .guild-list,
 .guilds-screen .guild-rating-list,
 .guilds-screen .tournament-list {

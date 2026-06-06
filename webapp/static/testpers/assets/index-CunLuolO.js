@@ -546,12 +546,12 @@ ${e.join(`
         <h1 class="page-title" id="guilds-page-title">АРТЕЛИ</h1>
       </div>
       <div class="guilds-toolbar" id="guilds-toolbar"></div>
-      <div class="guild-container">
-        <div id="guild-scroll-content" class="guild-content">
+      <div class="guilds-container">
+        <div id="guilds-content" class="guilds-content">
           <div class="guild-loading">Загрузка...</div>
         </div>
       </div>
-    `,this.contentEl=t.querySelector("#guild-scroll-content"),this.toolbarEl=t.querySelector("#guilds-toolbar"),t}async init(){this.closeModals(),this.loading=!0,this.tab=v?"my":"list",this.render(),await x(),v&&await Y(v),await this.refreshTournaments(),this.loading=!1,this.render()}async refreshTournaments(){const t=await de();this.visibleTournament=t.visible||null,this.tournamentPhase=t.phase,this.visibleTournament?this.tournamentLeaderboard=await pe(this.visibleTournament.id):(this.tournamentLeaderboard=[],this.tab==="tournament"&&(this.tab="rating"))}formatWeight(t){return Number(t||0).toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2})}formatDate(t){if(!t)return"";const e=String(t);return e.includes("T")?e.replace("T"," ").slice(0,16):e.slice(0,16)}showTournamentTab(){return!!this.visibleTournament}renderTabs(){const t=[];return v&&t.push({id:"my",label:"МОЯ"}),t.push({id:"list",label:"АРТЕЛИ"}),t.push({id:"rating",label:"РЕЙТИНГ"}),this.showTournamentTab()&&t.push({id:"tournament",label:"ТУРНИР"}),`
+    `,this.contentEl=t.querySelector("#guilds-content"),this.toolbarEl=t.querySelector("#guilds-toolbar"),t}async init(){this.closeModals(),this.loading=!0,this.tab=v?"my":"list",this.render(),await x(),v&&await Y(v),await this.refreshTournaments(),this.loading=!1,this.render()}async refreshTournaments(){const t=await de();this.visibleTournament=t.visible||null,this.tournamentPhase=t.phase,this.visibleTournament?this.tournamentLeaderboard=await pe(this.visibleTournament.id):(this.tournamentLeaderboard=[],this.tab==="tournament"&&(this.tab="rating"))}formatWeight(t){return Number(t||0).toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2})}formatDate(t){if(!t)return"";const e=String(t);return e.includes("T")?e.replace("T"," ").slice(0,16):e.slice(0,16)}showTournamentTab(){return!!this.visibleTournament}renderTabs(){const t=[];return v&&t.push({id:"my",label:"МОЯ"}),t.push({id:"list",label:"АРТЕЛИ"}),t.push({id:"rating",label:"РЕЙТИНГ"}),this.showTournamentTab()&&t.push({id:"tournament",label:"ТУРНИР"}),`
       <div class="guild-tabs">
         ${t.map(e=>`
           <button type="button" class="guild-tab ${this.tab===e.id?"is-active":""}" data-tab="${e.id}">${e.label}</button>
