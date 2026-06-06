@@ -187,10 +187,6 @@ export class GuildsScreen {
             ${this.tab === 'list' ? this.renderListContent() : ''}
             ${this.tab === 'rating' ? this.renderRatingContent() : ''}
             ${this.tab === 'tournament' ? this.renderTournamentContent() : ''}
-          </div>
-          <!-- DEBUG: Тестовый длинный контент -->
-          <div style="background: rgba(255,0,0,0.1); margin: 10px; padding: 20px;">
-            ${Array.from({length: 50}, (_, i) => `<div style="padding: 10px; margin: 5px; background: rgba(0,180,216,0.2);">Тестовая строка ${i + 1}</div>`).join('')}
           </div>`;
     }
 
