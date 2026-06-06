@@ -876,6 +876,11 @@ body.guild-modal-open .screen.is-active {
 }
 
 /* Guilds (Artels) — точно как лавка: guild-container скроллится сам */
+.screen.guilds-screen.is-active {
+  overflow: hidden;
+  padding-bottom: calc(var(--safe-bottom) + 72px);
+}
+
 .guilds-header {
   display: flex;
   justify-content: center;
@@ -895,8 +900,9 @@ body.guild-modal-open .screen.is-active {
 
 /* guild-container = аналог shop-container */
 .guild-container {
+  flex: 1;
   position: relative;
-  height: 100%;
+  min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
