@@ -143,7 +143,36 @@ export class GuildsScreen {
   private formatDate(value: string): string {
     if (!value) return '';
     const raw = String(value);
-    return raw.includes('T') ? raw.replace('T', ' ').slice(0, 16) : raw.slice(0, 16);
+    // Показываем дату и время, если есть время в строке
+    if (raw.includes('T')) {
+      return raw.replace('T', ' ').slice(0, 16) + ' UTC';
+    }
+    return raw.slice(0, 16);
+  }
+
+  private formatDateWithLocal(value: string): string {
+    if (!value) return '';
+    const raw = String(value);
+    
+    try {
+      // Парсим UTC время
+      const utcDate = new Date(raw + (raw.includes('Z') ? '' : 'Z'));
+      
+      // Форматируем UTC
+      const utcStr = raw.replace('T', ' ').slice(0, 16) + ' UTC';
+      
+      // Форматируем локальное время
+      const year = utcDate.getFullYear();
+      const month = String(utcDate.getMonth() + 1).padStart(2, '0');
+      const day = String(utcDate.getDate()).padStart(2, '0');
+      const hours = String(utcDate.getHours()).padStart(2, '0');
+      const minutes = String(utcDate.getMinutes()).padStart(2, '0');
+      const localStr = `${year}-${month}-${day} ${hours}:${minutes} (ваше время)`;
+      
+      return `${utcStr}<br><span style="font-size: 9px; color: var(--teal-glow);">${localStr}</span>`;
+    } catch (e) {
+      return this.formatDate(value);
+    }
   }
 
   private showTournamentTab(): boolean {
@@ -393,7 +422,8 @@ export class GuildsScreen {
       'grace': 'Турнир завершён — итоги ещё сутки'
     };
     const phaseLabel = phaseLabels[this.tournamentPhase || 'active'] || 'Турнир';
-    const range = `${this.formatDate(t.startsAt)} → ${this.formatDate(t.endsAt)}`;
+    const startFormatted = this.formatDateWithLocal(t.startsAt);
+    const endFormatted = this.formatDateWithLocal(t.endsAt);
     const rows = this.tournamentLeaderboard.length
       ? this.tournamentLeaderboard.map((row, idx) => `
           <button type="button" class="tournament-row glass" data-id="${row.clanId}" data-tournament="1">
@@ -413,13 +443,16 @@ export class GuildsScreen {
     return `
       <div class="tournament-block glass">
         <div class="tournament-header">
-          <div>
+          <div style="flex: 1;">
             <div class="tournament-title">${t.title}</div>
-            <div class="tournament-range">${range}</div>
             <div class="tournament-phase-badge">${phaseLabel}</div>
           </div>
         </div>
-        <p class="guild-section-hint">Учитывается только улов с ${this.formatDate(t.startsAt)} по ${this.formatDate(t.endsAt)}</p>
+        <div class="tournament-time-info" style="margin: 12px 0; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 10px; font-size: 10px; line-height: 1.6;">
+          <div><strong>Начало:</strong> ${startFormatted}</div>
+          <div style="margin-top: 6px;"><strong>Конец:</strong> ${endFormatted}</div>
+        </div>
+        <p class="guild-section-hint">Учитывается только улов за период турнира</p>
         <div class="tournament-list">${rows}</div>
         ${deleteButton}
       </div>
@@ -505,6 +538,12 @@ export class GuildsScreen {
 
   // ── ADMIN TOURNAMENT MODAL ──
   private renderAdminTournamentModalHtml(): string {
+    // Получаем текущее время для заполнения по умолчанию
+    const now = new Date();
+    const localStart = this.tournamentStarts || this.formatDateTimeLocal(now);
+    const later = new Date(now.getTime() + 5 * 60000); // +5 минут
+    const localEnd = this.tournamentEnds || this.formatDateTimeLocal(later);
+    
     return `
       <div class="guild-modal-backdrop" id="admin-tournament-backdrop">
         <div class="guild-modal-sheet tournament-form" role="dialog" aria-modal="true">
@@ -513,22 +552,40 @@ export class GuildsScreen {
             <div class="guild-modal-title">Новый турнир</div>
             <button type="button" class="guild-modal-close" id="admin-tournament-close" aria-label="Закрыть">✕</button>
           </div>
+          <p class="guild-section-hint" style="margin-bottom: 12px; color: #90e0ef;">
+            💡 Укажите время в вашем часовом поясе — оно автоматически конвертируется в UTC для сервера
+          </p>
           <div class="form-group">
             <label class="form-label">Название</label>
             <input type="text" id="tournament-title" class="form-input" maxlength="32" placeholder="Название" value="${this.tournamentTitle}">
           </div>
           <div class="form-group">
-            <label class="form-label">Начало (дата и время)</label>
-            <input type="datetime-local" id="tournament-start" class="form-input" value="${this.tournamentStarts}">
+            <label class="form-label">Начало (ваше локальное время)</label>
+            <input type="datetime-local" id="tournament-start" class="form-input" value="${localStart}" step="60">
           </div>
           <div class="form-group">
-            <label class="form-label">Конец (дата и время)</label>
-            <input type="datetime-local" id="tournament-end" class="form-input" value="${this.tournamentEnds}">
+            <label class="form-label">Конец (ваше локальное время)</label>
+            <input type="datetime-local" id="tournament-end" class="form-input" value="${localEnd}" step="60">
           </div>
           <button type="button" class="guild-create-btn" id="tournament-create">СОЗДАТЬ</button>
         </div>
       </div>
     `;
+  }
+
+  private formatDateTimeLocal(date: Date): string {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day}T${hours}:${minutes}`;
+  }
+
+  private convertLocalToUTC(localDateTime: string): string {
+    // Конвертирует локальное время в UTC ISO формат
+    const local = new Date(localDateTime);
+    return local.toISOString().slice(0, 16).replace('T', ' ');
   }
 
   private bindAdminTournamentModal(): void {
@@ -557,14 +614,19 @@ export class GuildsScreen {
         alert('Заполните название и даты.');
         return;
       }
-      const created = await createClanTournament(title, this.tournamentStarts, this.tournamentEnds);
+      
+      // Конвертируем локальное время в UTC
+      const startsUTC = this.convertLocalToUTC(this.tournamentStarts);
+      const endsUTC = this.convertLocalToUTC(this.tournamentEnds);
+      
+      const created = await createClanTournament(title, startsUTC, endsUTC);
       if (created) {
         this.tournamentTitle = '';
         this.tournamentStarts = '';
         this.tournamentEnds = '';
         this.showAdminTournamentForm = false;
         tgService.haptic('heavy');
-        alert(`Турнир "${title}" создан!`);
+        alert(`Турнир "${title}" создан!\nНачало (UTC): ${startsUTC}\nКонец (UTC): ${endsUTC}`);
         
         // Полная перезагрузка страницы артелей
         await this.init();

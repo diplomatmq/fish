@@ -159,6 +159,15 @@
   padding: 12px 16px calc(var(--safe-bottom) + 88px);
   box-shadow: 0 -12px 48px rgba(0, 0, 0, 0.65);
   color: var(--text-primary);
+  position: relative;
+  z-index: 351;
+}
+
+.guild-modal-sheet input,
+.guild-modal-sheet button,
+.guild-modal-sheet select {
+  position: relative;
+  z-index: 352;
 }
 
 .guild-modal-handle {
