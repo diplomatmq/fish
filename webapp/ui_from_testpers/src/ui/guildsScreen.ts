@@ -51,7 +51,7 @@ export class GuildsScreen {
   private selectedMinLevel = 0;
 
   private visibleTournament: ClanTournament | null = null;
-  private tournamentPhase: 'active' | 'grace' | null = null;
+  private tournamentPhase: 'upcoming' | 'active' | 'grace' | null = null;
   private tournamentLeaderboard: ClanTournamentEntry[] = [];
 
   private showAdminTournamentForm = false;
@@ -123,6 +123,11 @@ export class GuildsScreen {
     const data = await loadClanTournaments();
     this.visibleTournament = data.visible || null;
     this.tournamentPhase = data.phase;
+    console.log('Tournaments refreshed:', { 
+      visible: this.visibleTournament?.title, 
+      phase: this.tournamentPhase,
+      visibleId: data.visibleId 
+    });
     if (this.visibleTournament) {
       this.tournamentLeaderboard = await loadClanTournamentLeaderboard(this.visibleTournament.id);
     } else {
@@ -382,9 +387,12 @@ export class GuildsScreen {
     const t = this.visibleTournament;
     if (!t) return '<div class="members-empty">Турнир недоступен.</div>';
 
-    const phaseLabel = this.tournamentPhase === 'grace'
-      ? 'Турнир завершён — итоги ещё сутки'
-      : 'Идёт турнир';
+    const phaseLabels = {
+      'upcoming': 'Турнир ещё не начался',
+      'active': 'Турнир идёт',
+      'grace': 'Турнир завершён — итоги ещё сутки'
+    };
+    const phaseLabel = phaseLabels[this.tournamentPhase || 'active'] || 'Турнир';
     const range = `${this.formatDate(t.startsAt)} → ${this.formatDate(t.endsAt)}`;
     const rows = this.tournamentLeaderboard.length
       ? this.tournamentLeaderboard.map((row, idx) => `
@@ -394,7 +402,7 @@ export class GuildsScreen {
             <div class="tournament-weight">${this.formatWeight(row.totalWeight)} кг</div>
           </button>
         `).join('')
-      : '<div class="members-empty">Пока нет улова за период турнира.</div>';
+      : `<div class="members-empty">${this.tournamentPhase === 'upcoming' ? 'Турнир ещё не начался' : 'Пока нет улова за период турнира.'}</div>`;
 
     const deleteButton = currentUserIsAdmin ? `
       <button type="button" class="guild-leave-btn" id="delete-tournament" style="margin-top: 12px;">
@@ -555,10 +563,17 @@ export class GuildsScreen {
         this.tournamentStarts = '';
         this.tournamentEnds = '';
         this.showAdminTournamentForm = false;
-        await this.refreshTournaments();
-        this.tab = 'tournament';
         tgService.haptic('heavy');
-        this.render();
+        alert(`Турнир "${title}" создан!`);
+        
+        // Полная перезагрузка страницы артелей
+        await this.init();
+        
+        // Переключаемся на вкладку турнира, если она доступна
+        if (this.showTournamentTab()) {
+          this.tab = 'tournament';
+          this.render();
+        }
       } else {
         alert('Не удалось создать турнир.');
         tgService.haptic('error');

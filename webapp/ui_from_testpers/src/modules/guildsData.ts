@@ -65,7 +65,7 @@ export interface ClanTournament {
   createdBy: string;
   createdAt: string;
   isActive: boolean;
-  phase?: 'active' | 'grace';
+  phase?: 'upcoming' | 'active' | 'grace';
 }
 
 export interface ClanTournamentEntry {
@@ -421,7 +421,7 @@ function mapTournament(t: any, activeId: string | null, phase?: string): ClanTou
     createdBy: String(t.created_by || ''),
     createdAt: String(t.created_at || ''),
     isActive: activeId === String(t.id),
-    phase: phase === 'active' || phase === 'grace' ? phase : undefined
+    phase: phase === 'upcoming' || phase === 'active' || phase === 'grace' ? phase : undefined
   };
 }
 
@@ -431,14 +431,14 @@ export async function loadClanTournaments(): Promise<{
   active?: ClanTournament | null;
   visibleId: string | null;
   visible?: ClanTournament | null;
-  phase: 'active' | 'grace' | null;
+  phase: 'upcoming' | 'active' | 'grace' | null;
 }> {
   try {
     const data = await fetchApi<any>('/api/guilds/tournaments');
     if (data && data.ok) {
       const activeId = data.active_id ? String(data.active_id) : null;
       const visibleId = data.visible_id ? String(data.visible_id) : null;
-      const phase = data.phase === 'active' || data.phase === 'grace' ? data.phase : null;
+      const phase = data.phase === 'upcoming' || data.phase === 'active' || data.phase === 'grace' ? data.phase : null;
       const items = (data.items || []).map((t: any) => mapTournament(t, activeId));
       const active = data.active ? mapTournament(data.active, activeId, 'active') : null;
       const visible = data.visible ? mapTournament(data.visible, visibleId, phase || undefined) : null;

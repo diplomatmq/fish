@@ -11682,12 +11682,23 @@ class Database:
                 starts_at = starts_at.replace(tzinfo=None)
             if getattr(ends_at, 'tzinfo', None) is not None:
                 ends_at = ends_at.replace(tzinfo=None)
-            if now_val < starts_at:
-                continue
+            
+            # ИЗМЕНЕНО: Показываем турнир если он:
+            # 1. Еще не начался (upcoming)
+            # 2. Идет сейчас (active)
+            # 3. Закончился, но в пределах суток grace period (grace)
             grace_until = ends_at + timedelta(days=1)
             if now_val > grace_until:
                 continue
-            phase = 'active' if now_val <= ends_at else 'grace'
+            
+            # Определяем фазу
+            if now_val < starts_at:
+                phase = 'upcoming'
+            elif now_val <= ends_at:
+                phase = 'active'
+            else:
+                phase = 'grace'
+            
             return {**tour, 'phase': phase, 'grace_until': grace_until}
         return None
 
