@@ -23,6 +23,7 @@ import {
   loadClanTournamentLeaderboard,
   loadClanTournamentMembers,
   createClanTournament,
+  deleteClanTournament,
   donateToGuild,
   upgradeGuild,
   removeGuildMember,
@@ -395,6 +396,12 @@ export class GuildsScreen {
         `).join('')
       : '<div class="members-empty">Пока нет улова за период турнира.</div>';
 
+    const deleteButton = currentUserIsAdmin ? `
+      <button type="button" class="guild-leave-btn" id="delete-tournament" style="margin-top: 12px;">
+        🗑️ УДАЛИТЬ ТУРНИР
+      </button>
+    ` : '';
+
     return `
       <div class="tournament-block glass">
         <div class="tournament-header">
@@ -406,6 +413,7 @@ export class GuildsScreen {
         </div>
         <p class="guild-section-hint">Учитывается только улов с ${this.formatDate(t.startsAt)} по ${this.formatDate(t.endsAt)}</p>
         <div class="tournament-list">${rows}</div>
+        ${deleteButton}
       </div>
     `;
   }
@@ -426,6 +434,20 @@ export class GuildsScreen {
         this.clanModalLoading = false;
         this.renderModals();
       });
+    });
+
+    this.el.querySelector('#delete-tournament')?.addEventListener('click', async () => {
+      if (!this.visibleTournament) return;
+      if (!confirm(`Удалить турнир "${this.visibleTournament.title}"? Это действие нельзя отменить!`)) return;
+      const success = await deleteClanTournament(this.visibleTournament.id);
+      if (success) {
+        tgService.haptic('heavy');
+        alert('Турнир успешно удалён');
+        this.tab = 'rating';
+        await this.init();
+      } else {
+        tgService.haptic('error');
+      }
     });
   }
 
@@ -488,12 +510,12 @@ export class GuildsScreen {
             <input type="text" id="tournament-title" class="form-input" maxlength="32" placeholder="Название" value="${this.tournamentTitle}">
           </div>
           <div class="form-group">
-            <label class="form-label">Начало</label>
-            <input type="date" id="tournament-start" class="form-input" value="${this.tournamentStarts}">
+            <label class="form-label">Начало (дата и время)</label>
+            <input type="datetime-local" id="tournament-start" class="form-input" value="${this.tournamentStarts}">
           </div>
           <div class="form-group">
-            <label class="form-label">Конец</label>
-            <input type="date" id="tournament-end" class="form-input" value="${this.tournamentEnds}">
+            <label class="form-label">Конец (дата и время)</label>
+            <input type="datetime-local" id="tournament-end" class="form-input" value="${this.tournamentEnds}">
           </div>
           <button type="button" class="guild-create-btn" id="tournament-create">СОЗДАТЬ</button>
         </div>

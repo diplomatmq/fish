@@ -488,6 +488,25 @@ export async function createClanTournament(title: string, startsAt: string, ends
   return null;
 }
 
+export async function deleteClanTournament(tournamentId: string): Promise<boolean> {
+  try {
+    const data = await fetchApi<any>('/api/guilds/tournaments/delete', {
+      method: 'POST',
+      body: JSON.stringify({ tournament_id: tournamentId })
+    });
+    if (data && data.ok) {
+      return true;
+    }
+    if (data && !data.ok) {
+      alert(`Не удалось удалить турнир: ${data.reason || data.error || 'неизвестная ошибка'}`);
+    }
+  } catch (e) {
+    console.error('Failed to delete clan tournament:', e);
+    alert('Ошибка удаления турнира');
+  }
+  return false;
+}
+
 export async function loadClanTournamentLeaderboard(tournamentId: string): Promise<ClanTournamentEntry[]> {
   try {
     const data = await fetchApi<any>(`/api/guilds/tournaments/leaderboard?tournament_id=${encodeURIComponent(tournamentId)}`);

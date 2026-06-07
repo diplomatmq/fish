@@ -11148,10 +11148,10 @@ class Database:
             'rank': rank,
         }
 
-    def get_webapp_guilds_snapshot(self, user_id: int, limit: int = 20) -> Dict[str, Any]:
+    def get_webapp_guilds_snapshot(self, user_id: int, limit: int = 100) -> Dict[str, Any]:
         """Снимок артелей для webapp: моя артель и топ списка."""
         my_clan = self.get_clan_by_user(int(user_id))
-        clans = self.list_clans(limit=max(1, min(int(limit or 20), 50)))
+        clans = self.list_clans(limit=max(1, min(int(limit or 100), 200)))
 
         clan_ids: List[int] = []
         for clan in clans:
@@ -11558,6 +11558,19 @@ class Database:
                 'created_at': row[5],
             },
         }
+
+    def delete_clan_tournament(self, tournament_id: int, user_id: int) -> Dict[str, Any]:
+        """Удаление турнира (только для админов)."""
+        safe_id = int(tournament_id)
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM clan_tournaments WHERE id = ?', (safe_id,))
+            deleted_count = cursor.rowcount
+            conn.commit()
+        
+        if deleted_count > 0:
+            return {'ok': True, 'deleted': True}
+        return {'ok': False, 'reason': 'not_found'}
 
     def list_clan_tournaments(self, limit: int = 10) -> List[Dict[str, Any]]:
         safe_limit = max(1, min(int(limit or 10), 50))

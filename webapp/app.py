@@ -1189,7 +1189,7 @@ def clan_tournaments_create():
 	starts_raw = data.get("starts_at")
 	ends_raw = data.get("ends_at")
 	starts_at = _parse_date_input(starts_raw, end_of_day=False)
-	ends_at = _parse_date_input(ends_raw, end_of_day=True)
+	ends_at = _parse_date_input(ends_raw, end_of_day=False)
 
 	if not name:
 		return jsonify({"ok": False, "error": "title_required"}), 400
@@ -1207,6 +1207,34 @@ def clan_tournaments_create():
 		return jsonify(result)
 	except Exception:
 		logger.exception("WebApp clan tournament create failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+
+@app.post("/api/guilds/tournaments/delete")
+def clan_tournaments_delete():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	if user_id != 793216884:
+		return jsonify({"ok": False, "error": "forbidden"}), 403
+
+	data = request.get_json(silent=True) or {}
+	tournament_id = data.get("tournament_id")
+	
+	if not tournament_id:
+		return jsonify({"ok": False, "error": "tournament_id_required"}), 400
+
+	db = _get_fish_db()
+	if not db:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		result = db.delete_clan_tournament(int(tournament_id), user_id)
+		return jsonify(result)
+	except Exception:
+		logger.exception("WebApp clan tournament delete failed for user_id=%s", user_id)
 		return jsonify({"ok": False, "error": "db_write_failed"}), 500
 
 
@@ -2423,7 +2451,7 @@ def guilds_state():
 
 	user_id = int(auth_user["id"])
 
-	limit = _safe_int(request.args.get("limit")) or 20
+	limit = _safe_int(request.args.get("limit")) or 100
 
 
 
