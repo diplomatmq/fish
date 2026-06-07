@@ -11731,7 +11731,7 @@ class Database:
                 FROM clan_members cm
                 LEFT JOIN players p ON p.user_id = cm.user_id
                 WHERE cm.clan_id = ?
-                GROUP BY cm.user_id, cm.role
+                GROUP BY cm.user_id, cm.role, cm.clan_id
                 ORDER BY tournament_weight DESC, cm.role DESC, cm.user_id ASC
                 ''',
                 (starts_at, ends_at, safe_clan_id),

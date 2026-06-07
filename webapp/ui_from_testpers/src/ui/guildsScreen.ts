@@ -455,15 +455,22 @@ export class GuildsScreen {
     this.el.querySelectorAll('[data-tournament="1"]').forEach(card => {
       card.addEventListener('click', async () => {
         const id = card.getAttribute('data-id');
-        if (!id || !this.visibleTournament) return;
+        console.log('Tournament card clicked:', id);
+        if (!id || !this.visibleTournament) {
+          console.warn('No id or tournament:', { id, tournament: this.visibleTournament });
+          return;
+        }
         const row = this.tournamentLeaderboard.find(r => r.clanId === id);
+        console.log('Found row:', row);
         this.clanModalGuildId = id;
         this.clanModalGuildName = row?.name || 'Артель';
         this.clanModalTournament = true;
         this.clanModalLoading = true;
         this.clanModalMembers = [];
         this.renderModals();
+        console.log('Loading members for guild:', id, 'tournament:', this.visibleTournament.id);
         this.clanModalMembers = await loadClanTournamentMembers(id, this.visibleTournament.id);
+        console.log('Loaded members:', this.clanModalMembers);
         this.clanModalLoading = false;
         this.renderModals();
       });
@@ -487,6 +494,14 @@ export class GuildsScreen {
   // ── CLAN MODAL (on document.body) ──
   private renderClanModalHtml(): string {
     const weightLabel = this.clanModalTournament ? 'Улов за турнир' : 'Улов в артели';
+    
+    console.log('renderClanModalHtml:', {
+      loading: this.clanModalLoading,
+      membersCount: this.clanModalMembers.length,
+      members: this.clanModalMembers,
+      tournament: this.clanModalTournament
+    });
+    
     const membersHtml = this.clanModalLoading
       ? '<div class="members-empty">Загрузка...</div>'
       : (this.clanModalMembers.length
@@ -498,7 +513,7 @@ export class GuildsScreen {
               <div class="member-weight">${this.formatWeight(m.totalWeight)} кг</div>
             </div>
           `).join('')
-        : '<div class="members-empty">Нет участников.</div>');
+        : `<div class="members-empty">Нет участников (загружено: ${this.clanModalMembers.length}).</div>`);
 
     return `
       <div class="guild-modal-backdrop" id="clan-modal-backdrop">
