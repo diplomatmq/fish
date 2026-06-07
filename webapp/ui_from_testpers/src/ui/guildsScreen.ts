@@ -603,21 +603,45 @@ export class GuildsScreen {
     titleInput?.addEventListener('input', () => { this.tournamentTitle = titleInput.value; });
 
     const startInput = this.modalHost.querySelector('#tournament-start') as HTMLInputElement | null;
-    startInput?.addEventListener('input', () => { this.tournamentStarts = startInput.value; });
+    if (startInput) {
+      // Инициализируем значение, если оно пустое
+      if (!this.tournamentStarts && startInput.value) {
+        this.tournamentStarts = startInput.value;
+      }
+      startInput.addEventListener('input', () => { this.tournamentStarts = startInput.value; });
+      startInput.addEventListener('change', () => { this.tournamentStarts = startInput.value; });
+    }
 
     const endInput = this.modalHost.querySelector('#tournament-end') as HTMLInputElement | null;
-    endInput?.addEventListener('input', () => { this.tournamentEnds = endInput.value; });
+    if (endInput) {
+      // Инициализируем значение, если оно пустое
+      if (!this.tournamentEnds && endInput.value) {
+        this.tournamentEnds = endInput.value;
+      }
+      endInput.addEventListener('input', () => { this.tournamentEnds = endInput.value; });
+      endInput.addEventListener('change', () => { this.tournamentEnds = endInput.value; });
+    }
 
     this.modalHost.querySelector('#tournament-create')?.addEventListener('click', async () => {
-      const title = this.tournamentTitle.trim();
-      if (!title || !this.tournamentStarts || !this.tournamentEnds) {
-        alert('Заполните название и даты.');
+      // Получаем актуальные значения из полей
+      const titleInputCurrent = this.modalHost.querySelector('#tournament-title') as HTMLInputElement | null;
+      const startInputCurrent = this.modalHost.querySelector('#tournament-start') as HTMLInputElement | null;
+      const endInputCurrent = this.modalHost.querySelector('#tournament-end') as HTMLInputElement | null;
+      
+      const title = (titleInputCurrent?.value || this.tournamentTitle || '').trim();
+      const starts = startInputCurrent?.value || this.tournamentStarts || '';
+      const ends = endInputCurrent?.value || this.tournamentEnds || '';
+      
+      console.log('Creating tournament:', { title, starts, ends });
+      
+      if (!title || !starts || !ends) {
+        alert(`Заполните название и даты.\nНазвание: ${title || 'пусто'}\nНачало: ${starts || 'пусто'}\nКонец: ${ends || 'пусто'}`);
         return;
       }
       
       // Конвертируем локальное время в UTC
-      const startsUTC = this.convertLocalToUTC(this.tournamentStarts);
-      const endsUTC = this.convertLocalToUTC(this.tournamentEnds);
+      const startsUTC = this.convertLocalToUTC(starts);
+      const endsUTC = this.convertLocalToUTC(ends);
       
       const created = await createClanTournament(title, startsUTC, endsUTC);
       if (created) {
