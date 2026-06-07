@@ -451,13 +451,18 @@ export async function loadClanTournaments(): Promise<{
 }
 
 export async function loadClanTournamentMembers(guildId: string, tournamentId: string): Promise<GuildMember[]> {
+  console.log('loadClanTournamentMembers called:', { guildId, tournamentId });
   try {
     const data = await fetchApi<any>(
       `/api/guilds/tournaments/members?guild_id=${encodeURIComponent(guildId)}&tournament_id=${encodeURIComponent(tournamentId)}`
     );
+    console.log('loadClanTournamentMembers response:', data);
     if (data && data.ok) {
-      return Array.isArray(data.members) ? data.members.map(mapMember) : [];
+      const members = Array.isArray(data.members) ? data.members.map(mapMember) : [];
+      console.log('loadClanTournamentMembers mapped:', members);
+      return members;
     }
+    console.warn('loadClanTournamentMembers: no valid data', data);
   } catch (e) {
     console.error('Failed to load tournament members:', e);
   }
