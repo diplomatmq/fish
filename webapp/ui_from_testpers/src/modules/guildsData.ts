@@ -465,11 +465,13 @@ export async function loadClanTournamentMembers(guildId: string, tournamentId: s
 }
 
 export async function createClanTournament(title: string, startsAt: string, endsAt: string): Promise<ClanTournament | null> {
+  console.log('createClanTournament called with:', { title, startsAt, endsAt });
   try {
     const data = await fetchApi<any>('/api/guilds/tournaments/create', {
       method: 'POST',
       body: JSON.stringify({ title, starts_at: startsAt, ends_at: endsAt })
     });
+    console.log('createClanTournament response:', data);
     if (data && data.ok && data.tournament) {
       const t = data.tournament;
       return {
@@ -482,8 +484,13 @@ export async function createClanTournament(title: string, startsAt: string, ends
         isActive: false
       };
     }
+    if (data && !data.ok) {
+      console.error('Tournament creation failed:', data.reason || data.error);
+      alert(`Ошибка создания турнира: ${data.reason || data.error || 'неизвестная ошибка'}`);
+    }
   } catch (e) {
     console.error('Failed to create clan tournament:', e);
+    alert(`Ошибка сети при создании турнира: ${e instanceof Error ? e.message : 'неизвестная ошибка'}`);
   }
   return null;
 }

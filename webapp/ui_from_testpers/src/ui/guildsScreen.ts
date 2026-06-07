@@ -583,9 +583,22 @@ export class GuildsScreen {
   }
 
   private convertLocalToUTC(localDateTime: string): string {
-    // Конвертирует локальное время в UTC ISO формат
-    const local = new Date(localDateTime);
-    return local.toISOString().slice(0, 16).replace('T', ' ');
+    // Конвертирует локальное время в UTC ISO формат для сервера
+    // Вход: "2026-06-07T15:43" (локальное время)
+    // Выход: "2026-06-07T12:43" (UTC, для примера GMT+3)
+    try {
+      const local = new Date(localDateTime);
+      // Возвращаем в формате YYYY-MM-DDTHH:MM (без секунд и Z)
+      const year = local.getUTCFullYear();
+      const month = String(local.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(local.getUTCDate()).padStart(2, '0');
+      const hours = String(local.getUTCHours()).padStart(2, '0');
+      const minutes = String(local.getUTCMinutes()).padStart(2, '0');
+      return `${year}-${month}-${day}T${hours}:${minutes}`;
+    } catch (e) {
+      console.error('Failed to convert time:', e);
+      return localDateTime;
+    }
   }
 
   private bindAdminTournamentModal(): void {
@@ -632,7 +645,7 @@ export class GuildsScreen {
       const starts = startInputCurrent?.value || this.tournamentStarts || '';
       const ends = endInputCurrent?.value || this.tournamentEnds || '';
       
-      console.log('Creating tournament:', { title, starts, ends });
+      console.log('Creating tournament - Input values:', { title, starts, ends });
       
       if (!title || !starts || !ends) {
         alert(`Заполните название и даты.\nНазвание: ${title || 'пусто'}\nНачало: ${starts || 'пусто'}\nКонец: ${ends || 'пусто'}`);
@@ -643,7 +656,11 @@ export class GuildsScreen {
       const startsUTC = this.convertLocalToUTC(starts);
       const endsUTC = this.convertLocalToUTC(ends);
       
+      console.log('Creating tournament - UTC values:', { title, startsUTC, endsUTC });
+      
       const created = await createClanTournament(title, startsUTC, endsUTC);
+      
+      console.log('Tournament creation result:', created);
       if (created) {
         this.tournamentTitle = '';
         this.tournamentStarts = '';
