@@ -6581,6 +6581,7 @@ class Database:
         ensure_column('fish', 'required_level', 'INTEGER DEFAULT 0')
         ensure_column('fish', 'activity_period', "TEXT DEFAULT 'all'")
         ensure_column('players', 'last_pray_at', 'TEXT')
+        ensure_column('rods', 'required_level', 'INTEGER DEFAULT 0')
 
         try:
             cursor.execute('''
@@ -7087,18 +7088,19 @@ class Database:
             cursor = conn.cursor()
             
             # Добавление удочек с информацией о максимальном весе
-            # Формат: (name, price, durability, max_durability, fish_bonus, max_weight)
+            # Формат: (name, price, durability, max_durability, fish_bonus, max_weight, required_level)
             rods_data = [
-                ("Бамбуковая удочка", 0, 100, 100, 0, 30),            # стартовая удочка, макс вес 30 кг
-                ("Углепластиковая удочка", 1500, 150, 150, 5, 60),    # макс вес 60 кг
-                ("Карбоновая удочка", 4500, 200, 200, 10, 120),        # макс вес 120 кг
-                ("Золотая удочка", 15000, 300, 300, 20, 350),          # макс вес 350 кг
-                ("Удачливая удочка", 25000, 150, 150, 15, 650),        # макс вес 650 кг, ломка 140-160 уловов
+                ("Бамбуковая удочка", 0, 100, 100, 0, 30, 0),            # стартовая удочка, макс вес 30 кг
+                ("Углепластиковая удочка", 1500, 150, 150, 5, 60, 0),    # макс вес 60 кг
+                ("Карбоновая удочка", 4500, 200, 200, 10, 120, 0),        # макс вес 120 кг
+                ("Золотая удочка", 15000, 300, 300, 20, 350, 0),          # макс вес 350 кг
+                ("Удачливая удочка", 25000, 150, 150, 15, 650, 15),       # макс вес 650 кг, ломка 140-160 уловов, 15 лвл
+                ("Гарпун", 50000, 999, 999, 0, 9999, 25),                # гарпун, 25 лвл
             ]
             
             cursor.executemany('''
-                INSERT OR IGNORE INTO rods (name, price, durability, max_durability, fish_bonus, max_weight)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO rods (name, price, durability, max_durability, fish_bonus, max_weight, required_level)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', rods_data)
 
             # Принудительное обновление max_weight для уже существующих удочек
@@ -7111,6 +7113,18 @@ class Database:
             ]
             for max_w, rod_name in rods_weight_updates:
                 cursor.execute('UPDATE rods SET max_weight = ? WHERE name = ?', (max_w, rod_name))
+            
+            # Обновление required_level для удочек
+            rods_level_updates = [
+                (0, "Бамбуковая удочка"),
+                (0, "Углепластиковая удочка"),
+                (0, "Карбоновая удочка"),
+                (0, "Золотая удочка"),
+                (15, "Удачливая удочка"),
+                (25, "Гарпун"),
+            ]
+            for level, rod_name in rods_level_updates:
+                cursor.execute('UPDATE rods SET required_level = ? WHERE name = ?', (level, rod_name))
             
             # Добавление локаций
             locations_data = [
@@ -10883,11 +10897,12 @@ class Database:
     def ensure_rod_catalog(self):
         """Гарантировать наличие базового каталога удочек и корректного max_weight."""
         rods_data = [
-            ("Бамбуковая удочка", 0, 100, 100, 0, 30),
-            ("Углепластиковая удочка", 1500, 150, 150, 5, 60),
-            ("Карбоновая удочка", 4500, 200, 200, 10, 120),
-            ("Золотая удочка", 15000, 300, 300, 20, 350),
-            ("Удачливая удочка", 25000, 150, 150, 15, 650),
+            ("Бамбуковая удочка", 0, 100, 100, 0, 30, 0),
+            ("Углепластиковая удочка", 1500, 150, 150, 5, 60, 0),
+            ("Карбоновая удочка", 4500, 200, 200, 10, 120, 0),
+            ("Золотая удочка", 15000, 300, 300, 20, 350, 0),
+            ("Удачливая удочка", 25000, 150, 150, 15, 650, 15),
+            ("Гарпун", 50000, 999, 999, 0, 9999, 25),
         ]
         rods_weight_updates = [
             (30, "Бамбуковая удочка"),
@@ -10901,8 +10916,8 @@ class Database:
             cursor = conn.cursor()
             cursor.executemany(
                 '''
-                INSERT OR IGNORE INTO rods (name, price, durability, max_durability, fish_bonus, max_weight)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO rods (name, price, durability, max_durability, fish_bonus, max_weight, required_level)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''',
                 rods_data,
             )

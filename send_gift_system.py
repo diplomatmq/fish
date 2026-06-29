@@ -46,12 +46,18 @@ def get_send_main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
-def get_rods_keyboard(page: int = 0) -> InlineKeyboardMarkup:
+def get_rods_keyboard(page: int = 0, user_id: int = None, chat_id: int = None) -> InlineKeyboardMarkup:
     """Клавиатура выбора удочки."""
     from database import db
     
     # Получаем все удочки
     all_rods = db.get_all_rods()
+    
+    # Фильтруем по уровню пользователя если указан
+    if user_id is not None:
+        player = db.get_player(user_id, chat_id)
+        player_level = player.get('level', 0) if player else 0
+        all_rods = [rod for rod in all_rods if rod.get('required_level', 0) <= player_level]
     
     # Пагинация
     page_size = 8
@@ -165,7 +171,7 @@ def get_baits_for_location_keyboard(location: str, page: int = 0) -> InlineKeybo
     return InlineKeyboardMarkup(keyboard)
 
 
-def validate_gift_item(user_id: int, chat_id: int, gift_type: str, item_name: str, quantity: int = 1) -> tuple[bool, str]:
+def validate_gift_item(user_id: int, chat_id: int, gift_type: str, item_name: str, quantity: int = 1, recipient_id: int = None, recipient_chat_id: int = None) -> tuple[bool, str]:
     """
     Проверить может ли пользователь отправить подарок.
     
@@ -207,10 +213,6 @@ def validate_gift_item(user_id: int, chat_id: int, gift_type: str, item_name: st
         return True, ""
     
     elif gift_type == GIFT_TYPE_BAITS:
-        bait_count = db.get_bait_count(user_id, item_name)
-        if bait_count < quantity:
-            return False, f"Недостаточно наживки {item_name}. У вас: {bait_count}"
-        
         # Проверяем стоимость наживки
         bait_data = db.get_bait(item_name)
         if not bait_data:
@@ -296,10 +298,7 @@ def execute_gift_transfer(
             return True, f"Отправлена удочка {item_name}"
         
         elif gift_type == GIFT_TYPE_BAITS:
-            # Списываем наживку у отправителя
-            db.remove_bait(sender_id, item_name, quantity)
-            
-            # Списываем монеты
+            # Списываем монеты у отправителя
             bait_data = db.get_bait(item_name)
             bait_price = bait_data.get('price', 0) * quantity
             sender = db.get_player(sender_id, sender_chat_id)

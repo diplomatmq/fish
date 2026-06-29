@@ -3866,7 +3866,7 @@ class FishBot:
             await query.edit_message_text(
                 f"🎣 <b>Выбор удочки</b>\n\n"
                 f"Выберите удочку для отправки:",
-                reply_markup=get_rods_keyboard(page=0),
+                reply_markup=get_rods_keyboard(page=0, user_id=user_id, chat_id=chat_id),
                 parse_mode="HTML"
             )
         
@@ -3983,7 +3983,7 @@ class FishBot:
         await query.edit_message_text(
             f"🎣 <b>Выбор удочки</b>\n\n"
             f"Выберите удочку для отправки:",
-            reply_markup=get_rods_keyboard(page=page),
+            reply_markup=get_rods_keyboard(page=page, user_id=user_id, chat_id=chat_id),
             parse_mode="HTML"
         )
 
@@ -7701,11 +7701,9 @@ _«Прими этот дар — и помни, океан всегда смо�
         player = await _run_sync(db.get_player, user_id, chat_id)
         player_level = player.get('level', 0) if player else 0
         for rod in rods:
-            # Гарпун только для 25+ уровня
-            if rod['name'] == 'Гарпун' and player_level < 25:
-                continue
-            # Удачливая удочка только для 15+ уровня
-            if rod['name'] == 'Удачливая удочка' and player_level < 15:
+            # Проверяем требуемый уровень удочки
+            required_level = rod.get('required_level', 0)
+            if player_level < required_level:
                 continue
             keyboard.append([InlineKeyboardButton(
                 f"🎣 {rod['name']} - {rod['price']} 🪙",
