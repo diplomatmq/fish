@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from config import CATCH_CHANCE, NO_BITE_CHANCE, GUARANTEED_CATCH_COST, COOLDOWN_MINUTES, ROD_REPAIR_COST, CURRENT_SEASON, TRASH_CHANCE, get_current_season
 from database import db, DB_PATH, BAMBOO_ROD, TEMP_ROD_RANGES
+from fish_activity import time_hint_message_ru
 from weather import weather_system
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,7 @@ class FishingGame:
             return fish_list
         normalized = []
         # Known fish columns order used by database.get_fish... queries
-        keys = ['id','name','rarity','min_weight','max_weight','min_length','max_length','price','locations','seasons','suitable_baits','max_rod_weight','required_level','sticker_id']
+        keys = ['id','name','rarity','min_weight','max_weight','min_length','max_length','price','locations','seasons','suitable_baits','max_rod_weight','required_level','sticker_id','activity_period']
         for f in fish_list:
             if isinstance(f, dict):
                 normalized.append(f)
@@ -72,6 +73,29 @@ class FishingGame:
             except Exception:
                 normalized.append({})
         return normalized
+
+    def _location_fish_unavailable_message(
+        self,
+        location: str,
+        season: str,
+        player_level: int = 0,
+    ) -> str:
+        """Сообщение, если в локации нет доступной рыбы (сезон или время суток)."""
+        unfiltered = db.get_fish_by_location(
+            location, season, min_level=player_level, apply_time_filter=False,
+        )
+        unfiltered = self._normalize_fish_list(unfiltered) or []
+        if unfiltered:
+            return time_hint_message_ru()
+
+        unfiltered_any_season = db.get_fish_by_location(
+            location, 'Все', min_level=0, apply_time_filter=False,
+        )
+        unfiltered_any_season = self._normalize_fish_list(unfiltered_any_season) or []
+        if unfiltered_any_season:
+            return time_hint_message_ru()
+
+        return "На этой локации нет рыбы в текущее время года."
     
     def _get_current_season(self) -> str:
         """Определить текущее время года"""
@@ -291,6 +315,11 @@ class FishingGame:
         except Exception:
             logger.exception("Failed to load beer bonus for user=%s", user_id)
             beer_bonus_percent = 0.0
+        try:
+            sea_god_bonus_percent = float(db.get_sea_god_catch_modifier_percent(user_id) or 0.0)
+        except Exception:
+            logger.exception("Failed to load sea god bonus for user=%s", user_id)
+            sea_god_bonus_percent = 0.0
 
         # Если гарантированный улов
         if guaranteed:
@@ -318,6 +347,7 @@ class FishingGame:
         active_boat = db.get_active_boat_by_user(user_id)
         is_on_boat = active_boat is not None
 
+        # Проверяем старое событие (эко-катастрофа) для обратной совместимости
         eco_disaster = db.get_active_ecological_disaster(location)
         if not eco_disaster:
             eco_disaster = db.maybe_start_ecological_disaster(location)
@@ -329,6 +359,61 @@ class FishingGame:
                 eco_disaster.get('reward_type'),
                 eco_disaster.get('reward_multiplier'),
             )
+
+        # Проверяем новые события на локации
+        from location_events import (
+            SPAWN_EVENT_TYPE,
+            MURDER_EVENT_TYPE,
+            SCHOOL_EVENT_TYPE,
+            calculate_event_chance,
+            calculate_event_cooldown_hours,
+            should_apply_spawn_bonus,
+            should_force_murder_fish,
+            calculate_school_weight_bonus,
+        )
+        
+        spawn_event = db.get_active_location_event(location, SPAWN_EVENT_TYPE)
+        if not spawn_event:
+            spawn_event = db.maybe_start_location_event(
+                location,
+                SPAWN_EVENT_TYPE,
+                calculate_event_chance(SPAWN_EVENT_TYPE),
+                calculate_event_cooldown_hours(SPAWN_EVENT_TYPE)
+            )
+        
+        murder_event = db.get_active_location_event(location, MURDER_EVENT_TYPE)
+        if not murder_event:
+            murder_event = db.maybe_start_location_event(
+                location,
+                MURDER_EVENT_TYPE,
+                calculate_event_chance(MURDER_EVENT_TYPE),
+                calculate_event_cooldown_hours(MURDER_EVENT_TYPE)
+            )
+        
+        school_event = db.get_active_location_event(location, SCHOOL_EVENT_TYPE)
+        if not school_event:
+            school_event = db.maybe_start_location_event(
+                location,
+                SCHOOL_EVENT_TYPE,
+                calculate_event_chance(SCHOOL_EVENT_TYPE),
+                calculate_event_cooldown_hours(SCHOOL_EVENT_TYPE)
+            )
+        
+        # Применяем бонус нереста
+        spawn_bonus_percent = 0
+        apply_spawn, spawn_bonus = should_apply_spawn_bonus(spawn_event)
+        if apply_spawn:
+            spawn_bonus_percent = spawn_bonus
+            logger.info(f"   🐟 Spawn event active: +{spawn_bonus}% catch chance")
+        
+        # Проверяем принудительную рыбу (убийство)
+        force_murder_fish = False
+        forced_fish_name = ""
+        force_murder, murder_fish = should_force_murder_fish(murder_event)
+        if force_murder:
+            force_murder_fish = True
+            forced_fish_name = murder_fish
+            logger.info(f"   ☠️ Murder event active: only {murder_fish}")
 
         ROLL_MAX = 20000
         
@@ -368,7 +453,9 @@ class FishingGame:
         is_lucky_rod = bool(rod and rod.get('name') == 'Удачливая удочка')
 
         # Применяем погодный бонус/штраф и бонус кормушки
-        adjusted_roll = roll + (weather_bonus * 50) + (feeder_bonus * 250) + (clothing_bonus_percent * 50) + (beer_bonus_percent * 50)
+        # Также применяем бонус нереста (+20% конвертируем в +1000 к броску для упрощения)
+        spawn_roll_bonus = int(spawn_bonus_percent * 10) if spawn_bonus_percent > 0 else 0
+        adjusted_roll = roll + (weather_bonus * 50) + (feeder_bonus * 250) + (clothing_bonus_percent * 50) + (beer_bonus_percent * 50) + (sea_god_bonus_percent * 50) + spawn_roll_bonus
         adjusted_roll = max(0, min(ROLL_MAX, adjusted_roll))  # Ограничиваем от 0 до 15000
 
         # Применяем штраф популяции (снижаем roll за перелов на одной локации)
@@ -402,7 +489,7 @@ class FishingGame:
         logger.info(f"🎣 User {user_id} started fishing at location: {location}")
         logger.info(
             f"   🎲 Random roll: {roll}/{ROLL_MAX} (adjusted: {adjusted_roll}/{ROLL_MAX} "
-            f"with weather {weather_condition}, feeder {feeder_bonus:+d}%, clothing +{clothing_bonus_percent:.2f}%, beer +{beer_bonus_percent:.2f}%)"
+            f"with weather {weather_condition}, feeder {feeder_bonus:+d}%, clothing +{clothing_bonus_percent:.2f}%, beer +{beer_bonus_percent:.2f}%, sea god {sea_god_bonus_percent:+.1f}%)"
         )
         logger.info("   📊 Ranges: 0-4999=NO_BITE, 5000-9999=TRASH, 10000-14999=COMMON, 15000-18999=RARE, 19000-19899=LEGENDARY, 19900-19999=TOP_TIER, 20000=NFT")
         
@@ -579,7 +666,13 @@ class FishingGame:
                     "treasure_caught": treasure_caught,
                     "treasure_name": treasure_name,
                     "population_penalty": population_penalty,
-                    "consecutive_casts": consecutive_casts
+                    "consecutive_casts": consecutive_casts,
+                    # Информация о новых событиях
+                    "spawn_event_active": spawn_event is not None,
+                    "murder_event_active": murder_event is not None,
+                    "murder_fish_name": murder_event['params'].get('forced_fish', '') if murder_event else '',
+                    "school_event_active": school_event is not None,
+                    "school_fish_name": school_event['params'].get('school_fish', '') if school_event else '',
                 }
 
             db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
@@ -645,7 +738,7 @@ class FishingGame:
             db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
             return {
                 "success": False,
-                "message": "На этой локации нет рыбы в текущее время года.",
+                "message": self._location_fish_unavailable_message(location, self.current_season, player_level),
                 "location": location
             }
 
@@ -661,6 +754,21 @@ class FishingGame:
                     "location": location
                 }
             caught_fish = random.choice(legendary_fish)
+        elif force_murder_fish:
+            # ============ СОБЫТИЕ "УБИЙСТВО": ловится только одна конкретная рыба ============
+            logger.info(f"   ☠️ Murder event: forcing fish {forced_fish_name}")
+            murder_fish_list = [f for f in fish_list if f['name'] == forced_fish_name]
+            if not murder_fish_list:
+                logger.info(f"   ⚠️ Murder fish {forced_fish_name} not available - SNAP")
+                db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
+                return {
+                    "success": False,
+                    "snap": True,
+                    "message": f"☠️ Особь {forced_fish_name} скрылась...",
+                    "location": location
+                }
+            caught_fish = random.choice(murder_fish_list)
+            logger.info(f"   ☠️ Murder event: caught {caught_fish['name']}")
         else:
             # ============ МЕХАНИКА НАЖИВКИ: 90% на нужную наживку, 10% срыв ============
             bait_success_roll = random.randint(1, 100)
@@ -735,6 +843,43 @@ class FishingGame:
         # Расчет веса и размера рыбы
         weight = self._generate_weight_by_ranges(caught_fish['min_weight'], caught_fish['max_weight'])
         length = round(random.uniform(caught_fish['min_length'], caught_fish['max_length']), 1)
+        
+        # ============ СОБЫТИЕ "СТАЙНЫЙ ИНСТИНКТ": бонус к весу за цепочку ============
+        school_bonus_percent = 0
+        school_chain_continues = False
+        if school_event:
+            school_fish_name = school_event['params'].get('school_fish', '')
+            if school_fish_name == caught_fish['name']:
+                # Получаем текущую цепочку
+                school_chain = db.get_school_chain(user_id, school_event['id'])
+                current_chain = school_chain.get('chain_count', 0)
+                
+                # Увеличиваем цепочку
+                new_chain = current_chain + 1
+                school_bonus_percent, school_chain_continues = calculate_school_weight_bonus(
+                    school_event,
+                    caught_fish['name'],
+                    new_chain
+                )
+                
+                # Применяем бонус к весу
+                if school_bonus_percent > 0:
+                    weight = weight * (1 + school_bonus_percent / 100)
+                    logger.info(f"   🐠 School bonus: +{school_bonus_percent}% weight (chain: {new_chain})")
+                
+                # Сохраняем цепочку
+                db.update_school_chain(
+                    user_id,
+                    school_event['id'],
+                    location,
+                    caught_fish['name'],
+                    new_chain
+                )
+            else:
+                # Цепочка прервана - ловим не ту рыбу
+                db.reset_school_chain(user_id, school_event['id'])
+                logger.info(f"   🐠 School chain broken: caught {caught_fish['name']} instead of {school_fish_name}")
+        
         logger.info(f"   📏 Fish stats: weight={weight}kg, length={length}cm")
 
         # --- ГАРПУН: если пойманная рыба < 150кг, fail ---
@@ -849,7 +994,15 @@ class FishingGame:
             "temp_rod_broken": temp_rod_result.get("broken", False),
             "target_rarity": target_rarity,
             "population_penalty": population_penalty,
-            "consecutive_casts": consecutive_casts
+            "consecutive_casts": consecutive_casts,
+            # Информация о новых событиях
+            "spawn_event_active": spawn_event is not None,
+            "murder_event_active": murder_event is not None,
+            "murder_fish_name": murder_event['params'].get('forced_fish', '') if murder_event else '',
+            "school_event_active": school_event is not None,
+            "school_fish_name": school_event['params'].get('school_fish', '') if school_event else '',
+            "school_bonus_percent": school_bonus_percent,
+            "school_chain_count": db.get_school_chain(user_id, school_event['id']).get('chain_count', 0) if school_event else 0,
         }
     
     def _guaranteed_catch(
@@ -1090,7 +1243,9 @@ class FishingGame:
             db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
             return {
                 "success": False,
-                "message": f"В локации '{location}' нет ни одной рыбы для гарантированного улова.",
+                "message": self._location_fish_unavailable_message(
+                    location, self.current_season, player.get('level', 0) or 0,
+                ),
                 "location": location
             }
         if not fish_list:

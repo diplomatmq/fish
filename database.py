@@ -11,6 +11,14 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from config import DB_PATH
+from fish_activity import filter_fish_by_time, get_activity_for_fish_name
+from achievements import (
+    ACHIEVEMENTS,
+    ACHIEVEMENT_BY_ID,
+    highest_reachable_tier,
+    tier_description,
+    tier_title,
+)
 
 # Optional Postgres support
 try:
@@ -548,7 +556,7 @@ class Database:
             
             conn.commit()
 
-    def update_player_sale_stats(self, user_id: int, weight: float, price: int):
+    def update_player_sale_stats(self, user_id: int, weight: float, price: int, fish_count: int = 1):
         """Обновить статистику пользователя при продаже рыбы."""
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -556,12 +564,205 @@ class Database:
                 '''
                 UPDATE players 
                 SET total_weight_sold = COALESCE(total_weight_sold, 0) + ?,
-                    total_coins_earned = COALESCE(total_coins_earned, 0) + ?
+                    total_coins_earned = COALESCE(total_coins_earned, 0) + ?,
+                    total_fish_sold = COALESCE(total_fish_sold, 0) + ?
                 WHERE user_id = ?
                 ''',
-                (float(weight), int(price), int(user_id))
+                (float(weight), int(price), int(fish_count), int(user_id))
             )
             conn.commit()
+
+        self.evaluate_achievements(int(user_id))
+
+    def _collect_achievement_stats(self, user_id: int) -> Dict[str, float]:
+        stats = self.get_player_stats(int(user_id), 0)
+        level = 0
+        try:
+            player = self.get_player(int(user_id), -1) or self.get_player(int(user_id), 0)
+            if player:
+                level = int(player.get('level') or 0)
+        except Exception:
+            level = 0
+        return {
+            "unique_fish": float(stats.get("unique_fish") or 0),
+            "total_fish": float(stats.get("total_fish") or 0),
+            "total_weight": float(stats.get("total_weight") or 0),
+            "sold_fish_count": float(stats.get("sold_fish_count") or 0),
+            "total_coins_earned": float(stats.get("total_coins_earned") or 0),
+            "total_trash_caught": float(stats.get("total_trash_caught") or 0),
+            "biggest_weight": float(stats.get("biggest_weight") or 0),
+            "level": float(level),
+        }
+
+    def evaluate_achievements(
+        self,
+        user_id: int,
+        chat_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Проверить и выдать новые уровни достижений."""
+        uid = int(user_id)
+        stat_values = self._collect_achievement_stats(uid)
+        newly_unlocked: List[Dict[str, Any]] = []
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            for ach in ACHIEVEMENTS:
+                ach_id = ach["id"]
+                stat_key = ach["stat"]
+                current_value = float(stat_values.get(stat_key) or 0)
+                target_tier = highest_reachable_tier(ach_id, current_value)
+                if target_tier <= 0:
+                    continue
+
+                cursor.execute(
+                    '''
+                    SELECT COALESCE(MAX(tier), 0)
+                    FROM player_achievements
+                    WHERE user_id = ? AND achievement_id = ?
+                    ''',
+                    (uid, ach_id),
+                )
+                row = cursor.fetchone()
+                existing_max = int(row[0] or 0) if row else 0
+                if target_tier <= existing_max:
+                    continue
+
+                for tier_num in range(existing_max + 1, target_tier + 1):
+                    cursor.execute(
+                        '''
+                        INSERT INTO player_achievements (user_id, achievement_id, tier)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT (user_id, achievement_id, tier) DO NOTHING
+                        ''',
+                        (uid, ach_id, tier_num),
+                    )
+                    unlock = {
+                        "achievement_id": ach_id,
+                        "tier": tier_num,
+                        "title": tier_title(ach_id, tier_num),
+                        "description": tier_description(ach_id, tier_num),
+                        "icon": ach.get("icon", "🏆"),
+                        "chat_id": int(chat_id) if chat_id is not None else None,
+                    }
+                    newly_unlocked.append(unlock)
+
+            conn.commit()
+
+        if newly_unlocked:
+            bucket = self._achievement_notifications.setdefault(uid, [])
+            bucket.extend(newly_unlocked)
+        return newly_unlocked
+
+    def drain_achievement_notifications(self, user_id: int) -> List[Dict[str, Any]]:
+        uid = int(user_id)
+        items = self._achievement_notifications.pop(uid, [])
+        return list(items)
+
+    def get_achievement_holder_counts(self) -> Dict[str, Dict[int, int]]:
+        """Сколько игроков имеют каждый уровень достижения."""
+        counts: Dict[str, Dict[int, int]] = {}
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT achievement_id, tier, COUNT(DISTINCT user_id)
+                FROM player_achievements
+                GROUP BY achievement_id, tier
+                '''
+            )
+            for ach_id, tier, cnt in cursor.fetchall() or []:
+                counts.setdefault(str(ach_id), {})[int(tier)] = int(cnt or 0)
+        return counts
+
+    def get_total_players_count(self) -> int:
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(DISTINCT user_id) FROM players')
+            row = cursor.fetchone()
+            return int(row[0] or 0) if row else 0
+
+    def get_user_achievement_progress(self, user_id: int) -> Dict[str, Any]:
+        uid = int(user_id)
+        stat_values = self._collect_achievement_stats(uid)
+        holder_counts = self.get_achievement_holder_counts()
+        total_players = max(1, self.get_total_players_count())
+
+        unlocked_by_ach: Dict[str, Dict[int, str]] = {}
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT achievement_id, tier, unlocked_at
+                FROM player_achievements
+                WHERE user_id = ?
+                ORDER BY achievement_id, tier
+                ''',
+                (uid,),
+            )
+            for ach_id, tier, unlocked_at in cursor.fetchall() or []:
+                ach_key = str(ach_id)
+                unlocked_by_ach.setdefault(ach_key, {})[int(tier)] = (
+                    unlocked_at.isoformat() if hasattr(unlocked_at, "isoformat") else str(unlocked_at)
+                )
+
+        items: List[Dict[str, Any]] = []
+        for ach in ACHIEVEMENTS:
+            ach_id = ach["id"]
+            stat_key = ach["stat"]
+            current_value = float(stat_values.get(stat_key) or 0)
+            tiers = ach["tiers"]
+            max_tier = int(tiers[-1]["tier"])
+            user_tiers = unlocked_by_ach.get(ach_id, {})
+            current_tier = max(user_tiers.keys()) if user_tiers else 0
+
+            if current_tier > 0:
+                display_tier = current_tier
+                display_desc = tier_description(ach_id, display_tier)
+                unlocked_at = user_tiers.get(display_tier)
+            else:
+                display_tier = 1
+                display_desc = tier_description(ach_id, 1)
+                unlocked_at = None
+
+            holders = holder_counts.get(ach_id, {}).get(display_tier if current_tier > 0 else 1, 0)
+            holder_percent = round((holders / total_players) * 100, 1)
+
+            next_tier = None
+            next_threshold = None
+            if current_tier < max_tier:
+                next_tier_num = current_tier + 1 if current_tier > 0 else 1
+                for t in tiers:
+                    if int(t["tier"]) == next_tier_num:
+                        next_tier = next_tier_num
+                        next_threshold = float(t["threshold"])
+                        break
+
+            items.append({
+                "id": ach_id,
+                "title": ach["title"],
+                "icon": ach.get("icon", "🏆"),
+                "current_tier": current_tier,
+                "display_tier": display_tier,
+                "display_title": tier_title(ach_id, display_tier) if current_tier > 0 else ach["title"],
+                "description": display_desc,
+                "unlocked_at": unlocked_at,
+                "is_unlocked": current_tier > 0,
+                "holder_percent": holder_percent,
+                "holders_count": holders,
+                "total_players": total_players,
+                "max_tier": max_tier,
+                "next_tier": next_tier,
+                "next_threshold": next_threshold,
+                "current_value": current_value,
+                "stat_label": ach.get("stat_label", ""),
+            })
+
+        earned_count = sum(1 for i in items if i["is_unlocked"])
+        return {
+            "items": items,
+            "earned_count": earned_count,
+            "total_count": len(items),
+        }
 
     def get_user_fish_encyclopedia(self, user_id: int) -> Dict[str, bool]:
         """Получить энциклопедию пойманных рыб пользователя."""
@@ -1867,6 +2068,146 @@ class Database:
                 total += float(beer_effect_bonus.get(effect_type, 0.0))
             return float(total)
 
+    def get_sea_god_catch_modifier_percent(self, user_id: int) -> float:
+        """Бонус/штраф клева от молитвы Морскому Повелителю."""
+        from sea_pray import BLESSING_EFFECT, BLESSING_CATCH_BONUS, WRATH_CATCH_PENALTY, WRATH_EFFECT
+
+        self._ensure_user_effects_table()
+        now = datetime.utcnow()
+        modifier = 0.0
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT effect_type
+                FROM user_effects
+                WHERE user_id = ?
+                  AND expires_at > ?
+                  AND LOWER(TRIM(effect_type)) IN (?, ?)
+                ''',
+                (int(user_id), now, WRATH_EFFECT, BLESSING_EFFECT),
+            )
+            for row in cursor.fetchall() or []:
+                effect_type = str(row[0] or '').strip().lower()
+                if effect_type == WRATH_EFFECT:
+                    modifier += WRATH_CATCH_PENALTY
+                elif effect_type == BLESSING_EFFECT:
+                    modifier += BLESSING_CATCH_BONUS
+        return float(modifier)
+
+    def get_pray_cooldown_remaining(self, user_id: int) -> Optional[timedelta]:
+        """Сколько осталось до следующей молитвы."""
+        from sea_pray import PRAY_COOLDOWN_HOURS
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT last_pray_at
+                FROM players
+                WHERE user_id = ?
+                  AND last_pray_at IS NOT NULL
+                ORDER BY last_pray_at DESC
+                LIMIT 1
+                ''',
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+        if not row or not row[0]:
+            return None
+        try:
+            last_at = row[0] if isinstance(row[0], datetime) else datetime.fromisoformat(str(row[0]))
+        except Exception:
+            return None
+        if last_at.tzinfo is not None:
+            last_at = last_at.replace(tzinfo=None)
+        cooldown_until = last_at + timedelta(hours=PRAY_COOLDOWN_HOURS)
+        remaining = cooldown_until - datetime.utcnow()
+        if remaining.total_seconds() <= 0:
+            return None
+        return remaining
+
+    def mark_pray_used(self, user_id: int) -> None:
+        now_iso = datetime.utcnow().isoformat()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE players SET last_pray_at = ? WHERE user_id = ?',
+                (now_iso, int(user_id)),
+            )
+            conn.commit()
+
+    def add_player_coins_all_profiles(self, user_id: int, amount: int) -> int:
+        """Начислить монеты на все профили игрока."""
+        amt = max(0, int(amount))
+        if amt <= 0:
+            return 0
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE players SET coins = COALESCE(coins, 0) + ? WHERE user_id = ?',
+                (amt, int(user_id)),
+            )
+            conn.commit()
+        return amt
+
+    def break_active_rod_by_divine_wrath(self, user_id: int, chat_id: int) -> Optional[str]:
+        """Сломать текущую активную удочку (бамбук → 0 прочности, остальные → 0)."""
+        player = self.get_player(int(user_id), int(chat_id))
+        if not player:
+            player = self.get_player(int(user_id), -1) or self.get_player(int(user_id), 0)
+        if not player:
+            return None
+        rod_name = str(player.get('current_rod') or BAMBOO_ROD)
+        self.init_player_rod(int(user_id), rod_name, chat_id=int(chat_id))
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE player_rods
+                SET current_durability = 0, recovery_start_time = NULL
+                WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND rod_name = ?
+                ''',
+                (int(user_id), rod_name),
+            )
+            conn.commit()
+        return rod_name
+
+    def grant_paid_boat_divine(self, user_id: int) -> bool:
+        """Подарить платную лодку без списания бриллиантов."""
+        self._ensure_boat_tables()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM boats WHERE user_id = ? AND type = 'paid' LIMIT 1",
+                (int(user_id),),
+            )
+            if cursor.fetchone():
+                return False
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO boats (user_id, type, name, capacity, max_weight, durability, max_durability, is_active)
+                VALUES (?, 'paid', ?, ?, ?, ?, ?, 0)
+                ''',
+                (int(user_id), 'Корабль Аргонавтов', 3, 1500.0, 150, 150),
+            )
+            cursor.execute(
+                "SELECT id FROM boats WHERE user_id = ? AND type = 'paid' ORDER BY id DESC LIMIT 1",
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return False
+            boat_id = row[0]
+            cursor.execute(
+                'INSERT INTO boat_members (boat_id, user_id, is_owner) VALUES (?, ?, 1)',
+                (boat_id, int(user_id)),
+            )
+            conn.commit()
+        return True
+
     def _ensure_antibot_captcha_table(self):
         """Создать таблицу анти-абуза для капчи Mini App, если её нет."""
         with self._connect() as conn:
@@ -1896,6 +2237,28 @@ class Database:
             cursor.execute('''
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_anti_abuse_active_token
                 ON anti_abuse_captcha (active_token)
+            ''')
+            conn.commit()
+
+            conn.commit()
+
+    def _ensure_project_donations_table(self):
+        """Таблица пожертвований проекту (Telegram Stars в личке с ботом)."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS project_donations (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    username TEXT,
+                    amount INTEGER NOT NULL,
+                    telegram_payment_charge_id TEXT NOT NULL UNIQUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_project_donations_user
+                ON project_donations (user_id, created_at DESC)
             ''')
             conn.commit()
 
@@ -1973,6 +2336,41 @@ class Database:
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_ecological_disasters_active
                 ON ecological_disasters (location, is_active, ends_at)
+            ''')
+
+            # Новая универсальная таблица событий на локациях
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS location_events (
+                    id SERIAL PRIMARY KEY,
+                    event_type TEXT NOT NULL,
+                    location TEXT NOT NULL,
+                    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    ends_at TIMESTAMP NOT NULL,
+                    is_active INTEGER DEFAULT 1,
+                    params TEXT DEFAULT '{}'
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_location_events_active
+                ON location_events (location, event_type, is_active, ends_at)
+            ''')
+
+            # Таблица для хранения цепочек стайного инстинкта
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS school_chains (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    event_id BIGINT NOT NULL,
+                    location TEXT NOT NULL,
+                    fish_name TEXT NOT NULL,
+                    chain_count INTEGER NOT NULL DEFAULT 0,
+                    last_catch_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, event_id)
+                )
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_school_chains_user_event
+                ON school_chains (user_id, event_id)
             ''')
 
             cursor.execute('''
@@ -2376,6 +2774,365 @@ class Database:
             reward_multiplier=multiplier,
             duration_minutes=duration
         )
+
+    # ===== НОВАЯ СИСТЕМА СОБЫТИЙ =====
+
+    def get_active_location_event(self, location: str, event_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Получить активное событие на локации (любого типа или конкретного)."""
+        now = datetime.utcnow()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            # Сначала деактивируем истекшие события
+            cursor.execute(
+                '''
+                UPDATE location_events
+                SET is_active = 0
+                WHERE is_active = 1 AND ends_at <= ?
+                ''',
+                (now,)
+            )
+            conn.commit()
+            
+            # Получаем активное событие
+            if event_type:
+                cursor.execute(
+                    '''
+                    SELECT id, event_type, location, started_at, ends_at, is_active, params
+                    FROM location_events
+                    WHERE LOWER(TRIM(location)) = LOWER(TRIM(?)) 
+                      AND event_type = ? 
+                      AND is_active = 1 
+                      AND ends_at > ?
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    ''',
+                    (location, event_type, now)
+                )
+            else:
+                cursor.execute(
+                    '''
+                    SELECT id, event_type, location, started_at, ends_at, is_active, params
+                    FROM location_events
+                    WHERE LOWER(TRIM(location)) = LOWER(TRIM(?)) 
+                      AND is_active = 1 
+                      AND ends_at > ?
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    ''',
+                    (location, now)
+                )
+            
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            columns = [d[0] for d in cursor.description]
+            event_dict = dict(zip(columns, row))
+            
+            # Парсим JSON params
+            import json
+            params_str = event_dict.get('params', '{}')
+            try:
+                event_dict['params'] = json.loads(params_str) if isinstance(params_str, str) else {}
+            except:
+                event_dict['params'] = {}
+            
+            return event_dict
+
+    def get_any_active_location_event(self, event_type: str) -> Optional[Dict[str, Any]]:
+        """Проверить, есть ли активное событие данного типа на любой локации."""
+        now = datetime.utcnow()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, event_type, location, started_at, ends_at, is_active, params
+                FROM location_events
+                WHERE event_type = ? AND is_active = 1 AND ends_at > ?
+                ORDER BY started_at DESC
+                LIMIT 1
+                ''',
+                (event_type, now)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            columns = [d[0] for d in cursor.description]
+            event_dict = dict(zip(columns, row))
+            
+            # Парсим JSON params
+            import json
+            params_str = event_dict.get('params', '{}')
+            try:
+                event_dict['params'] = json.loads(params_str) if isinstance(params_str, str) else {}
+            except:
+                event_dict['params'] = {}
+            
+            return event_dict
+
+    def get_all_active_events_on_location(self, location: str) -> List[Dict[str, Any]]:
+        """Получить ВСЕ активные события на локации (для отображения)."""
+        now = datetime.utcnow()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            # Сначала деактивируем истекшие события
+            cursor.execute(
+                '''
+                UPDATE location_events
+                SET is_active = 0
+                WHERE is_active = 1 AND ends_at <= ?
+                ''',
+                (now,)
+            )
+            conn.commit()
+            
+            cursor.execute(
+                '''
+                SELECT id, event_type, location, started_at, ends_at, is_active, params
+                FROM location_events
+                WHERE LOWER(TRIM(location)) = LOWER(TRIM(?)) 
+                  AND is_active = 1 
+                  AND ends_at > ?
+                ORDER BY started_at DESC
+                ''',
+                (location, now)
+            )
+            
+            events = []
+            for row in cursor.fetchall():
+                columns = [d[0] for d in cursor.description]
+                event_dict = dict(zip(columns, row))
+                
+                # Парсим JSON params
+                import json
+                params_str = event_dict.get('params', '{}')
+                try:
+                    event_dict['params'] = json.loads(params_str) if isinstance(params_str, str) else {}
+                except:
+                    event_dict['params'] = {}
+                
+                events.append(event_dict)
+            
+            return events
+
+    def start_location_event(
+        self,
+        event_type: str,
+        location: str,
+        duration_minutes: int,
+        params: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Начать новое событие на локации."""
+        import json
+        now = datetime.utcnow()
+        ends_at = now + timedelta(minutes=duration_minutes)
+        params_json = json.dumps(params, ensure_ascii=False)
+        
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO location_events (
+                    event_type, location, started_at, ends_at, is_active, params
+                )
+                VALUES (?, ?, ?, ?, 1, ?)
+                RETURNING id, event_type, location, started_at, ends_at, is_active, params
+                ''',
+                (event_type, location, now, ends_at, params_json)
+            )
+            row = cursor.fetchone()
+            columns = [d[0] for d in cursor.description] if cursor.description else []
+            conn.commit()
+            
+            event_dict = dict(zip(columns, row)) if row else {}
+            if event_dict:
+                try:
+                    event_dict['params'] = json.loads(event_dict.get('params', '{}'))
+                except:
+                    event_dict['params'] = {}
+            
+            return event_dict
+
+    def stop_location_event(self, location: str, event_type: Optional[str] = None) -> bool:
+        """Остановить событие на локации."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            if event_type:
+                cursor.execute(
+                    '''
+                    UPDATE location_events
+                    SET is_active = 0
+                    WHERE LOWER(TRIM(location)) = LOWER(TRIM(?)) 
+                      AND event_type = ? 
+                      AND is_active = 1
+                    ''',
+                    (location, event_type)
+                )
+            else:
+                cursor.execute(
+                    '''
+                    UPDATE location_events
+                    SET is_active = 0
+                    WHERE LOWER(TRIM(location)) = LOWER(TRIM(?)) 
+                      AND is_active = 1
+                    ''',
+                    (location,)
+                )
+            changed = int(getattr(cursor, 'rowcount', 0) or 0)
+            conn.commit()
+            return changed > 0
+
+    def maybe_start_location_event(
+        self,
+        location: str,
+        event_type: str,
+        chance: float,
+        cooldown_hours: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Попытаться начать событие на локации с учетом шанса и cooldown.
+        
+        ПРАВИЛА:
+        - Только ОДНО событие (любого типа) может быть активно на одной локации
+        - Каждый тип события может быть активен только на ОДНОЙ локации
+        
+        Args:
+            location: название локации
+            event_type: тип события
+            chance: шанс срабатывания (0.0 - 1.0)
+            cooldown_hours: часы cooldown после окончания события
+        
+        Returns:
+            словарь с данными события или None
+        """
+        # 1. Проверяем, есть ли УЖЕ ЛЮБОЕ активное событие на этой локации
+        any_active_on_location = self.get_active_location_event(location, event_type=None)
+        if any_active_on_location:
+            # Если на этой локации уже есть событие, возвращаем его если это наш тип
+            if any_active_on_location['event_type'] == event_type:
+                return any_active_on_location
+            # Иначе нельзя начинать новое - локация занята
+            return None
+        
+        # 2. Проверяем, есть ли активное событие ЭТОГО типа где-либо еще
+        active_anywhere = self.get_any_active_location_event(event_type)
+        if active_anywhere:
+            # Если событие этого типа активно на другой локации - нельзя начинать
+            return None
+        
+        # 3. Проверяем cooldown
+        now = datetime.utcnow()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT ends_at FROM location_events 
+                WHERE event_type = ? 
+                ORDER BY ends_at DESC 
+                LIMIT 1
+                ''',
+                (event_type,)
+            )
+            last_end = cursor.fetchone()
+            if last_end:
+                last_end_dt = last_end[0]
+                if isinstance(last_end_dt, str):
+                    last_end_dt = datetime.fromisoformat(last_end_dt)
+                if now < last_end_dt + timedelta(hours=cooldown_hours):
+                    return None
+        
+        # 4. Проверяем шанс
+        if random.random() > float(chance):
+            return None
+        
+        # 5. Начинаем событие
+        from location_events import calculate_event_duration, generate_event_params
+        
+        # Получаем рыб на локации для генерации параметров
+        location_fish = []
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT DISTINCT fish_name 
+                    FROM fish_locations 
+                    WHERE LOWER(TRIM(location_name)) = LOWER(TRIM(?))
+                    ''',
+                    (location,)
+                )
+                location_fish = [row[0] for row in cursor.fetchall()]
+        except:
+            pass
+        
+        duration = calculate_event_duration(event_type)
+        params = generate_event_params(event_type, location_fish)
+        
+        return self.start_location_event(
+            event_type=event_type,
+            location=location,
+            duration_minutes=duration,
+            params=params
+        )
+
+    def get_school_chain(self, user_id: int, event_id: int) -> Dict[str, Any]:
+        """Получить цепочку стайного инстинкта для пользователя."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, user_id, event_id, location, fish_name, chain_count, last_catch_at
+                FROM school_chains
+                WHERE user_id = ? AND event_id = ?
+                ''',
+                (int(user_id), int(event_id))
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {'chain_count': 0, 'fish_name': ''}
+            
+            columns = [d[0] for d in cursor.description]
+            return dict(zip(columns, row))
+
+    def update_school_chain(
+        self,
+        user_id: int,
+        event_id: int,
+        location: str,
+        fish_name: str,
+        chain_count: int
+    ) -> None:
+        """Обновить цепочку стайного инстинкта."""
+        now = datetime.utcnow()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO school_chains (user_id, event_id, location, fish_name, chain_count, last_catch_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, event_id) 
+                DO UPDATE SET 
+                    fish_name = excluded.fish_name,
+                    chain_count = excluded.chain_count,
+                    last_catch_at = excluded.last_catch_at
+                ''',
+                (int(user_id), int(event_id), location, fish_name, int(chain_count), now)
+            )
+            conn.commit()
+
+    def reset_school_chain(self, user_id: int, event_id: int) -> None:
+        """Сбросить цепочку стайного инстинкта."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                DELETE FROM school_chains
+                WHERE user_id = ? AND event_id = ?
+                ''',
+                (int(user_id), int(event_id))
+            )
+            conn.commit()
 
     def _pick_daily_market_fish(self) -> Optional[str]:
         with self._connect() as conn:
@@ -4866,6 +5623,7 @@ class Database:
         self._pool = None
         self._db_url = None
         self.is_postgres = os.getenv('DATABASE_URL') is not None or os.getenv('DB_HOST') is not None
+        self._achievement_notifications: Dict[int, List[Dict[str, Any]]] = {}
 
     def _get_db_url(self):
         if self._db_url:
@@ -5313,7 +6071,8 @@ class Database:
                     name TEXT UNIQUE NOT NULL,
                     fish_population INTEGER NOT NULL,
                     current_players INTEGER DEFAULT 0,
-                    max_players INTEGER NOT NULL
+                    max_players INTEGER NOT NULL,
+                    required_level INTEGER DEFAULT 0
                 )
             ''')
             
@@ -5549,6 +6308,7 @@ class Database:
             self._ensure_user_effects_table()
             self._ensure_antibot_captcha_table()
             self._ensure_duel_tables()
+            self._ensure_project_donations_table()
             self._ensure_extended_gameplay_tables()
             self._ensure_webapp_ui_tables()
 
@@ -5819,6 +6579,33 @@ class Database:
         ensure_column('caught_fish', 'sold', 'INTEGER DEFAULT 0')
         ensure_column('caught_fish', 'sold_at', 'TIMESTAMP')
         ensure_column('fish', 'required_level', 'INTEGER DEFAULT 0')
+        ensure_column('fish', 'activity_period', "TEXT DEFAULT 'all'")
+        ensure_column('players', 'last_pray_at', 'TEXT')
+
+        try:
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS player_achievements (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    achievement_id TEXT NOT NULL,
+                    tier INTEGER NOT NULL,
+                    unlocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, achievement_id, tier)
+                )
+            ''')
+            cursor.execute(
+                'CREATE INDEX IF NOT EXISTS idx_player_achievements_user ON player_achievements(user_id)'
+            )
+            cursor.execute(
+                'CREATE INDEX IF NOT EXISTS idx_player_achievements_ach ON player_achievements(achievement_id, tier)'
+            )
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        ensure_column('locations', 'required_level', 'INTEGER DEFAULT 0')
         ensure_column('star_transactions', 'chat_id', 'INTEGER')
         ensure_column('star_transactions', 'chat_title', 'TEXT')
         ensure_column('player_rods', 'chat_id', 'INTEGER')
@@ -6327,10 +7114,13 @@ class Database:
             
             # Добавление локаций
             locations_data = [
-                ("Городской пруд", 100, 0, 5),
-                ("Река", 150, 0, 10),
-                ("Озеро", 200, 0, 15),
-                ("Море", 300, 0, 20),
+                ("Городской пруд", 100, 0, 5, 0),
+                ("Река", 150, 0, 10, 0),
+                ("Озеро", 200, 0, 15, 0),
+                ("Море", 300, 0, 20, 0),
+                ("Коралловый риф", 250, 0, 12, 5),
+                ("Глубоководный желоб", 200, 0, 8, 8),
+                ("Мангровые заросли", 180, 0, 10, 10),
             ]
 
             # Ensure `locations.id` has a sequence/default on Postgres so inserts without id work
@@ -6355,8 +7145,8 @@ class Database:
                     pass
 
             cursor.executemany('''
-                INSERT OR IGNORE INTO locations (name, fish_population, current_players, max_players)
-                VALUES (?, ?, ?, ?)
+                INSERT OR IGNORE INTO locations (name, fish_population, current_players, max_players, required_level)
+                VALUES (?, ?, ?, ?, ?)
             ''', locations_data)
             
             # Добавление наживок
@@ -6652,6 +7442,48 @@ class Database:
                 ("Рыба-капля", "Аномалия", 0.7, 3.0, 25, 50, 110, "Море", "Все", "Черви,Живец,Опарыш,Мотыль,Кусочки рыбы,Блесна,Воблер", 5, None),
                 ("Баррелей", "Аномалия", 0.2, 1.0, 10, 25, 80, "Море", "Все", "Черви,Живец,Опарыш,Мотыль,Кусочки рыбы,Блесна,Воблер", 5, None),
                 ("Черный живоглот", "Аномалия", 0.8, 4.0, 20, 45, 130, "Море", "Все", "Черви,Живец,Опарыш,Мотыль,Кусочки рыбы,Блесна,Воблер", 5, None),
+
+                # ===== КОРАЛЛОВЫЙ РИФ =====
+                ("Рыба-клоун", "Обычная", 0.05, 0.3, 8, 15, 25, "Коралловый риф", "Все", "Креветка,Мякиш хлеба,Морской червь,Опарыш", 5, None),
+                ("Рыба-хирург", "Обычная", 0.1, 0.5, 12, 25, 30, "Коралловый риф", "Все", "Креветка,Морской червь,Опарыш,Мотыль", 6, None),
+                ("Морской конёк", "Редкая", 0.01, 0.05, 5, 15, 50, "Коралловый риф", "Все", "Креветка,Мотыль,Опарыш", 4, None),
+                ("Краб-отшельник", "Обычная", 0.02, 0.1, 3, 10, 20, "Коралловый риф", "Все", "Морской червь,Кусочки рыбы,Креветка", 4, None),
+                ("Осьминог рифовый", "Редкая", 0.5, 3.0, 20, 60, 80, "Коралловый риф", "Все", "Кусочки рыбы,Креветка,Живец,Кальмар", 12, None),
+                ("Актиния", "Обычная", 0.1, 0.5, 5, 20, 15, "Коралловый риф", "Все", "Морской червь,Креветка", 5, None),
+                ("Мурена-зебра", "Легендарная", 2.0, 15.0, 50, 150, 300, "Коралловый риф", "Все", "Живец,Кусочки рыбы,Кальмар,Кусок мяса", 30, None),
+                ("Спинорог", "Редкая", 0.3, 2.0, 15, 40, 60, "Коралловый риф", "Все", "Креветка,Кусочки рыбы,Морской червь,Моллюск", 10, None),
+
+                # ===== ГЛУБОКОВОДНЫЙ ЖЕЛОБ =====
+                ("Гигантский изопод", "Редкая", 0.5, 2.0, 15, 40, 100, "Глубоководный желоб", "Все", "Кусочки рыбы,Морской червь,Креветка", 10, None),
+                ("Рыба-удильщик", "Легендарная", 3.0, 20.0, 30, 100, 400, "Глубоководный желоб", "Все", "Живец,Кусочки рыбы,Кальмар,Крупный живец", 35, None),
+                ("Вампировый кальмар", "Мифическая", 1.0, 5.0, 20, 50, 500, "Глубоководный желоб", "Все", "Кусочки рыбы,Креветка,Морской червь", 20, None),
+                ("Медуза-корнерот", "Редкая", 2.0, 10.0, 30, 80, 150, "Глубоководный желоб", "Все", "Креветка,Морской червь", 18, None),
+                ("Глубоководный удильщик (самка)", "Мифическая", 5.0, 30.0, 40, 120, 800, "Глубоководный желоб", "Все", "Крупный живец,Кусочки рыбы,Кальмар,Живец", 45, None),
+                ("Осьминог Дамбо", "Легендарная", 1.0, 8.0, 20, 60, 350, "Глубоководный желоб", "Все", "Кусочки рыбы,Креветка,Кальмар", 25, None),
+                ("Стеклянный кальмар", "Редкая", 0.3, 2.0, 10, 40, 120, "Глубоководный желоб", "Все", "Кусочки рыбы,Морской червь,Креветка", 12, None),
+
+                # ===== МАНГРОВЫЕ ЗАРОСЛИ =====
+                ("Илистый прыгун", "Обычная", 0.05, 0.3, 8, 20, 25, "Мангровые заросли", "Все", "Морской червь,Креветка,Опарыш", 5, None),
+                ("Мангровый краб", "Обычная", 0.1, 0.8, 10, 25, 30, "Мангровые заросли", "Все", "Кусочки рыбы,Морской червь,Креветка", 6, None),
+                ("Рыба-архитектор", "Редкая", 0.2, 1.5, 12, 35, 80, "Мангровые заросли", "Все", "Креветка,Морской червь,Живец,Кусочки рыбы", 10, None),
+                ("Моллюск-древоточец", "Обычная", 0.05, 0.4, 5, 15, 20, "Мангровые заросли", "Все", "Морской червь,Креветка", 5, None),
+                ("Крылатка-зебра", "Легендарная", 1.0, 5.0, 20, 50, 250, "Мангровые заросли", "Все", "Живец,Кусочки рыбы,Креветка,Кальмар", 18, None),
+                ("Морская звезда-подсолнух", "Редкая", 0.5, 3.0, 15, 60, 100, "Мангровые заросли", "Все", "Моллюск,Морской червь,Кусочки рыбы", 12, None),
+                ("Личинка угря (лептоцефал)", "Редкая", 0.01, 0.1, 5, 15, 60, "Мангровые заросли", "Все", "Мотыль,Опарыш,Морской червь", 5, None),
+
+                # ===== ДОПОЛНЕНИЯ ДЛЯ СУЩЕСТВУЮЩИХ ЛОКАЦИЙ =====
+                # Пруд
+                ("Американский рак", "Редкая", 0.1, 0.8, 10, 25, 40, "Городской пруд", "Весна,Лето,Осень", "Кусочки рыбы,Черви,Мотыль,Опарыш", 6, None),
+                ("Лягушка-бык", "Редкая", 0.2, 1.0, 10, 20, 45, "Городской пруд", "Весна,Лето,Осень", "Черви,Муха,Опарыш,Мотыль", 8, None),
+                # Река
+                ("Речная минога", "Редкая", 0.05, 0.4, 15, 40, 50, "Река", "Все", "Черви,Мотыль,Личинка,Опарыш", 8, None),
+                ("Камбала речная", "Редкая", 0.3, 2.0, 20, 45, 55, "Река", "Весна,Лето,Осень", "Черви,Кусочки рыбы,Мотыль,Выползок", 10, None),
+                # Озеро
+                ("Озёрная медуза", "Редкая", 0.1, 0.5, 10, 30, 40, "Озеро", "Лето", "Мотыль,Опарыш", 6, None),
+                ("Беззубка", "Обычная", 0.05, 0.3, 5, 15, 15, "Озеро", "Все", "Мотыль,Опарыш,Черви", 5, None),
+                # Море
+                ("Кальмар-стрела", "Редкая", 0.5, 3.0, 20, 60, 70, "Море", "Все", "Кусочки рыбы,Креветка,Живец,Морской червь", 12, None),
+                ("Морской ёж", "Обычная", 0.1, 0.6, 5, 15, 20, "Море", "Все", "Морской червь,Креветка", 5, None),
             ]
 
             from fish_stickers import FISH_INFO
@@ -6692,17 +7524,16 @@ class Database:
                     suitable_baits = normalize_baits(info.get("nutrition", ""))
                 normalized_fish_data.append((
                     name, rarity, min_weight, max_weight, min_length, max_length, price,
-                    locations, seasons, suitable_baits, max_rod_weight, required_level, sticker_id
+                    locations, seasons, suitable_baits, max_rod_weight, required_level, sticker_id,
+                    get_activity_for_fish_name(name, rarity),
                 ))
             fish_data = normalized_fish_data
             
             cursor.execute('DELETE FROM fish')
             cursor.executemany('''
-                INSERT OR REPLACE INTO fish (name, rarity, min_weight, max_weight, min_length, max_length, price, locations, seasons, suitable_baits, max_rod_weight, required_level, sticker_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO fish (name, rarity, min_weight, max_weight, min_length, max_length, price, locations, seasons, suitable_baits, max_rod_weight, required_level, sticker_id, activity_period)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', fish_data)
-            # Никакой рыбе не нужно набирать уровень — сбрасываем required_level в 0 для всех существующих записей
-            cursor.execute('UPDATE fish SET required_level = 0')
             
             # Добавление мусора для реки
             trash_data = [
@@ -6994,12 +7825,46 @@ class Database:
                 return player
             return None
 
+    def get_all_players(self) -> List[Dict[str, Any]]:
+        """Получить список всех игроков (глобальные профили)."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(players)")
+            cols = [c[1] for c in cursor.fetchall()]
+            
+            if 'chat_id' in cols:
+                # Выбираем только глобальные профили
+                cursor.execute('''
+                    SELECT * FROM players 
+                    WHERE chat_id IS NULL OR chat_id < 1
+                    ORDER BY user_id
+                ''')
+            else:
+                # Для старых БД без chat_id
+                cursor.execute('''
+                    SELECT * FROM players 
+                    ORDER BY user_id
+                ''')
+            
+            rows = cursor.fetchall()
+            columns = [description[0] for description in cursor.description]
+            
+            return [dict(zip(columns, row)) for row in rows]
+
     def has_any_player_profile(self, user_id: int) -> bool:
         """Проверить, есть ли профиль пользователя в любом чате"""
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT 1 FROM players WHERE user_id = ? LIMIT 1', (user_id,))
             return cursor.fetchone() is not None
+
+    def get_any_chat_id_for_user(self, user_id: int) -> Optional[int]:
+        """Получить любой chat_id для пользователя"""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT chat_id FROM players WHERE user_id = ? LIMIT 1', (user_id,))
+            row = cursor.fetchone()
+            return row[0] if row else None
 
     def has_any_referral(self, user_id: int) -> bool:
         """Проверить, является ли пользователь рефералом в любом чате"""
@@ -7371,7 +8236,13 @@ class Database:
                 return dict(zip(columns, row))
             return None
 
-    def get_fish_by_location(self, location: str, season: str = "Лето", min_level: Optional[int] = None) -> List[Dict[str, Union[str, int, float]]]:
+    def get_fish_by_location(
+        self,
+        location: str,
+        season: str = "Лето",
+        min_level: Optional[int] = None,
+        apply_time_filter: bool = True,
+    ) -> List[Dict[str, Union[str, int, float]]]:
         """Получить список рыб для локации"""
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -7385,9 +8256,17 @@ class Database:
             cursor.execute(query, params)
             rows = cursor.fetchall()
             columns = [description[0] for description in cursor.description]
-            return [dict(zip(columns, row)) for row in rows]
+            result = [dict(zip(columns, row)) for row in rows]
+            if apply_time_filter:
+                result = filter_fish_by_time(result)
+            return result
 
-    def get_fish_by_location_any_season(self, location: str, min_level: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_fish_by_location_any_season(
+        self,
+        location: str,
+        min_level: Optional[int] = None,
+        apply_time_filter: bool = True,
+    ) -> List[Dict[str, Any]]:
         """Получить список рыб для локации без учета сезона"""
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -7401,7 +8280,10 @@ class Database:
             cursor.execute(query, params)
             rows = cursor.fetchall()
             columns = [description[0] for description in cursor.description]
-            return [dict(zip(columns, row)) for row in rows]
+            result = [dict(zip(columns, row)) for row in rows]
+            if apply_time_filter:
+                result = filter_fish_by_time(result)
+            return result
     
     def get_random_fish(self, location: str, season: str = "Лето", bait_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Получить случайную рыбу для локации с учетом наживки"""
@@ -7478,6 +8360,10 @@ class Database:
             
             # Обновляем статистику пользователя
             self.update_player_fish_stats(user_id, normalized_name, float(weight), is_trash)
+            try:
+                self.evaluate_achievements(int(user_id), chat_id=chat_id_to_store)
+            except Exception:
+                logger.exception("evaluate_achievements failed user_id=%s", user_id)
 
         if saved:
             logger.info(
@@ -10363,6 +11249,134 @@ class Database:
             conn.commit()
             return True
     
+    def add_bait(self, user_id: int, bait_name: str, quantity: int = 1) -> bool:
+        """Добавить наживку игроку."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO player_baits (user_id, bait_name, quantity)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id, bait_name) 
+                DO UPDATE SET quantity = quantity + ?
+            ''', (user_id, bait_name, quantity, quantity))
+            conn.commit()
+            return True
+    
+    def remove_bait(self, user_id: int, bait_name: str, quantity: int = 1) -> bool:
+        """Удалить наживку у игрока."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            
+            # Проверяем количество
+            cursor.execute('''
+                SELECT quantity FROM player_baits 
+                WHERE user_id = ? AND bait_name = ?
+            ''', (user_id, bait_name))
+            result = cursor.fetchone()
+            
+            if not result or result[0] < quantity:
+                return False
+            
+            # Уменьшаем количество
+            cursor.execute('''
+                UPDATE player_baits 
+                SET quantity = quantity - ?
+                WHERE user_id = ? AND bait_name = ?
+            ''', (quantity, user_id, bait_name))
+            
+            # Удаляем если стало 0
+            cursor.execute('''
+                DELETE FROM player_baits 
+                WHERE user_id = ? AND bait_name = ? AND quantity <= 0
+            ''', (user_id, bait_name))
+            
+            conn.commit()
+            return True
+    
+    def get_all_rods(self) -> List[Dict[str, Any]]:
+        """Получить список всех удочек."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM rods ORDER BY price ASC')
+            rows = cursor.fetchall()
+            columns = [d[0] for d in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
+    
+    def get_all_locations(self) -> List[str]:
+        """Получить список всех локаций."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT DISTINCT name FROM locations ORDER BY name')
+            return [row[0] for row in cursor.fetchall()]
+    
+    def get_baits_for_location(self, location: str) -> List[Dict[str, Any]]:
+        """Получить наживки для локации."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            # Получаем рыб локации
+            cursor.execute('''
+                SELECT DISTINCT fish_name FROM fish_locations 
+                WHERE LOWER(TRIM(location_name)) = LOWER(TRIM(?))
+            ''', (location,))
+            fish_names = [row[0] for row in cursor.fetchall()]
+            
+            if not fish_names:
+                return []
+            
+            # Получаем наживки для этих рыб
+            placeholders = ','.join('?' * len(fish_names))
+            cursor.execute(f'''
+                SELECT DISTINCT b.* FROM baits b
+                JOIN fish_baits fb ON b.name = fb.bait_name
+                WHERE fb.fish_name IN ({placeholders})
+                ORDER BY b.name
+            ''', fish_names)
+            
+            rows = cursor.fetchall()
+            columns = [d[0] for d in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
+    
+    def get_player_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        """Найти игрока по username."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM players 
+                WHERE LOWER(username) = LOWER(?) 
+                  AND (chat_id IS NULL OR chat_id < 1)
+                LIMIT 1
+            ''', (username,))
+            row = cursor.fetchone()
+            if row:
+                columns = [d[0] for d in cursor.description]
+                return dict(zip(columns, row))
+            return None
+    
+    def get_player_clothing(self, user_id: int, clothing_code: str) -> Optional[Dict[str, Any]]:
+        """Проверить наличие одежды у игрока."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM player_clothing 
+                WHERE user_id = ? AND clothing_code = ?
+            ''', (user_id, clothing_code))
+            row = cursor.fetchone()
+            if row:
+                columns = [d[0] for d in cursor.description]
+                return dict(zip(columns, row))
+            return None
+    
+    def add_clothing(self, user_id: int, clothing_code: str) -> bool:
+        """Добавить одежду игроку."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR IGNORE INTO player_clothing (user_id, clothing_code)
+                VALUES (?, ?)
+            ''', (user_id, clothing_code))
+            conn.commit()
+            return True
+    
     def get_trash_by_location(self, location: str) -> List[Dict[str, Any]]:
         """Получить список мусора для локации"""
         with self._connect() as conn:
@@ -10445,6 +11459,48 @@ class Database:
                 ''', (user_id, telegram_payment_charge_id, total_amount, refund_status))
             conn.commit()
             return cursor.rowcount > 0
+
+    def add_project_donation(
+        self,
+        user_id: int,
+        amount: int,
+        telegram_payment_charge_id: str,
+        username: Optional[str] = None,
+    ) -> bool:
+        """Записать пожертвование проекту."""
+        if not telegram_payment_charge_id or int(amount or 0) <= 0:
+            return False
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO project_donations (user_id, username, amount, telegram_payment_charge_id)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (telegram_payment_charge_id) DO NOTHING
+                ''',
+                (int(user_id), username, int(amount), telegram_payment_charge_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_project_donations_total(self) -> int:
+        """Сумма всех пожертвований проекту (Stars)."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COALESCE(SUM(amount), 0) FROM project_donations')
+            row = cursor.fetchone()
+            return int(row[0] or 0) if row else 0
+
+    def get_user_project_donations_total(self, user_id: int) -> int:
+        """Сумма пожертвований конкретного пользователя."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT COALESCE(SUM(amount), 0) FROM project_donations WHERE user_id = ?',
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+            return int(row[0] or 0) if row else 0
 
     def increment_chat_stars(self, chat_id: int, amount: int, chat_title: Optional[str] = None) -> bool:
         """Увеличить счётчик звёзд для чата. Создаст запись если нужно."""
@@ -12388,8 +13444,19 @@ class Database:
             conn.commit()
             return True
 
-    def grant_rod(self, user_id: int, rod_name: str, chat_id: int) -> bool:
-        """Выдать пользователю удочку (глобально). Если уже есть — восстанавливаем до полной прочности."""
+    def grant_rod(self, user_id: int, rod_name: str, chat_id: int, stack: bool = False) -> bool:
+        """
+        Выдать пользователю удочку (глобально). 
+        
+        Args:
+            user_id: ID пользователя
+            rod_name: Название удочки
+            chat_id: ID чата
+            stack: Если True и удочка временная, прибавляет использования к существующей
+        
+        Returns:
+            True если удочка выдана успешно
+        """
         rod = self.get_rod(rod_name)
         if not rod:
             return False
@@ -12398,32 +13465,51 @@ class Database:
             cursor = conn.cursor()
             # Проверяем наличие глобальной записи
             cursor.execute('''
-                SELECT 1 FROM player_rods
+                SELECT current_durability, max_durability FROM player_rods
                 WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND rod_name = ?
             ''', (user_id, rod_name))
-            if cursor.fetchone():
-                # If this is a temporary rod (uses range), initialize uses accordingly
-                uses = self._get_temp_rod_uses(rod_name)
-                if uses is None:
-                    max_dur = rod.get('max_durability', rod.get('durability', 0))
-                    current = max_dur
+            existing = cursor.fetchone()
+            
+            # Определяем использования для временной удочки
+            new_uses = self._get_temp_rod_uses(rod_name)
+            is_temp_rod = new_uses is not None
+            
+            if existing:
+                current_dur, max_dur = existing
+                
+                # Если это временная удочка и включен стакинг
+                if is_temp_rod and stack:
+                    # Прибавляем новые использования к текущим
+                    new_current = int(current_dur) + new_uses
+                    new_max = int(max_dur) + new_uses
+                    
+                    cursor.execute('''
+                        UPDATE player_rods
+                        SET current_durability = ?, max_durability = ?
+                        WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND rod_name = ?
+                    ''', (new_current, new_max, user_id, rod_name))
                 else:
-                    max_dur = uses
-                    current = uses
+                    # Обычная логика - восстанавливаем до полной прочности
+                    if is_temp_rod:
+                        max_dur = new_uses
+                        current = new_uses
+                    else:
+                        max_dur = rod.get('max_durability', rod.get('durability', 0))
+                        current = max_dur
 
-                cursor.execute('''
-                    UPDATE player_rods
-                    SET current_durability = ?, max_durability = ?
+                    cursor.execute('''
+                        UPDATE player_rods
+                        SET current_durability = ?, max_durability = ?
                     WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND rod_name = ?
                 ''', (current, max_dur, user_id, rod_name))
             else:
-                uses = self._get_temp_rod_uses(rod_name)
-                if uses is None:
+                # Создаем новую запись
+                if is_temp_rod:
+                    max_dur = new_uses
+                    current = new_uses
+                else:
                     max_dur = rod.get('max_durability', rod.get('durability', 0))
                     current = max_dur
-                else:
-                    max_dur = uses
-                    current = uses
 
                 cursor.execute('''
                     INSERT OR REPLACE INTO player_rods (user_id, rod_name, current_durability, max_durability, chat_id)

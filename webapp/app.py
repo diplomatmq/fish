@@ -784,7 +784,7 @@ def sell_bulk():
 					xp, _, _, _, total_weight = calculate_sale_summary(fish_items)
 					tot_xp += xp
 					# Обновляем статистику продажи
-					db.update_player_sale_stats(user_id, total_weight, tot_price)
+					db.update_player_sale_stats(user_id, total_weight, tot_price, fish_count=len(fish_items))
 				except:
 					pass
 				
@@ -814,6 +814,25 @@ def api_ratings():
 @app.get("/api/results")
 def api_results():
 	return jsonify({"ok": True, "results": []})
+
+
+@app.get("/api/achievements")
+def api_achievements():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	db = _get_fish_db()
+	if db is None:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		data = db.get_user_achievement_progress(user_id)
+		return jsonify({"ok": True, **data})
+	except Exception:
+		logger.exception("API achievements failed user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "internal_error"}), 500
 
 
 @app.post("/api/make-trophy")

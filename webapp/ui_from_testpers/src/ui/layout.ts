@@ -126,7 +126,11 @@ export function hideEntryOverlay(overlay: HTMLElement, delay = 1600): void {
 }
 
 // ── Quick action bounce helper ──────────────────────────────────────────────
-export function bindQuickActions(onRatingClick?: () => void, onResultsClick?: () => void): void {
+export function bindQuickActions(
+  onRatingClick?: () => void,
+  onResultsClick?: () => void,
+  onAchievementsClick?: () => void,
+): void {
   const achievementsBtn = document.getElementById('btn-achievements');
   const ratingBtn       = document.getElementById('btn-rating');
   const resultsBtn      = document.getElementById('btn-results');
@@ -150,6 +154,11 @@ export function bindQuickActions(onRatingClick?: () => void, onResultsClick?: ()
   // Results button opens results screen
   if (resultsBtn && onResultsClick) {
     resultsBtn.addEventListener('click', onResultsClick);
+  }
+
+  // Achievements button opens achievements screen
+  if (achievementsBtn && onAchievementsClick) {
+    achievementsBtn.addEventListener('click', onAchievementsClick);
   }
 }
 

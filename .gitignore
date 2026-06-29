@@ -8,6 +8,7 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+.kiro/
 
 # Do NOT ignore the main SQLite DB if you want it in repository
 # fishbot.db
@@ -27,7 +28,7 @@ backups/
 # large installers (ignored during cleanups)
 TunnelBear-Installer.exe
 *.exe
-fishbot.db 
+fishbot.db
 
 # Node modules
 node_modules/

@@ -9,6 +9,7 @@ import './adventures.css';
 import './guilds.css';
 import './friends.css';
 import './rating.css';
+import './achievements.css';
 import './captcha.css';
 
 import { buildLayout, buildEntryOverlay, hideEntryOverlay, bindQuickActions, bindTrophyButton } from './ui/layout';
@@ -22,6 +23,7 @@ import { GuildsScreen } from './ui/guildsScreen';
 import { FriendsScreen } from './ui/friendsScreen';
 import { RatingScreen } from './ui/ratingScreen';
 import { ResultsScreen } from './ui/resultsScreen';
+import { AchievementsScreen } from './ui/achievementsScreen';
 import { CaptchaScreen } from './ui/captchaScreen';
 import { ParticleSystem } from './animations/particles';
 import { ParallaxController } from './animations/effects';
@@ -148,12 +150,18 @@ const resultsScreen = new ResultsScreen();
 const resultsScreenEl = resultsScreen.getElement();
 screensWrap.appendChild(resultsScreenEl);
 
+// ── Achievements screen ───────────────────────────────────────────────────────
+const achievementsScreen = new AchievementsScreen();
+const achievementsScreenEl = achievementsScreen.getElement();
+screensWrap.appendChild(achievementsScreenEl);
+
 let bookInitialized = false;
 let shopInitialized = false;
 let guildsInitialized = false;
 let friendsInitialized = false;
 let ratingInitialized = false;
 let resultsInitialized = false;
+let achievementsInitialized = false;
 
 // ── Shop screen ────────────────────────────────────────────────────────────────────
 const tabbarMount = document.getElementById('tabbar-mount')!;
@@ -170,7 +178,7 @@ tabBar.onChange((_prev, next) => {
   // Hide/show TabBar based on screen
   const tabBarEl = document.getElementById('tab-bar');
   if (tabBarEl) {
-    if (next === 'rating' || next === 'results') {
+    if (next === 'rating' || next === 'results' || next === 'achievements') {
       tabBarEl.classList.add('hide-tabbar');
     } else {
       tabBarEl.classList.remove('hide-tabbar');
@@ -207,6 +215,12 @@ tabBar.onChange((_prev, next) => {
   } else if (next === 'results' && resultsInitialized) {
     resultsScreen.init();
   }
+  if (next === 'achievements' && !achievementsInitialized) {
+    achievementsScreen.init();
+    achievementsInitialized = true;
+  } else if (next === 'achievements' && achievementsInitialized) {
+    achievementsScreen.init();
+  }
   
   // ИСПРАВЛЕНИЕ: При возврате на home - сбрасываем анимации и показываем контент
   if (next === 'home') {
@@ -229,7 +243,8 @@ tabBar.onChange((_prev, next) => {
 // ── Quick action buttons ────────────────────────────────────────────────────
 bindQuickActions(
   () => tabBar.switchTo('rating'),
-  () => tabBar.switchTo('results')
+  () => tabBar.switchTo('results'),
+  () => tabBar.switchTo('achievements'),
 );
 
 // ── Navigate home event listener ───────────────────────────────────────────

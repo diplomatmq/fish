@@ -46,6 +46,7 @@ if sys.platform == 'win32':
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from database import db, DB_PATH, BAMBOO_ROD, TEMP_ROD_RANGES
+from image_file_id_cache import ImageFileIdCache, collect_catch_image_paths, normalize_cache_key, resolve_image_path
 
 # --- TelegramBotAPI for invoice link creation ---
 import httpx
@@ -56,25 +57,52 @@ ASYNC_PG_POOL: Optional[asyncpg.Pool] = None
 ASYNC_SQLITE_CONN: Optional[aiosqlite.Connection] = None
 ASYNC_REDIS: Optional[aioredis.Redis] = None
 _SEND_SEMAPHORE: Optional[asyncio.Semaphore] = None
+_TEXT_SEND_SEMAPHORE: Optional[asyncio.Semaphore] = None
+_DOCUMENT_SEND_SEMAPHORE: Optional[asyncio.Semaphore] = None
 SLOW_OPERATION_SECONDS = float(os.getenv("SLOW_OPERATION_SECONDS", "2.0"))
 
 
 _FISH_DISPATCH_SEMAPHORE = None
+_TG_API: Optional["TelegramBotAPI"] = None
 
 
 def get_fish_dispatch_semaphore() -> asyncio.Semaphore:
     """Ограничивает число одновременных обработок «фиш»/рыбалки (защита event loop и БД)."""
     global _FISH_DISPATCH_SEMAPHORE
     if _FISH_DISPATCH_SEMAPHORE is None:
-        _FISH_DISPATCH_SEMAPHORE = asyncio.Semaphore(int(os.getenv("TG_FISH_DISPATCH_LIMIT", "48")))
+        _FISH_DISPATCH_SEMAPHORE = asyncio.Semaphore(int(os.getenv("TG_FISH_DISPATCH_LIMIT", "512")))
     return _FISH_DISPATCH_SEMAPHORE
 
 
 def get_send_semaphore() -> asyncio.Semaphore:
+    """Общий семафор для прочих API-вызовов (edit, get_chat и т.д.)."""
     global _SEND_SEMAPHORE
     if _SEND_SEMAPHORE is None:
         _SEND_SEMAPHORE = asyncio.Semaphore(int(os.getenv("TG_SEND_SEMAPHORE_LIMIT", "256")))
     return _SEND_SEMAPHORE
+
+
+def get_text_send_semaphore() -> asyncio.Semaphore:
+    """Отдельная очередь для текста — не ждёт загрузки тяжёлых документов/картинок."""
+    global _TEXT_SEND_SEMAPHORE
+    if _TEXT_SEND_SEMAPHORE is None:
+        _TEXT_SEND_SEMAPHORE = asyncio.Semaphore(int(os.getenv("TG_TEXT_SEND_LIMIT", "512")))
+    return _TEXT_SEND_SEMAPHORE
+
+
+def get_document_send_semaphore() -> asyncio.Semaphore:
+    global _DOCUMENT_SEND_SEMAPHORE
+    if _DOCUMENT_SEND_SEMAPHORE is None:
+        _DOCUMENT_SEND_SEMAPHORE = asyncio.Semaphore(int(os.getenv("TG_DOCUMENT_SEND_LIMIT", "128")))
+    return _DOCUMENT_SEND_SEMAPHORE
+
+
+def get_tg_api() -> "TelegramBotAPI":
+    global _TG_API
+    if _TG_API is None:
+        from config import BOT_TOKEN as _bot_token
+        _TG_API = TelegramBotAPI(_bot_token)
+    return _TG_API
 
 
 async def get_http_session() -> aiohttp.ClientSession:
@@ -186,29 +214,26 @@ class TelegramBotAPI:
 
     async def create_invoice_link(self, **kwargs: Any) -> Optional[str]:
         import logging
-        logger = logging.getLogger(__name__)
-        logger.info(f"[INVOICE] CALL create_invoice_link with kwargs: {kwargs}")
+        inv_logger = logging.getLogger(__name__)
+        inv_logger.debug("[INVOICE] create_invoice_link payload=%s", kwargs.get("payload"))
         try:
             session = await get_http_session()
             async with session.post(f"{self.base_url}/createInvoiceLink", json=kwargs) as response:
                 text = await response.text()
-                logger.info(f"[INVOICE] Telegram API status: {response.status}")
-                logger.info(f"[INVOICE] Telegram API response: {text}")
                 if response.status == 200:
                     try:
                         result = await response.json()
                     except Exception as e:
-                        logger.error(f"[INVOICE] Failed to parse JSON: {e}, text: {text}")
+                        inv_logger.error("[INVOICE] Failed to parse JSON: %s", e)
                         return None
                     if result.get("ok"):
-                        logger.info(f"[INVOICE] Got invoice_url: {result.get('result')}")
                         return result.get("result")
-                    logger.error(f"[INVOICE] Telegram API error: {result.get('description')}, full response: {text}")
+                    inv_logger.warning("[INVOICE] Telegram API error: %s", result.get("description"))
                     return None
-                logger.error(f"[INVOICE] HTTP error: {response.status}, text: {text}")
+                inv_logger.warning("[INVOICE] HTTP error: %s", response.status)
                 return None
         except Exception as e:
-            logger.error(f"[INVOICE] Exception in create_invoice_link: {e}")
+            inv_logger.error("[INVOICE] Exception in create_invoice_link: %s", e)
             return None
 from game_logic import game
 from config import BOT_TOKEN, COIN_NAME, STAR_NAME, GUARANTEED_CATCH_COST, get_current_season, RULES_TEXT, RULES_LINK, INFO_LINK
@@ -580,10 +605,15 @@ class EmojiBot(ExtBot):
 
     async def _call_with_timeout(self, method_name: str, coro_factory):
         last_exc = None
+        if method_name == "send_document":
+            send_sem = get_document_send_semaphore()
+        elif method_name in ("send_message", "edit_message_text"):
+            send_sem = get_text_send_semaphore()
+        else:
+            send_sem = get_send_semaphore()
         for attempt in range(self.API_CALL_RETRIES + 1):
             try:
-                # Ограничиваем количество одновременных сетевых запросов
-                async with get_send_semaphore():
+                async with send_sem:
                     coro = coro_factory()
                     return await asyncio.wait_for(coro, timeout=self.API_CALL_TIMEOUT)
             except RetryAfter as exc:
@@ -1325,7 +1355,10 @@ class FishBot:
         await query.message.reply_text("Введите количество звёзд для вывода:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def handle_withdraw_stars_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка ввода количества звёзд для вывода"""
+        """Обработка ввода количества звёзд для вывода и суммы пожертвования (/donat)."""
+        if context.user_data.get('waiting_donation_amount'):
+            await self.handle_donation_amount_input(update, context)
+            return
         if not context.user_data.get('waiting_withdraw_stars'):
             return
         user_id = update.effective_user.id
@@ -2115,6 +2148,25 @@ class FishBot:
         """Payload для гарантированного улова (инвойс)."""
         return f"guaranteed_{user_id}_{chat_id}_{int(datetime.now().timestamp())}"
 
+    def _build_project_donate_payload(self, user_id: int, amount: int) -> str:
+        return f"project_donate_{user_id}_{amount}_{int(datetime.now().timestamp())}"
+
+    def _parse_project_donate_payload(self, payload: str) -> Optional[Dict[str, Any]]:
+        """Парсит payload вида project_donate_{user_id}_{amount}_{ts}."""
+        if not payload.startswith("project_donate_"):
+            return None
+        parts = payload.split("_")
+        if len(parts) < 5:
+            return None
+        try:
+            return {
+                "user_id": int(parts[2]),
+                "amount": int(parts[3]),
+                "created_ts": int(parts[4]),
+            }
+        except (ValueError, IndexError):
+            return None
+
 
     def _build_dynamite_skip_payload(self, user_id: int, chat_id: int) -> str:
         """Payload для мгновенного взрыва динамита (инвойс)."""
@@ -2651,18 +2703,285 @@ class FishBot:
             reply_to_message_id=reply_to_message_id,
         )
 
-    async def _create_guaranteed_invoice_url(self, user_id: int, chat_id: int) -> Optional[str]:
+    async def _create_guaranteed_invoice_url(
+        self,
+        user_id: int,
+        chat_id: int,
+        location: Optional[str] = None,
+    ) -> Optional[str]:
         """Создать ссылку инвойса для гарантированного улова."""
-        from config import BOT_TOKEN, STAR_NAME
+        from config import STAR_NAME
 
-        tg_api = TelegramBotAPI(BOT_TOKEN)
-        return await tg_api.create_invoice_link(
+        payload = self._build_guaranteed_payload(user_id, chat_id)
+        if location:
+            payload = f"{payload}_{str(location).replace(' ', '_')}"
+
+        return await get_tg_api().create_invoice_link(
             title="Гарантированный улов",
             description=f"Гарантированный улов — подтвердите оплату (1 {STAR_NAME})",
-            payload=self._build_guaranteed_payload(user_id, chat_id),
+            payload=payload,
             currency="XTR",
             prices=[{"label": "Вход", "amount": 1}],
         )
+
+    async def _attach_guaranteed_invoice_to_message(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        message_id: int,
+        text: str,
+        location: Optional[str] = None,
+        payment_footer: str = "\n\n⭐ Оплатите 1 Telegram Stars для гарантированного улова!",
+    ) -> None:
+        try:
+            invoice_url = await self._create_guaranteed_invoice_url(user_id, chat_id, location=location)
+            if not invoice_url:
+                return
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    f"⭐ Оплатить {GUARANTEED_CATCH_COST} Telegram Stars",
+                    url=invoice_url,
+                )]
+            ])
+            final_text = text if payment_footer.strip() in text else f"{text}{payment_footer}"
+            await self._safe_edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=final_text,
+                reply_markup=keyboard,
+            )
+            self._store_active_invoice_context(
+                user_id=user_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                invoice_url=invoice_url,
+            )
+        except Exception:
+            logger.exception("[INVOICE] Failed to attach guaranteed button user=%s chat=%s", user_id, chat_id)
+
+    async def _send_text_then_guaranteed_invoice_button(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        text: str,
+        reply_to_message_id: Optional[int] = None,
+        location: Optional[str] = None,
+        payment_footer: str = "\n\n⭐ Оплатите 1 Telegram Stars для гарантированного улова!",
+    ) -> Optional[Message]:
+        """Мгновенно отправляет текст; кнопку оплаты добавляет в фоне."""
+        msg = await self._safe_send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_to_message_id=reply_to_message_id,
+        )
+        if not msg:
+            return None
+        asyncio.create_task(self._attach_guaranteed_invoice_to_message(
+            chat_id=chat_id,
+            user_id=user_id,
+            message_id=msg.message_id,
+            text=text,
+            location=location,
+            payment_footer=payment_footer,
+        ))
+        return msg
+
+    async def _attach_repair_invoice_to_message(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        message_id: int,
+        text: str,
+        rod_name: str,
+    ) -> None:
+        try:
+            invoice_url = await get_tg_api().create_invoice_link(
+                title="Ремонт удочки",
+                description=f"Полное восстановление прочности удочки '{rod_name}'",
+                payload=f"repair_rod_{rod_name}",
+                currency="XTR",
+                prices=[{"label": f"Ремонт {rod_name}", "amount": 20}],
+            )
+            if not invoice_url:
+                return
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("💳 Оплатить Telegram Stars", url=invoice_url),
+            ]])
+            await self._safe_edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=keyboard,
+            )
+            self._store_active_invoice_context(
+                user_id=user_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                invoice_url=invoice_url,
+            )
+        except Exception:
+            logger.exception("[INVOICE] Failed to attach repair button user=%s chat=%s", user_id, chat_id)
+
+    async def _send_catch_text_and_image(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        *,
+        chat_id: int,
+        text: str,
+        reply_to_message_id: Optional[int],
+        item_name: Optional[str] = None,
+        item_type: str = "fish",
+        fish_meta: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Сначала текст (мгновенно), картинку — в фоне без блокировки ответа."""
+        await self._safe_send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_to_message_id=reply_to_message_id,
+        )
+        if not item_name:
+            return
+
+        async def _send_image() -> None:
+            try:
+                sticker_message = await self._send_catch_image(
+                    chat_id=chat_id,
+                    item_name=item_name,
+                    item_type=item_type,
+                    reply_to_message_id=reply_to_message_id,
+                )
+                if not sticker_message:
+                    return
+                context.bot_data.setdefault("last_bot_stickers", {})[chat_id] = sticker_message.message_id
+                if fish_meta:
+                    context.bot_data.setdefault("sticker_fish_map", {})[sticker_message.message_id] = fish_meta
+            except Exception:
+                logger.exception("_send_catch_text_and_image failed chat=%s item=%s", chat_id, item_name)
+
+        asyncio.create_task(_send_image())
+
+    def _schedule_fish_catch_followups(
+        self,
+        *,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        user_id: int,
+        chat_id: int,
+        result: Dict[str, Any],
+        player: Dict[str, Any],
+        fish_name: str,
+        weight: float,
+        length: float,
+        catch_id: Optional[int] = None,
+        resolve_latest_catch: bool = True,
+    ) -> None:
+        async def _followups() -> None:
+            try:
+                await self._maybe_process_duel_catch(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    fish_name=fish_name,
+                    weight=weight,
+                    length=length,
+                    catch_id=catch_id,
+                    resolve_latest_catch=resolve_latest_catch,
+                )
+            except Exception:
+                logger.exception("Failed duel followup user=%s chat=%s", user_id, chat_id)
+
+            try:
+                unlocks = await _run_sync(db.drain_achievement_notifications, user_id)
+                if unlocks:
+                    username = (
+                        player.get('username')
+                        or getattr(getattr(update, 'effective_user', None), 'username', None)
+                    )
+                    from achievements import format_unlock_message
+                    reply_id = getattr(getattr(update, 'message', None), 'message_id', None)
+                    best_by_ach: Dict[str, Dict[str, Any]] = {}
+                    for unlock in unlocks:
+                        aid = str(unlock.get('achievement_id') or '')
+                        tier = int(unlock.get('tier') or 1)
+                        prev = best_by_ach.get(aid)
+                        if not prev or tier > int(prev.get('tier') or 0):
+                            best_by_ach[aid] = unlock
+                    for unlock in best_by_ach.values():
+                        text = format_unlock_message(
+                            username,
+                            unlock.get('achievement_id', ''),
+                            int(unlock.get('tier') or 1),
+                        )
+                        await self._safe_send_message(
+                            chat_id=chat_id,
+                            text=text,
+                            reply_to_message_id=reply_id,
+                        )
+            except Exception:
+                logger.exception("Failed achievement announce user=%s chat=%s", user_id, chat_id)
+
+            if result.get('temp_rod_broken'):
+                try:
+                    await self._safe_send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "💥 Временная удочка сломалась после удачного улова.\n"
+                            "Теперь активна бамбуковая. Купить новую можно в магазине."
+                        ),
+                        reply_to_message_id=getattr(update.message, "message_id", None),
+                    )
+                except Exception:
+                    pass
+                return
+
+            if player.get('current_rod') == BAMBOO_ROD and result.get('rod_broken'):
+                try:
+                    await self._safe_send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "💔 Удочка сломалась!\n\n"
+                            f"🔧 Прочность: 0/{result.get('max_durability', 100)}\n\n"
+                            "Используйте /repair чтобы починить удочку или подождите автовосстановления."
+                        ),
+                        reply_to_message_id=getattr(update.message, "message_id", None),
+                    )
+                except Exception:
+                    pass
+            elif (
+                player.get('current_rod') == BAMBOO_ROD
+                and result.get('current_durability', 100) < result.get('max_durability', 100)
+            ):
+                try:
+                    await self._safe_send_message(
+                        chat_id=chat_id,
+                        text=f"🔧 Прочность удочки: {result.get('current_durability', 100)}/{result.get('max_durability', 100)}",
+                        reply_to_message_id=getattr(update.message, "message_id", None),
+                    )
+                except Exception:
+                    pass
+
+            if result.get('is_on_boat'):
+                try:
+                    if await _run_sync(db.check_boat_crash, user_id):
+                        await self._safe_send_message(
+                            chat_id=chat_id,
+                            text="💥 <b>КРУШЕНИЕ!</b> Лодка не выдержала веса и сломалась! Весь улов текущего плавания утерян.",
+                            reply_to_message_id=getattr(update.message, "message_id", None),
+                        )
+                    else:
+                        left = await _run_sync(db.check_boat_weight_warning, user_id)
+                        if left is not None and left < 50:
+                            await self._safe_send_message(
+                                chat_id=chat_id,
+                                text=f"⚠️ <b>ВНИМАНИЕ!</b> Лодка почти полна. Осталось места: {left:.1f} кг",
+                                reply_to_message_id=getattr(update.message, "message_id", None),
+                            )
+                except Exception:
+                    logger.exception("Boat followup failed user=%s", user_id)
+
+        asyncio.create_task(_followups())
 
     async def _build_guaranteed_invoice_markup(self, user_id: int, chat_id: int) -> Optional[InlineKeyboardMarkup]:
         """Собрать inline-кнопку со ссылкой на оплату гарантированного улова."""
@@ -2743,7 +3062,8 @@ class FishBot:
         self.application = None  # Будет установлено в main()
         self._tour_response_cache = {}
         self._tour_cache_ttl = float(os.getenv("TOUR_CACHE_TTL_SECONDS", "10"))
-        self._telegram_document_file_id_cache = {}
+        self._image_file_id_cache = ImageFileIdCache()
+        self._image_file_id_cache.load()
         self.OWNER_ID = 793216884
         raw_url = (os.getenv("WEBAPP_URL") or "https://fish.monkeysdynasty.website").strip()
         # Удаляем возможные кавычки, пробелы и другие лишние символы
@@ -3432,12 +3752,20 @@ class FishBot:
         )
 
     async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Отменить создание RAF-ивента."""
+        """Отменить создание RAF-ивента или отправку подарка."""
         if update.effective_chat.type != 'private':
             await update.message.reply_text("Команда /cancel работает только в личных сообщениях с ботом.")
             return
 
         user_id = update.effective_user.id
+        
+        # Проверяем отправку подарка
+        send_draft = context.user_data.pop('send_gift_draft', None)
+        if send_draft:
+            await update.message.reply_text("✅ Ваша попытка отправить подарок отменена.")
+            return
+        
+        # Проверяем RAF
         draft = context.user_data.pop('raf_draft', None)
         cancelled = False
         event_id = None
@@ -3459,8 +3787,871 @@ class FishBot:
                 await update.message.reply_text(f"✅ Создание RAF-ивента отменено (ID: {event_id}).")
             else:
                 await update.message.reply_text("✅ Создание RAF-ивента отменено.")
+        elif context.user_data.pop('waiting_donation_amount', None):
+            await update.message.reply_text("✅ Пожертвование отменено.")
         else:
-            await update.message.reply_text("Нет активного создания RAF-ивента для отмены.")
+            await update.message.reply_text("Нет активных операций для отмены.")
+
+    @require_action_lock
+    async def send_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /send - отправить подарок другому игроку."""
+        # Работает только в ЛС
+        if update.effective_chat.type != 'private':
+            return
+        
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        
+        # Проверяем профиль
+        player = await _run_sync(db.get_player, user_id, chat_id)
+        if not player:
+            await update.message.reply_text("Сначала создайте профиль командой /start")
+            return
+        
+        from send_gift_system import get_send_main_menu_keyboard
+        
+        # Инициализируем состояние
+        context.user_data['send_gift_draft'] = {
+            'step': 'select_type',
+            'sender_id': user_id,
+            'sender_chat_id': chat_id,
+        }
+        
+        await update.message.reply_text(
+            "🎁 <b>Отправка подарка</b>\n\n"
+            "Выберите что хотите отправить:\n\n"
+            "💡 Стоимость отправки: 25 ⭐\n"
+            "Для отмены используйте /cancel",
+            reply_markup=get_send_main_menu_keyboard(),
+            parse_mode="HTML"
+        )
+
+    async def handle_send_select_type(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка выбора типа подарка"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = update.effective_user.id
+        
+        # Проверяем состояние
+        draft = context.user_data.get('send_gift_draft')
+        if not draft or draft.get('sender_id') != user_id:
+            await query.edit_message_text("❌ Сессия отправки подарка истекла. Используйте /send чтобы начать заново.")
+            return
+        
+        from send_gift_system import (
+            GIFT_TYPE_COINS, GIFT_TYPE_RODS, GIFT_TYPE_BAITS,
+            GIFT_TYPE_NETS, GIFT_TYPE_CLOTHING,
+            get_rods_keyboard, get_clothing_keyboard,
+            get_bait_locations_keyboard, GIFT_TYPE_NAMES
+        )
+        
+        # Извлекаем тип подарка из callback_data
+        gift_type = query.data.replace('send_select_', '')
+        
+        draft['gift_type'] = gift_type
+        
+        if gift_type == GIFT_TYPE_COINS:
+            # Для монет просим ввести количество
+            draft['step'] = 'enter_coins'
+            await query.edit_message_text(
+                f"💰 <b>Отправка монет</b>\n\n"
+                f"Введите количество монет для отправки:",
+                parse_mode="HTML"
+            )
+        
+        elif gift_type == GIFT_TYPE_RODS:
+            # Показываем список удочек
+            draft['step'] = 'select_rod'
+            await query.edit_message_text(
+                f"🎣 <b>Выбор удочки</b>\n\n"
+                f"Выберите удочку для отправки:",
+                reply_markup=get_rods_keyboard(page=0),
+                parse_mode="HTML"
+            )
+        
+        elif gift_type == GIFT_TYPE_BAITS:
+            # Показываем локации для наживок
+            draft['step'] = 'select_bait_location'
+            await query.edit_message_text(
+                f"🪱 <b>Выбор наживки</b>\n\n"
+                f"Сначала выберите локацию:",
+                reply_markup=get_bait_locations_keyboard(),
+                parse_mode="HTML"
+            )
+        
+        elif gift_type == GIFT_TYPE_NETS:
+            # Для сетей просим ввести количество
+            draft['step'] = 'enter_nets'
+            await query.edit_message_text(
+                f"🕸️ <b>Отправка сетей</b>\n\n"
+                f"Введите количество сетей для отправки:",
+                parse_mode="HTML"
+            )
+        
+        elif gift_type == GIFT_TYPE_CLOTHING:
+            # Показываем список одежды
+            draft['step'] = 'select_clothing'
+            await query.edit_message_text(
+                f"👕 <b>Выбор одежды</b>\n\n"
+                f"Выберите одежду для отправки:",
+                reply_markup=get_clothing_keyboard(page=0),
+                parse_mode="HTML"
+            )
+
+    async def handle_send_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Отмена отправки подарка"""
+        query = update.callback_query
+        await query.answer("Отменено")
+        
+        context.user_data.pop('send_gift_draft', None)
+        
+        await query.edit_message_text("✅ Отправка подарка отменена.")
+
+    async def handle_send_back_main(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Возврат в главное меню отправки"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = update.effective_user.id
+        
+        draft = context.user_data.get('send_gift_draft')
+        if not draft or draft.get('sender_id') != user_id:
+            await query.edit_message_text("❌ Сессия отправки подарка истекла. Используйте /send чтобы начать заново.")
+            return
+        
+        from send_gift_system import get_send_main_menu_keyboard
+        
+        # Сбрасываем состояние
+        draft['step'] = 'select_type'
+        draft.pop('gift_type', None)
+        draft.pop('item_name', None)
+        draft.pop('quantity', None)
+        draft.pop('location', None)
+        
+        await query.edit_message_text(
+            "🎁 <b>Отправка подарка</b>\n\n"
+            "Выберите что хотите отправить:\n\n"
+            "💡 Стоимость отправки: 25 ⭐\n"
+            "Для отмены используйте /cancel",
+            reply_markup=get_send_main_menu_keyboard(),
+            parse_mode="HTML"
+        )
+
+    async def handle_send_rod_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка выбора удочки"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = update.effective_user.id
+        
+        draft = context.user_data.get('send_gift_draft')
+        if not draft or draft.get('sender_id') != user_id:
+            await query.edit_message_text("❌ Сессия отправки подарка истекла. Используйте /send чтобы начать заново.")
+            return
+        
+        # Извлекаем название удочки из callback_data: send_rod_{rod_name}
+        rod_name = query.data.replace('send_rod_', '')
+        
+        draft['item_name'] = rod_name
+        draft['step'] = 'enter_username'
+        
+        await query.edit_message_text(
+            f"🎣 <b>Отправка удочки</b>\n\n"
+            f"Удочка: {rod_name}\n\n"
+            f"Теперь введите @username или ID получателя:",
+            parse_mode="HTML"
+        )
+
+    async def handle_send_rods_page(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Пагинация списка удочек"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = update.effective_user.id
+        
+        draft = context.user_data.get('send_gift_draft')
+        if not draft or draft.get('sender_id') != user_id:
+            await query.edit_message_text("❌ Сессия отправки подарка истекла.")
+            return
+        
+        from send_gift_system import get_rods_keyboard
+        
+        # Извлекаем номер страницы: send_rods_page_{page}
+        page = int(query.data.split('_')[-1])
+        
+        await query.edit_message_text(
+            f"🎣 <b>Выбор удочки</b>\n\n"
+            f"Выберите удочку для отправки:",
+            reply_markup=get_rods_keyboard(page=page),
+            parse_mode="HTML"
+        )
+
+    async def handle_send_clothing_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка выбора одежды"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = update.effective_user.id
+        
+        draft = context.user_data.get('send_gift_draft')
+        if not draft or draft.get('sender_id') != user_id:
+            await query.edit_message_text("❌ Сессия отправки подарка истекла.")
+            return
+        
+        # Извлекаем код одежды: send_clothing_{code}
+        clothing_code = query.data.replace('send_clothing_', '')
+        
+        draft['item_name'] = clothing_code
+        draft['step'] = 'enter_username'
+        
+        await query.edit_message_text(
+            f"👕 <b>Отправка одежды</b>\n\n"
+            f"Одежда: {clothing_code}\n\n"
+            f"Теперь введите @username или ID получателя:",
+            parse_mode="HTML"
+        )
+
+    async def handle_send_clothing_page(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Пагинация списка одежды"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = update.effective_user.id
+        
+        draft = context.user_data.get('send_gift_draft')
+        if not draft or draft.get('sender_id') != user_id:
+            await query.edit_message_text("❌ Сессия отправки подарка истекла.")
+            return
+        
+        from send_gift_system import get_clothing_keyboard
+        
+        # Извлекаем номер страницы: send_clothing_page_{page}
+        page = int(query.data.split('_')[-1])
+        
+        await query.edit_message_text(
+            f"👕 <b>Выбор одежды</b>\n\n"
+            f"Выберите одежду для отправки:",
+            reply_markup=get_clothing_keyboard(page=page),
+            parse_mode="HTML"
+        )
+
+    async def handle_send_bait_location_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка выбора локации для наживок"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = update.effective_user.id
+        
+        draft = context.user_data.get('send_gift_draft')
+        if not draft or draft.get('sender_id') != user_id:
+            await query.edit_message_text("❌ Сессия отправки подарка истекла.")
+            return
+        
+        from send_gift_system import get_baits_for_location_keyboard
+        
+        # Извлекаем локацию: send_bait_loc_{location}
+        location = query.data.replace('send_bait_loc_', '')
+        
+        draft['location'] = location
+        draft['step'] = 'select_bait'
+        
+        await query.edit_message_text(
+            f"🪱 <b>Выбор наживки</b>\n\n"
+            f"Локация: {location}\n"
+            f"Выберите наживку:",
+            reply_markup=get_baits_for_location_keyboard(location, page=0),
+            parse_mode="HTML"
+        )
+
+    async def handle_send_bait_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка выбора наживки"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = update.effective_user.id
+        
+        draft = context.user_data.get('send_gift_draft')
+        if not draft or draft.get('sender_id') != user_id:
+            await query.edit_message_text("❌ Сессия отправки подарка истекла.")
+            return
+        
+        # Извлекаем название наживки: send_bait_{bait_name}
+        bait_name = query.data.replace('send_bait_', '')
+        
+        draft['item_name'] = bait_name
+        draft['step'] = 'enter_bait_quantity'
+        
+        await query.edit_message_text(
+            f"🪱 <b>Отправка наживки</b>\n\n"
+            f"Наживка: {bait_name}\n\n"
+            f"Введите количество:",
+            parse_mode="HTML"
+        )
+
+    async def handle_send_baits_page(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Пагинация списка наживок"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = update.effective_user.id
+        
+        draft = context.user_data.get('send_gift_draft')
+        if not draft or draft.get('sender_id') != user_id:
+            await query.edit_message_text("❌ Сессия отправки подарка истекла.")
+            return
+        
+        from send_gift_system import get_baits_for_location_keyboard
+        
+        # Извлекаем локацию и страницу: send_baits_page_{location}_{page}
+        parts = query.data.replace('send_baits_page_', '').rsplit('_', 1)
+        location = parts[0]
+        page = int(parts[1])
+        
+        await query.edit_message_text(
+            f"🪱 <b>Выбор наживки</b>\n\n"
+            f"Локация: {location}\n"
+            f"Выберите наживку:",
+            reply_markup=get_baits_for_location_keyboard(location, page=page),
+            parse_mode="HTML"
+        )
+
+    async def handle_send_text_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка текстового ввода для отправки подарка"""
+        if update.effective_chat.type != 'private':
+            return
+        
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        
+        draft = context.user_data.get('send_gift_draft')
+        if not draft or draft.get('sender_id') != user_id:
+            return
+        
+        from send_gift_system import (
+            validate_gift_item, find_user_by_username_or_id,
+            GIFT_TYPE_COINS, GIFT_TYPE_NETS, GIFT_TYPE_BAITS
+        )
+        
+        step = draft.get('step')
+        text = update.message.text.strip()
+        
+        try:
+            if step == 'enter_coins':
+                # Валидация количества монет
+                quantity = int(text)
+                if quantity <= 0:
+                    await update.message.reply_text("❌ Количество должно быть больше 0")
+                    return
+                
+                # Проверяем наличие монет
+                success, error = validate_gift_item(user_id, chat_id, GIFT_TYPE_COINS, None, quantity)
+                if not success:
+                    await update.message.reply_text(f"❌ {error}")
+                    return
+                
+                draft['quantity'] = quantity
+                draft['step'] = 'enter_username'
+                
+                await update.message.reply_text(
+                    f"💰 <b>Отправка {quantity} монет</b>\n\n"
+                    f"Введите @username или ID получателя:",
+                    parse_mode="HTML"
+                )
+            
+            elif step == 'enter_nets':
+                # Валидация количества сетей
+                quantity = int(text)
+                if quantity <= 0:
+                    await update.message.reply_text("❌ Количество должно быть больше 0")
+                    return
+                
+                # Проверяем наличие сетей
+                success, error = validate_gift_item(user_id, chat_id, GIFT_TYPE_NETS, None, quantity)
+                if not success:
+                    await update.message.reply_text(f"❌ {error}")
+                    return
+                
+                draft['quantity'] = quantity
+                draft['step'] = 'enter_username'
+                
+                await update.message.reply_text(
+                    f"🕸️ <b>Отправка {quantity} сетей</b>\n\n"
+                    f"Введите @username или ID получателя:",
+                    parse_mode="HTML"
+                )
+            
+            elif step == 'enter_bait_quantity':
+                # Валидация количества наживки
+                quantity = int(text)
+                if quantity <= 0:
+                    await update.message.reply_text("❌ Количество должно быть больше 0")
+                    return
+                
+                bait_name = draft.get('item_name')
+                success, error = validate_gift_item(user_id, chat_id, GIFT_TYPE_BAITS, bait_name, quantity)
+                if not success:
+                    await update.message.reply_text(f"❌ {error}")
+                    return
+                
+                draft['quantity'] = quantity
+                draft['step'] = 'enter_username'
+                
+                await update.message.reply_text(
+                    f"🪱 <b>Отправка {quantity}x {bait_name}</b>\n\n"
+                    f"Введите @username или ID получателя:",
+                    parse_mode="HTML"
+                )
+            
+            elif step == 'enter_username':
+                # Поиск получателя
+                recipient = find_user_by_username_or_id(text)
+                
+                if not recipient:
+                    await update.message.reply_text(
+                        "❌ Пользователь не найден.\n"
+                        "Попробуйте ввести ID вместо username."
+                    )
+                    return
+                
+                recipient_id = recipient['user_id']
+                
+                # Нельзя отправить самому себе
+                if recipient_id == user_id:
+                    await update.message.reply_text("❌ Вы не можете отправить подарок самому себе")
+                    return
+                
+                draft['recipient_id'] = recipient_id
+                draft['step'] = 'payment'
+                
+                # Отправляем инвойс на 25 звезд
+                from send_gift_system import SEND_GIFT_STARS, SEND_GIFT_TITLE, SEND_GIFT_DESCRIPTION
+                
+                gift_type = draft.get('gift_type')
+                item_name = draft.get('item_name', '')
+                quantity = draft.get('quantity', 1)
+                
+                description = f"{SEND_GIFT_DESCRIPTION}: {gift_type}"
+                if item_name:
+                    description += f" ({item_name})"
+                if quantity > 1:
+                    description += f" x{quantity}"
+                
+                await self.application.bot.send_invoice(
+                    chat_id=chat_id,
+                    title=SEND_GIFT_TITLE,
+                    description=description,
+                    payload=f"send_gift_{user_id}_{recipient_id}",
+                    provider_token="",
+                    currency="XTR",
+                    prices=[{"label": "Отправка подарка", "amount": SEND_GIFT_STARS}]
+                )
+        
+        except ValueError:
+            await update.message.reply_text("❌ Введите корректное число")
+        except Exception as e:
+            logger.error(f"Error in handle_send_text_input: {e}", exc_info=True)
+            await update.message.reply_text("❌ Произошла ошибка")
+
+    async def handle_send_gift_precheckout(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Pre-checkout для отправки подарка"""
+        query = update.pre_checkout_query
+        
+        # Проверяем payload
+        if not query.invoice_payload.startswith('send_gift_'):
+            return
+        
+        user_id = update.effective_user.id
+        draft = context.user_data.get('send_gift_draft')
+        
+        if not draft or draft.get('sender_id') != user_id:
+            await query.answer(ok=False, error_message="Сессия отправки истекла")
+            return
+        
+        # Финальная проверка ресурсов
+        from send_gift_system import validate_gift_item
+        
+        gift_type = draft.get('gift_type')
+        item_name = draft.get('item_name')
+        quantity = draft.get('quantity', 1)
+        chat_id = draft.get('sender_chat_id')
+        
+        success, error = validate_gift_item(user_id, chat_id, gift_type, item_name, quantity)
+        
+        if not success:
+            await query.answer(ok=False, error_message=f"Недостаточно ресурсов: {error}")
+            return
+        
+        await query.answer(ok=True)
+
+    async def handle_send_gift_successful_payment(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка успешной оплаты отправки подарка"""
+        payment = update.message.successful_payment
+        
+        if not payment.invoice_payload.startswith('send_gift_'):
+            return
+        
+        user_id = update.effective_user.id
+        draft = context.user_data.get('send_gift_draft')
+        
+        if not draft or draft.get('sender_id') != user_id:
+            await update.message.reply_text("❌ Ошибка: сессия отправки не найдена")
+            return
+        
+        from send_gift_system import execute_gift_transfer, GIFT_TYPE_NAMES
+        
+        sender_id = draft['sender_id']
+        sender_chat_id = draft['sender_chat_id']
+        recipient_id = draft['recipient_id']
+        gift_type = draft['gift_type']
+        item_name = draft.get('item_name')
+        quantity = draft.get('quantity', 1)
+        
+        # Получаем chat_id получателя (ищем любой его профиль)
+        recipient_chat_id = await _run_sync(db.get_any_chat_id_for_user, recipient_id)
+        if not recipient_chat_id:
+            recipient_chat_id = sender_chat_id  # fallback
+        
+        # Выполняем передачу
+        success, message = execute_gift_transfer(
+            sender_id, sender_chat_id,
+            recipient_id, recipient_chat_id,
+            gift_type, item_name, quantity
+        )
+        
+        if not success:
+            await update.message.reply_text(f"❌ Ошибка передачи: {message}")
+            context.user_data.pop('send_gift_draft', None)
+            return
+        
+        # Уведомляем отправителя
+        gift_name = GIFT_TYPE_NAMES.get(gift_type, gift_type)
+        await update.message.reply_text(
+            f"✅ <b>Подарок отправлен!</b>\n\n"
+            f"{message}\n"
+            f"Получатель: {recipient_id}",
+            parse_mode="HTML"
+        )
+        
+        # Уведомляем получателя
+        try:
+            recipient_text = (
+                f"🎁 <b>Вы получили подарок!</b>\n\n"
+                f"{message}\n"
+                f"От: {sender_id}"
+            )
+            await self.application.bot.send_message(
+                chat_id=recipient_id,
+                text=recipient_text,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.warning(f"Could not send gift notification to recipient {recipient_id}: {e}")
+        
+        # Очищаем состояние
+        context.user_data.pop('send_gift_draft', None)
+
+    DONATION_MIN_STARS = 1
+    DONATION_MAX_STARS = int(os.getenv("DONATION_MAX_STARS", "2500"))
+
+    @require_action_lock
+    async def pray_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Молитва Морскому Повелителю — случайное божественное вмешательство."""
+        from sea_pray import (
+            BLESSING_EFFECT,
+            DIVINE_EFFECT_HOURS,
+            OUTCOME_MESSAGES,
+            PRAY_INTRO_CAPTION,
+            SEA_GOD_IMAGE_FILE,
+            WRATH_EFFECT,
+            generate_fish_stats,
+            pick_coin_reward,
+            pick_gift_fish,
+            pick_gift_net_name,
+            pick_gift_rod_name,
+            roll_pray_outcome,
+        )
+
+        if update.effective_chat.type == 'private':
+            await update.message.reply_text(
+                "🌊 Молитва Морскому Повелителю принимается только в рыбацких чатах."
+            )
+            return
+
+        if not update.message:
+            return
+
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        username = update.effective_user.username or update.effective_user.first_name or str(user_id)
+
+        player = await _run_sync(db.get_player, user_id, chat_id)
+        if not player:
+            try:
+                player = await _run_sync(db.create_player, user_id, username, chat_id)
+            except Exception:
+                logger.exception("pray_command: failed to create player user=%s chat=%s", user_id, chat_id)
+                await update.message.reply_text("Сначала создайте профиль командой /start")
+                return
+
+        remaining = await _run_sync(db.get_pray_cooldown_remaining, user_id)
+        if remaining:
+            total_sec = int(remaining.total_seconds())
+            hours = total_sec // 3600
+            minutes = (total_sec % 3600) // 60
+            await update.message.reply_text(
+                f"🌊 Боги уже слышали вашу молитву.\n"
+                f"Следующая — через *{hours}ч {minutes}мин*.",
+                parse_mode="Markdown",
+            )
+            return
+
+        await _run_sync(db.mark_pray_used, user_id)
+
+        reply_id = update.message.message_id
+        image_path = Path(__file__).parent / SEA_GOD_IMAGE_FILE
+        if image_path.exists():
+            await self._send_document_path_cached(
+                chat_id=chat_id,
+                path=image_path,
+                reply_to_message_id=reply_id,
+            )
+            await self._safe_send_message(
+                chat_id=chat_id,
+                text=PRAY_INTRO_CAPTION,
+                parse_mode="Markdown",
+                reply_to_message_id=reply_id,
+            )
+        else:
+            await update.message.reply_text(PRAY_INTRO_CAPTION, parse_mode="Markdown")
+
+        await asyncio.sleep(1.2)
+
+        outcome = roll_pray_outcome()
+        outcome_id = outcome.outcome_id
+        base_text = OUTCOME_MESSAGES.get(outcome_id, "🌊 Боги услышали вас.")
+        effect_minutes = DIVINE_EFFECT_HOURS * 60
+
+        if outcome_id == "wrath":
+            await _run_sync(db.clear_timed_effect, user_id, BLESSING_EFFECT)
+            await _run_sync(
+                db.apply_timed_effect, user_id, WRATH_EFFECT, effect_minutes, True,
+            )
+            await self._safe_send_message(
+                chat_id=chat_id, text=base_text, parse_mode="Markdown", reply_to_message_id=reply_id,
+            )
+            return
+
+        if outcome_id == "blessing":
+            await _run_sync(db.clear_timed_effect, user_id, WRATH_EFFECT)
+            await _run_sync(
+                db.apply_timed_effect, user_id, BLESSING_EFFECT, effect_minutes, True,
+            )
+            await self._safe_send_message(
+                chat_id=chat_id, text=base_text, parse_mode="Markdown", reply_to_message_id=reply_id,
+            )
+            return
+
+        if outcome_id in ("coins_pearl", "coins_atlantis"):
+            amount = pick_coin_reward(outcome_id)
+            await _run_sync(db.add_player_coins_all_profiles, user_id, amount)
+            await self._safe_send_message(
+                chat_id=chat_id,
+                text=f"{base_text}\n\n💰 Получено: *{amount}* 🪙",
+                parse_mode="Markdown",
+                reply_to_message_id=reply_id,
+            )
+            return
+
+        if outcome_id == "rod_break":
+            broken_rod = await _run_sync(db.break_active_rod_by_divine_wrath, user_id, chat_id)
+            rod_line = f"\n\n🎣 Пострадала удочка: *{broken_rod or 'неизвестно'}*"
+            await self._safe_send_message(
+                chat_id=chat_id,
+                text=f"{base_text}{rod_line}",
+                parse_mode="Markdown",
+                reply_to_message_id=reply_id,
+            )
+            return
+
+        if outcome_id == "gift_net":
+            net_name = pick_gift_net_name()
+            ok = await _run_sync(db.grant_net, user_id, net_name, chat_id, 1)
+            extra = f"\n\n🕸️ Вам дарована: *{net_name}*" if ok else "\n\n⚠️ Не удалось вручить сеть."
+            await self._safe_send_message(
+                chat_id=chat_id,
+                text=f"{base_text}{extra}",
+                parse_mode="Markdown",
+                reply_to_message_id=reply_id,
+            )
+            return
+
+        if outcome_id == "gift_rod":
+            rod_name = pick_gift_rod_name()
+            ok = await _run_sync(db.grant_rod, user_id, rod_name, chat_id)
+            extra = f"\n\n🔱 Вам даровано: *{rod_name}*" if ok else "\n\n⚠️ Не удалось вручить удочку."
+            await self._safe_send_message(
+                chat_id=chat_id,
+                text=f"{base_text}{extra}",
+                parse_mode="Markdown",
+                reply_to_message_id=reply_id,
+            )
+            return
+
+        if outcome_id == "paid_boat":
+            ok = await _run_sync(db.grant_paid_boat_divine, user_id)
+            if ok:
+                await self._safe_send_message(
+                    chat_id=chat_id, text=base_text, parse_mode="Markdown", reply_to_message_id=reply_id,
+                )
+            else:
+                fallback_coins = pick_coin_reward("coins_atlantis")
+                await _run_sync(db.add_player_coins_all_profiles, user_id, fallback_coins)
+                await self._safe_send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "⛵ *Корабль уже стоит у вашего причала…*\n\n"
+                        "Аргонавты не привели второй корабль, но Посейдон послал сокровища!\n"
+                        f"💰 Получено: *{fallback_coins}* 🪙"
+                    ),
+                    parse_mode="Markdown",
+                    reply_to_message_id=reply_id,
+                )
+            return
+
+        if outcome_id == "gift_fish":
+            location = (
+                player.get('current_location')
+                or player.get('last_fishing_location')
+                or 'Море'
+            )
+            fish_rows = await _run_sync(
+                db.get_fish_by_location, str(location), 'Все', 0, False,
+            )
+            if not fish_rows:
+                fish_rows = await _run_sync(db.get_fish_by_location, 'Море', 'Все', 0, False)
+            gift_fish = pick_gift_fish(fish_rows or [], str(location))
+            if not gift_fish:
+                await self._safe_send_message(
+                    chat_id=chat_id,
+                    text=f"{base_text}\n\n⚠️ Океан замолчал — трофей растворился в тумане.",
+                    parse_mode="Markdown",
+                    reply_to_message_id=reply_id,
+                )
+                return
+
+            weight, length = generate_fish_stats(gift_fish)
+            await _run_sync(
+                db.add_caught_fish, user_id, chat_id, gift_fish['name'], weight, str(location), length,
+            )
+            fish_price = int(gift_fish.get('price') or 0)
+            rarity_emoji = {
+                'Обычная': '⚪', 'Редкая': '🔵', 'Легендарная': '🟡',
+                'Мифическая': '🔴', 'Аномалия': '🟣', 'Аквариумная': '🐠',
+            }
+            fish_name_display = format_fish_name(gift_fish['name'])
+            message = f"""🌊 *Дар Левиафана!*
+
+🎉 Боги морей вручают вам трофей!
+{rarity_emoji.get(gift_fish.get('rarity'), '⚪')} {fish_name_display}
+📏 Размер: {length}см | Вес: {weight} кг
+💰 Стоимость: {fish_price} 🪙
+📍 Место: {location}
+⭐ Редкость: {gift_fish.get('rarity', '—')}
+
+_«Прими этот дар — и помни, океан всегда смотрит.»_"""
+
+            await self._send_catch_text_and_image(
+                context,
+                chat_id=chat_id,
+                text=message.strip(),
+                reply_to_message_id=reply_id,
+                item_name=gift_fish['name'],
+                item_type="fish",
+                fish_meta={
+                    "fish_name": gift_fish['name'],
+                    "weight": weight,
+                    "price": fish_price,
+                    "location": location,
+                    "rarity": gift_fish.get('rarity'),
+                },
+            )
+            return
+
+        await self._safe_send_message(
+            chat_id=chat_id, text=base_text, parse_mode="Markdown", reply_to_message_id=reply_id,
+        )
+
+    async def donat_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Пожертвование проекту — только в личке с ботом."""
+        if update.effective_chat.type != 'private':
+            return
+
+        user_id = update.effective_user.id
+        context.user_data['waiting_donation_amount'] = {
+            "user_id": user_id,
+        }
+        await update.message.reply_text(
+            "💛 *Поддержка проекта FishBot*\n\n"
+            "Спасибо, что хотите помочь развитию бота!\n\n"
+            f"Введите сумму пожертвования в Telegram Stars (целое число от "
+            f"{self.DONATION_MIN_STARS} до {self.DONATION_MAX_STARS}).\n\n"
+            "Для отмены отправьте /cancel.",
+            parse_mode="Markdown",
+        )
+
+    async def handle_donation_amount_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка ввода суммы для /donat."""
+        if update.effective_chat.type != 'private':
+            return
+
+        waiting = context.user_data.get('waiting_donation_amount')
+        if not waiting:
+            return
+
+        user_id = update.effective_user.id
+        if waiting.get('user_id') != user_id:
+            return
+
+        message = update.effective_message
+        if not message or not message.text:
+            return
+
+        raw = message.text.strip().replace(" ", "")
+        if not raw.isdigit():
+            await update.message.reply_text(
+                f"❌ Введите целое число от {self.DONATION_MIN_STARS} до {self.DONATION_MAX_STARS}."
+            )
+            return
+
+        amount = int(raw)
+        if amount < self.DONATION_MIN_STARS or amount > self.DONATION_MAX_STARS:
+            await update.message.reply_text(
+                f"❌ Сумма должна быть от {self.DONATION_MIN_STARS} до {self.DONATION_MAX_STARS} ⭐."
+            )
+            return
+
+        context.user_data.pop('waiting_donation_amount', None)
+
+        payload = self._build_project_donate_payload(user_id, amount)
+        try:
+            await self._safe_send_invoice(
+                chat_id=user_id,
+                title="Поддержка FishBot",
+                description=f"Пожертвование проекту: {amount} ⭐",
+                payload=payload,
+                provider_token="",
+                currency="XTR",
+                prices=[LabeledPrice(label="Пожертвование", amount=amount)],
+                is_flexible=False,
+            )
+            await update.message.reply_text(
+                f"💳 Счёт на {amount} ⭐ отправлен выше.\n"
+                "После оплаты вы получите благодарность и статистику сбора."
+            )
+        except Exception:
+            logger.exception("Failed to send donation invoice user=%s amount=%s", user_id, amount)
+            await update.message.reply_text("❌ Не удалось создать счёт. Попробуйте позже.")
 
     async def handle_raf_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
         """Пошаговый ввод параметров RAF-ивента."""
@@ -3727,6 +4918,84 @@ class FishBot:
                 reply_markup=None,
             )
 
+    def _remember_document_file_id(self, cache_key: str, file_id: str) -> None:
+        self._image_file_id_cache.set(cache_key, file_id)
+        asyncio.create_task(self._image_file_id_cache.save_if_dirty())
+
+    def _get_cached_document_file_id(self, cache_key: str) -> Optional[str]:
+        return self._image_file_id_cache.get(cache_key)
+
+    def _forget_document_file_id(self, cache_key: str) -> None:
+        self._image_file_id_cache.pop(cache_key)
+        asyncio.create_task(self._image_file_id_cache.save_if_dirty())
+
+    async def warm_up_image_file_id_cache(self, bot) -> None:
+        """Загружает картинки без file_id один раз и сохраняет кэш на диск."""
+        if os.getenv("IMAGE_WARMUP_ENABLED", "1") != "1":
+            logger.info("Image file_id warm-up disabled (IMAGE_WARMUP_ENABLED=0)")
+            return
+
+        missing = self._image_file_id_cache.missing_keys(collect_catch_image_paths())
+        if not missing:
+            logger.info("Image file_id cache warm-up: all catch images already cached")
+            return
+
+        warmup_chat_id = int(os.getenv("IMAGE_WARMUP_CHAT_ID", str(self.OWNER_ID)))
+        concurrency = max(1, int(os.getenv("IMAGE_WARMUP_CONCURRENCY", "8")))
+        logger.info(
+            "Image file_id cache warm-up: uploading %s images to chat_id=%s (concurrency=%s)",
+            len(missing),
+            warmup_chat_id,
+            concurrency,
+        )
+        sem = asyncio.Semaphore(concurrency)
+
+        async def _upload_one(cache_key: str) -> None:
+            async with sem:
+                path = resolve_image_path(cache_key)
+                try:
+                    file_obj = await async_file_bytes(path)
+                    async with get_document_send_semaphore():
+                        msg = await bot.send_document(chat_id=warmup_chat_id, document=file_obj)
+                    file_id = getattr(getattr(msg, "document", None), "file_id", None)
+                    if file_id:
+                        self._remember_document_file_id(cache_key, file_id)
+                except Exception as exc:
+                    logger.warning("Image warm-up failed for %s: %s", cache_key, exc)
+
+        await asyncio.gather(*(_upload_one(key) for key in missing))
+        await self._image_file_id_cache.save_if_dirty()
+        logger.info("Image file_id cache warm-up finished, total_cached=%s", len(self._image_file_id_cache))
+
+    async def _send_cached_document(
+        self,
+        chat_id: int,
+        cache_key: str,
+        path: Path,
+        reply_to_message_id: Optional[int] = None,
+    ) -> Optional[Message]:
+        cached_file_id = self._get_cached_document_file_id(cache_key)
+        if cached_file_id:
+            sent = await self._safe_send_document(
+                chat_id=chat_id,
+                document=cached_file_id,
+                reply_to_message_id=reply_to_message_id,
+            )
+            if sent:
+                return sent
+            self._forget_document_file_id(cache_key)
+
+        file_obj = await async_file_bytes(path)
+        sent = await self._safe_send_document(
+            chat_id=chat_id,
+            document=file_obj,
+            reply_to_message_id=reply_to_message_id,
+        )
+        file_id = getattr(getattr(sent, "document", None), "file_id", None)
+        if file_id:
+            self._remember_document_file_id(cache_key, file_id)
+        return sent
+
     # --- Safe API wrappers to handle Flood control (RetryAfter) ---
     async def _send_catch_image(self, chat_id: int, item_name: str, item_type: str = "fish", reply_to_message_id: Optional[int] = None) -> Optional[Message]:
         """Универсальный метод для отправки изображения улова (рыба, мусор, сокровище) как документа."""
@@ -3756,32 +5025,15 @@ class FishBot:
             logger.warning("_send_catch_image: File not found: %s", image_path)
             return None
 
-        cache_key = str(image_path.resolve())
+        cache_key = normalize_cache_key(image_file)
 
         try:
-            cached_file_id = self._telegram_document_file_id_cache.get(cache_key)
-            if cached_file_id:
-                sent = await self._safe_send_document(
-                    chat_id=chat_id,
-                    document=cached_file_id,
-                    reply_to_message_id=reply_to_message_id
-                )
-                if sent:
-                    return sent
-                self._telegram_document_file_id_cache.pop(cache_key, None)
-
-            if True:
-                f = await async_file_bytes(image_path)
-                # Отправляем именно как документ, как в обычном /fish
-                sent = await self._safe_send_document(
-                    chat_id=chat_id,
-                    document=f,
-                    reply_to_message_id=reply_to_message_id
-                )
-                file_id = getattr(getattr(sent, "document", None), "file_id", None)
-                if file_id:
-                    self._telegram_document_file_id_cache[cache_key] = file_id
-                return sent
+            return await self._send_cached_document(
+                chat_id=chat_id,
+                cache_key=cache_key,
+                path=image_path,
+                reply_to_message_id=reply_to_message_id,
+            )
         except Exception as e:
             logger.warning("_send_catch_image: Failed to send image '%s': %s", image_file, e)
             return None
@@ -3792,29 +5044,13 @@ class FishBot:
         path: Path,
         reply_to_message_id: Optional[int] = None,
     ) -> Optional[Message]:
-        cache_key = str(path.resolve())
-
-        cached_file_id = self._telegram_document_file_id_cache.get(cache_key)
-        if cached_file_id:
-            sent = await self._safe_send_document(
-                chat_id=chat_id,
-                document=cached_file_id,
-                reply_to_message_id=reply_to_message_id,
-            )
-            if sent:
-                return sent
-            self._telegram_document_file_id_cache.pop(cache_key, None)
-
-        file_obj = await async_file_bytes(path)
-        sent = await self._safe_send_document(
+        cache_key = normalize_cache_key(path)
+        return await self._send_cached_document(
             chat_id=chat_id,
-            document=file_obj,
+            cache_key=cache_key,
+            path=path,
             reply_to_message_id=reply_to_message_id,
         )
-        file_id = getattr(getattr(sent, "document", None), "file_id", None)
-        if file_id:
-            self._telegram_document_file_id_cache[cache_key] = file_id
-        return sent
 
     async def _check_torch_event(self, chat_id: int, user_id: int, username: str, rarity: str, chat_title: Optional[str] = None):
         """Проверка и выдача NFT-призов по редкости улова."""
@@ -3898,7 +5134,7 @@ class FishBot:
     async def _safe_send_message(self, **kwargs):
         for attempt in range(3):
             try:
-                async with get_send_semaphore():
+                async with get_text_send_semaphore():
                     return await self.application.bot.send_message(**kwargs)
             except (BadRequest, Forbidden) as e:
                 exc_str = str(e)
@@ -3919,7 +5155,7 @@ class FishBot:
                         kwargs.get('chat_id'),
                     )
                     try:
-                        async with get_send_semaphore():
+                        async with get_text_send_semaphore():
                             return await self.application.bot.send_message(**retry_kwargs)
                     except Exception as retry_exc:
                         logger.warning(
@@ -3980,7 +5216,7 @@ class FishBot:
                         document.seek(0)
                     except Exception:
                         pass
-                async with get_send_semaphore():
+                async with get_document_send_semaphore():
                     return await self.application.bot.send_document(**kwargs)
             except (BadRequest, Forbidden) as e:
                 exc_str = str(e)
@@ -4003,7 +5239,7 @@ class FishBot:
                         kwargs.get('chat_id'),
                     )
                     try:
-                        async with get_send_semaphore():
+                        async with get_document_send_semaphore():
                             return await self.application.bot.send_document(**retry_kwargs)
                     except Exception as retry_exc:
                         logger.warning(
@@ -4058,7 +5294,8 @@ class FishBot:
     async def _safe_edit_message_text(self, **kwargs):
         for attempt in range(3):
             try:
-                return await self.application.bot.edit_message_text(**kwargs)
+                async with get_text_send_semaphore():
+                    return await self.application.bot.edit_message_text(**kwargs)
             except (BadRequest, Forbidden) as e:
                 if "Message is not modified" in str(e):
                     return None
@@ -4576,71 +5813,43 @@ class FishBot:
                     await update.message.reply_text(f"💥 {message}")
                     return
                 # Бамбуковая / обычная удочка — предлагаем ремонт за 20 ⭐
-                from config import BOT_TOKEN
-                try:
-                    from bot import TelegramBotAPI as _TelegramBotAPI
-                    tg_api = _TelegramBotAPI(BOT_TOKEN)
-                    repair_invoice_url = await tg_api.create_invoice_link(
-                        title="Ремонт удочки",
-                        description=f"Полное восстановление прочности удочки '{rod_name}'",
-                        payload=f"repair_rod_{rod_name}",
-                        currency="XTR",
-                        prices=[{"label": f"Ремонт {rod_name}", "amount": 20}]
-                    )
-                    logger.info(f"[INVOICE] Repair invoice created for rod='{rod_name}' user={user_id}")
-                except Exception as e:
-                    logger.error(f"[INVOICE] Failed to create repair invoice: {e}")
-                    repair_invoice_url = None
-                if repair_invoice_url:
-                    await self.send_invoice_url_button(
+                repair_text = (
+                    "💔 Ваша удочка сломалась!\n\n"
+                    "🔧 Оплатите 20 ⭐ Telegram Stars чтобы мгновенно восстановить её.\n"
+                    "Или используйте /repair для бесплатного автовосстановления (займёт время)."
+                )
+                repair_msg = await self._safe_send_message(
+                    chat_id=chat_id,
+                    text=repair_text,
+                    reply_to_message_id=update.effective_message.message_id if update.effective_message else None,
+                )
+                if repair_msg:
+                    asyncio.create_task(self._attach_repair_invoice_to_message(
                         chat_id=chat_id,
-                        invoice_url=repair_invoice_url,
-                        text=(
-                            "💔 Ваша удочка сломалась!\n\n"
-                            "🔧 Оплатите 20 ⭐ Telegram Stars чтобы мгновенно восстановить её.\n"
-                            "Или используйте /repair для бесплатного автовосстановления (займёт время)."
-                        ),
                         user_id=user_id,
-                        reply_to_message_id=update.effective_message.message_id if update.effective_message else None
-                    )
+                        message_id=repair_msg.message_id,
+                        text=repair_text,
+                        rod_name=rod_name,
+                    ))
                 else:
                     await update.message.reply_text(
                         f"💔 {message}\n\nИспользуйте /repair для восстановления.",
                         parse_mode=None
                     )
                 return
-            # Кулдаун — обычная кнопка гарантированного улова за 1 ⭐
-            from config import BOT_TOKEN, STAR_NAME
-            import traceback
-            invoice_error = None
-            try:
-                from bot import TelegramBotAPI as _TelegramBotAPI
-                tg_api = _TelegramBotAPI(BOT_TOKEN)
-                invoice_url = await tg_api.create_invoice_link(
-                    title=f"Гарантированный улов",
-                    description=f"Гарантированный улов — подтвердите оплату (1 {STAR_NAME})",
-                    payload=f"guaranteed_{user_id}_{chat_id}_{int(datetime.now().timestamp())}",
-                    currency="XTR",
-                    prices=[{"label": f"Вход", "amount": 1}]
-                )
-                logger.info(f"[INVOICE] Got invoice_url: {invoice_url}")
-            except Exception as e:
-                logger.error(f"[INVOICE] Failed to get invoice_url: {e}")
-                invoice_url = None
-                invoice_error = str(e) + "\n" + traceback.format_exc()
-            if invoice_url:
-                await self.send_invoice_url_button(
-                    chat_id=chat_id,
-                    invoice_url=invoice_url,
-                    text=f"⏰ {message}\n\n⭐ Оплатите 1 Telegram Stars для гарантированного улова на локации: {player['current_location']}",
-                    user_id=user_id,
-                    reply_to_message_id=update.effective_message.message_id if update.effective_message else None
-                )
-            else:
-                error_text = f"⏰ {message}\n\n(Ошибка генерации ссылки для оплаты)"
-                if invoice_error:
-                    error_text += f"\nОшибка: {invoice_error}"
-                await update.message.reply_text(error_text, parse_mode=None)
+            # Кулдаун — сначала текст, кнопку оплаты добавляем в фоне
+            cooldown_text = (
+                f"⏰ {message}\n\n"
+                f"⭐ Оплатите 1 Telegram Stars для гарантированного улова на локации: {player['current_location']}"
+            )
+            await self._send_text_then_guaranteed_invoice_button(
+                chat_id=chat_id,
+                user_id=user_id,
+                text=cooldown_text,
+                reply_to_message_id=update.effective_message.message_id if update.effective_message else None,
+                location=player['current_location'],
+                payment_footer="",
+            )
             return
 
         antibot_rhythm_block = await _run_sync(self._register_free_fish_attempt_and_check_antibot, user_id, update)
@@ -4735,7 +5944,8 @@ class FishBot:
                 guaranteed=False,
             )
 
-        tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(
+        tickets_awarded, tickets_jackpot, tickets_total = await _run_sync(
+            self._award_tickets,
             user_id,
             self._calculate_tickets_for_result(result),
             username=current_username,
@@ -4796,39 +6006,27 @@ class FishBot:
 {tickets_line}
                     """
 
-                    # Отправляем параллельно
-                    sticker_task = asyncio.create_task(self._send_catch_image(
+                    # Сначала текст, картинку — в фоне
+                    await self._send_catch_text_and_image(
+                        context,
                         chat_id=update.effective_chat.id,
+                        text=treasure_message_text.strip(),
+                        reply_to_message_id=update.message.message_id,
                         item_name=treasure_name,
                         item_type="treasure",
-                        reply_to_message_id=update.message.message_id
-                    ))
-                    
-                    message_task = asyncio.create_task(update.message.reply_text(
-                        treasure_message_text,
-                        reply_to_message_id=update.message.message_id
-                    ))
-                    
-                    await asyncio.gather(sticker_task, message_task)
-
-                    if result.get('temp_rod_broken'):
-                        await update.message.reply_text(
-                            "💥 Временная удочка сломалась после удачного улова.\n"
-                            "Теперь активна бамбуковая. Купить новую можно в магазине."
-                        )
-
-                    try:
-                        await self._maybe_process_duel_catch(
-                            user_id=user_id,
-                            chat_id=chat_id,
-                            fish_name=trash_name_for_duel,
-                            weight=trash_weight_for_duel,
-                            length=0.0,
-                            catch_id=None,
-                            resolve_latest_catch=False,
-                        )
-                    except Exception:
-                        logger.exception("Failed to process duel trash from /fish user=%s chat=%s", user_id, chat_id)
+                    )
+                    self._schedule_fish_catch_followups(
+                        update=update,
+                        context=context,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        result=result,
+                        player=player,
+                        fish_name=trash_name_for_duel,
+                        weight=trash_weight_for_duel,
+                        length=0.0,
+                        resolve_latest_catch=False,
+                    )
                     return
 
                 trash = result['trash']
@@ -4846,6 +6044,17 @@ class FishBot:
                     reward_name = "опыт" if reward_type == 'xp' else "монеты"
                     eco_line = f"\n🌪️ Эко-катастрофа: x{multiplier} на {reward_name}"
 
+                # Добавляем информацию о новых событиях
+                events_line = ""
+                if result.get('spawn_event_active'):
+                    events_line += "\n🐟 Нерест активен!"
+                if result.get('murder_event_active'):
+                    murder_fish = result.get('murder_fish_name', '')
+                    events_line += f"\n☠️ Убийство: {murder_fish}"
+                if result.get('school_event_active'):
+                    school_fish = result.get('school_fish_name', '')
+                    events_line += f"\n🐠 Стая {school_fish}"
+
                 bonus_line = ""
                 earned_bonus = int(result.get('earned') or 0)
                 if earned_bonus > 0:
@@ -4859,56 +6068,29 @@ class FishBot:
 ⚖️ Вес: {trash.get('weight', 0)} кг
 💰 Цена при продаже: {trash.get('price', 0)} 🪙
 📍 Место: {result['location']}
-{xp_line}{progress_line}{eco_line}{bonus_line}{storage_line}{tickets_line}
+{xp_line}{progress_line}{eco_line}{events_line}{bonus_line}{storage_line}{tickets_line}
                 """
 
-                # Отправляем параллельно
-                sticker_task = asyncio.create_task(self._send_catch_image(
+                await self._send_catch_text_and_image(
+                    context,
                     chat_id=update.effective_chat.id,
+                    text=message.strip(),
+                    reply_to_message_id=update.message.message_id,
                     item_name=trash.get('name', ''),
                     item_type="trash",
-                    reply_to_message_id=update.message.message_id
-                ))
-                
-                message_task = asyncio.create_task(update.message.reply_text(
-                    message,
-                    reply_to_message_id=update.message.message_id
-                ))
-                
-                sticker_message, text_message = await asyncio.gather(sticker_task, message_task)
-                
-                if sticker_message:
-                    context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
-
-                # Если на лодке — доп проверки
-                if result.get('is_on_boat'):
-                    # Проверка на крушение
-                    if await _run_sync(db.check_boat_crash, user_id):
-                        await update.message.reply_text("💥 <b>КРУШЕНИЕ!</b> Лодка не выдержала веса мусора и сломалась! Весь улов текущего плавания утерян.")
-                    else:
-                        # Предупреждение о малом весе
-                        left = await _run_sync(db.check_boat_weight_warning, user_id)
-                        if left is not None and left < 50:
-                            await update.message.reply_text(f"⚠️ <b>ВНИМАНИЕ!</b> Лодка почти полна. Осталось места: {left:.1f} кг")
-
-                if result.get('temp_rod_broken'):
-                    await update.message.reply_text(
-                        "💥 Временная удочка сломалась после удачного улова.\n"
-                        "Теперь активна бамбуковая. Купить новую можно в магазине."
-                    )
-
-                try:
-                    await self._maybe_process_duel_catch(
-                        user_id=user_id,
-                        chat_id=chat_id,
-                        fish_name=trash_name_for_duel,
-                        weight=trash_weight_for_duel,
-                        length=0.0,
-                        catch_id=None,
-                        resolve_latest_catch=False,
-                    )
-                except Exception:
-                    logger.exception("Failed to process duel trash from /fish user=%s chat=%s", user_id, chat_id)
+                )
+                self._schedule_fish_catch_followups(
+                    update=update,
+                    context=context,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    result=result,
+                    player=player,
+                    fish_name=trash_name_for_duel,
+                    weight=trash_weight_for_duel,
+                    length=0.0,
+                    resolve_latest_catch=False,
+                )
                 return
 
             fish = result['fish']
@@ -4970,13 +6152,29 @@ class FishBot:
                 xp_line = f"\n✨ Опыт: +{result['xp_earned']}"
                 progress_line = f"\n{format_level_progress(result.get('level_info'))}"
 
+            # Добавляем информацию о новых событиях
+            events_line = ""
+            if result.get('spawn_event_active'):
+                events_line += "\n🐟 Нерест активен!"
+            if result.get('murder_event_active'):
+                murder_fish = result.get('murder_fish_name', '')
+                events_line += f"\n☠️ Убийство: {murder_fish}"
+            if result.get('school_event_active'):
+                school_fish = result.get('school_fish_name', '')
+                chain = result.get('school_chain_count', 0)
+                bonus = result.get('school_bonus_percent', 0)
+                if chain > 0 and bonus > 0:
+                    events_line += f"\n🐠 Стая {school_fish}: цепочка {chain}, +{bonus}% веса!"
+                else:
+                    events_line += f"\n🐠 Стая {school_fish} активна"
+
             message = f"""
 🎉 Поздравляю! Вы поймали рыбу!
 {rarity_emoji.get(fish['rarity'], '⚪')} {fish_name_display}
 📏 Размер: {length}см | Вес: {weight} кг
 💰 Стоимость: {fish_price} 🪙
 📍 Место: {result['location']}
-⭐ Редкость: {fish['rarity']}{xp_line}{progress_line}{tickets_line}"""
+⭐ Редкость: {fish['rarity']}{xp_line}{progress_line}{events_line}{tickets_line}"""
 
             if result.get('is_on_boat'):
                 message += "\n⛵ <b>Рыба добавлена в лодку!</b> (Её раздаст владелец по возвращении)"
@@ -4986,17 +6184,6 @@ class FishBot:
             
             if result.get('guaranteed'):
                 message += "\n⭐ Гарантированный улов!"
-
-            # Если на лодке — доп проверки
-            if result.get('is_on_boat'):
-                # Проверка на крушение
-                if await _run_sync(db.check_boat_crash, user_id):
-                    message += "\n\n💥 <b>КРУШЕНИЕ!</b> Лодка не выдержала веса и сломалась! Весь улов текущего плавания утерян."
-                else:
-                    # Предупреждение о малом весе
-                    left = await _run_sync(db.check_boat_weight_warning, user_id)
-                    if left is not None and left < 50:
-                        message += f"\n\n⚠️ <b>ВНИМАНИЕ!</b> Лодка почти полна. Осталось места: {left:.1f} кг"
 
             # Добавляем примечание о популяции (дебафф при частых забросах на одной локации)
             population_penalty = result.get('population_penalty', 0)
@@ -5008,65 +6195,32 @@ class FishBot:
                 )
                 message += penalty_info
             
-            # Отправляем изображение рыбы и текст ПАРАЛЛЕЛЬНО для ускорения реакции
-            sticker_task = asyncio.create_task(self._send_catch_image(
+            await self._send_catch_text_and_image(
+                context,
                 chat_id=update.effective_chat.id,
+                text=message.strip(),
+                reply_to_message_id=update.message.message_id,
                 item_name=fish['name'],
                 item_type="fish",
-                reply_to_message_id=update.message.message_id
-            ))
-            
-            message_task = asyncio.create_task(update.message.reply_text(
-                message,
-                reply_to_message_id=update.message.message_id
-            ))
-            
-            sticker_message, text_message = await asyncio.gather(sticker_task, message_task)
-            
-            if sticker_message:
-                context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
-                context.bot_data.setdefault("sticker_fish_map", {})[sticker_message.message_id] = {
+                fish_meta={
                     "fish_name": fish['name'],
                     "weight": weight,
                     "price": fish_price,
                     "location": result['location'],
-                    "rarity": fish['rarity']
-                }
-
-            try:
-                await self._maybe_process_duel_catch(
-                    user_id=user_id,
-                    chat_id=chat_id,
-                    fish_name=fish.get('name', 'Неизвестная рыба'),
-                    weight=weight,
-                    length=length,
-                )
-            except Exception:
-                logger.exception("Failed to process duel catch from /fish user=%s chat=%s", user_id, chat_id)
-
-            if result.get('temp_rod_broken'):
-                await update.message.reply_text(
-                    "💥 Временная удочка сломалась после удачного улова.\n"
-                    "Теперь активна бамбуковая. Купить новую можно в магазине."
-                )
-                return
-            
-            # ПОСЛЕ сообщения о рыбе проверяем и сообщаем о прочности удочки
-            if player['current_rod'] == BAMBOO_ROD and result.get('rod_broken'):
-                durability_message = f"""
-💔 Удочка сломалась!
-
-🔧 Прочность: 0/{result.get('max_durability', 100)}
-
-Используйте /repair чтобы починить удочку или подождите автовосстановления.
-                """
-                await update.message.reply_text(durability_message)
-            elif player['current_rod'] == BAMBOO_ROD and result.get('current_durability', 100) < result.get('max_durability', 100):
-                # Показываем текущую прочность если она уменьшилась
-                current = result.get('current_durability', 100)
-                maximum = result.get('max_durability', 100)
-                durability_message = f"🔧 Прочность удочки: {current}/{maximum}"
-                await update.message.reply_text(durability_message)
+                    "rarity": fish['rarity'],
+                },
+            )
+            self._schedule_fish_catch_followups(
+                update=update,
+                context=context,
+                user_id=user_id,
+                chat_id=chat_id,
+                result=result,
+                player=player,
+                fish_name=fish.get('name', 'Неизвестная рыба'),
+                weight=weight,
+                length=length,
+            )
             return
         else:
             if result.get('rod_broken'):
@@ -5080,10 +6234,10 @@ class FishBot:
                 await update.message.reply_text(message)
                 return
             elif result.get('is_trash') or result.get('no_bite') or result.get('snap'):
-                # Мусор или неудачный заброс — предлагаем гарантированный улов
-                sticker_message = None
+                # Мусор или неудачный заброс — сначала ответ, инвойс в фоне
                 duel_attempt_name = "Неудачный заброс"
                 duel_attempt_weight = 0.0
+                trash_item_name = None
                 if result.get('is_trash'):
                     xp_line = ""
                     progress_line = ""
@@ -5113,78 +6267,42 @@ class FishBot:
 💰 Цена при продаже: {result['trash'].get('price', 0)} 🪙{xp_line}{progress_line}{eco_line}{bonus_line}{storage_line}{tickets_line}
                     """
                     duel_attempt_name = str(result.get('trash', {}).get('name') or 'Мусор')
+                    trash_item_name = str(result.get('trash', {}).get('name') or '')
                     try:
                         duel_attempt_weight = float(result.get('trash', {}).get('weight') or 0)
                     except (TypeError, ValueError):
                         duel_attempt_weight = 0.0
-                    # Отправляем фото мусора если оно есть
-                    try:
-                        trash_name = result['trash']['name']
-                        if trash_name in TRASH_STICKERS:
-                            trash_image = TRASH_STICKERS[trash_name]
-                            image_path = Path(__file__).parent / trash_image
-                            if image_path.exists():
-                                sticker_message = await self._send_document_path_cached(
-                                    chat_id=update.effective_chat.id,
-                                    path=image_path,
-                                    reply_to_message_id=update.message.message_id,
-                                )
-                                if sticker_message:
-                                    context.bot_data.setdefault("last_bot_stickers", {})[update.effective_chat.id] = sticker_message.message_id
-                    except Exception as e:
-                        logger.warning(f"Could not send trash image: {e}")
                 else:
                     message = f"😔 {result['message']}{tickets_line}"
                     if result.get('no_bite'):
                         duel_attempt_name = "Ничего не клюет"
 
                 if not result.get('snap'):
-                    try:
-                        await self._maybe_process_duel_catch(
-                            user_id=user_id,
-                            chat_id=chat_id,
-                            fish_name=duel_attempt_name,
-                            weight=duel_attempt_weight,
-                            length=0.0,
-                            catch_id=None,
-                            resolve_latest_catch=False,
-                        )
-                    except Exception:
-                        logger.exception("Failed to process duel non-fish attempt from /fish user=%s chat=%s", user_id, chat_id)
-
-                from config import BOT_TOKEN, STAR_NAME
-                try:
-                    from bot import TelegramBotAPI as _TelegramBotAPI
-                    tg_api = _TelegramBotAPI(BOT_TOKEN)
-                    # Кодируем локацию
-                    loc = result.get('location', 'Unknown').replace(' ', '_')
-                    payload = f"guaranteed_{user_id}_{chat_id}_{int(datetime.now().timestamp())}_{loc}"
-                    
-                    invoice_url = await tg_api.create_invoice_link(
-                        title="Гарантированный улов",
-                        description=f"Гарантированный улов (1 {STAR_NAME})",
-                        payload=payload,
-                        currency="XTR",
-                        prices=[{"label": "Вход", "amount": 1}]
-                    )
-                except Exception as e:
-                    logger.error(f"[INVOICE] Failed: {e}")
-                    invoice_url = None
-
-                if invoice_url:
-                    await self.send_invoice_url_button(
-                        chat_id=chat_id,
-                        invoice_url=invoice_url,
-                        text=f"{message}\n\n⭐ Оплатите 1 Telegram Stars для гарантированного улова!",
+                    asyncio.create_task(self._maybe_process_duel_catch(
                         user_id=user_id,
-                        reply_to_message_id=(
-                            sticker_message.message_id
-                            if result.get('is_trash') and sticker_message
-                            else (update.effective_message.message_id if update.effective_message else None)
-                        )
-                    )
-                else:
-                    await update.message.reply_text(f"{message}\n\n(Ошибка генерации ссылки для оплаты)")
+                        chat_id=chat_id,
+                        fish_name=duel_attempt_name,
+                        weight=duel_attempt_weight,
+                        length=0.0,
+                        catch_id=None,
+                        resolve_latest_catch=False,
+                    ))
+
+                loc = str(result.get('location') or player.get('current_location') or '').replace(' ', '_')
+                await self._send_text_then_guaranteed_invoice_button(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    text=message.strip(),
+                    reply_to_message_id=update.effective_message.message_id if update.effective_message else None,
+                    location=loc or None,
+                )
+                if trash_item_name:
+                    asyncio.create_task(self._send_catch_image(
+                        chat_id=update.effective_chat.id,
+                        item_name=trash_item_name,
+                        item_type="trash",
+                        reply_to_message_id=update.message.message_id,
+                    ))
                 return
             else:
                 # Если арест рыбнадзора — не показываем кнопку платного заброса
@@ -5209,18 +6327,20 @@ class FishBot:
                         parse_mode=None,
                     )
                     return
-                # Отправляем сообщение с причиной и кнопкой оплаты
-                reply_markup = await self._build_guaranteed_invoice_markup(user_id, chat_id)
-                invoice_msg = await update.message.reply_text(
-                    f"😔 {result['message']}",
-                    reply_markup=reply_markup
+                # Сначала текст, кнопку оплаты добавляем в фоне
+                fail_text = f"😔 {result['message']}"
+                fail_msg = await self._safe_send_message(
+                    chat_id=chat_id,
+                    text=fail_text,
+                    reply_to_message_id=update.effective_message.message_id if update.effective_message else None,
                 )
-                if reply_markup and invoice_msg:
-                    self._store_active_invoice_context(
-                        user_id=user_id,
+                if fail_msg:
+                    asyncio.create_task(self._attach_guaranteed_invoice_to_message(
                         chat_id=chat_id,
-                        message_id=invoice_msg.message_id,
-                    )
+                        user_id=user_id,
+                        message_id=fail_msg.message_id,
+                        text=fail_text,
+                    ))
                 return
     
     async def menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5483,6 +6603,11 @@ class FishBot:
         await update.effective_chat.send_message(f"⛵ Итоги плавания:\n{msg}")
         await self.show_fishing_menu(update, context)
     
+    async def handle_locked_location(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка попытки выбрать заблокированную локацию"""
+        query = update.callback_query
+        await query.answer("🔒 Эта локация недоступна. Повысьте свой уровень!", show_alert=True)
+    
     async def handle_change_location(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка смены локации"""
         query = update.callback_query
@@ -5501,10 +6626,24 @@ class FishBot:
         
         await query.answer()
         
+        # Получаем уровень игрока
+        player = await _run_sync(db.get_player, user_id, chat_id)
+        player_level = player.get('level', 1) if player else 1
+        
         locations = await _run_sync(db.get_locations)
         keyboard = []
         
         for loc in locations:
+            # Проверяем требуемый уровень
+            required_level = loc.get('required_level', 0)
+            if player_level < required_level:
+                # Локация недоступна - показываем с замком
+                keyboard.append([InlineKeyboardButton(
+                    f"🔒 {loc['name']} (требуется ур. {required_level})",
+                    callback_data=f"locked_location_{user_id}"
+                )])
+                continue
+            
             # Показываем актуальное количество человек в чате
             players_count = await _run_sync(db.get_location_players_count, loc['name'], chat_id)
             players_info = f"👥 {players_count}"
@@ -9941,6 +11080,7 @@ class FishBot:
 /app - открыть мини-апку
 /menu - меню рыбалки
 /fish - начать рыбалку
+/pray - молитва Морскому Повелителю (раз в 24ч)
 /net - использовать сеть
 /dynamite - взорвать динамит (12 роллов)
 /shop - магазин
@@ -10136,6 +11276,173 @@ class FishBot:
         if not current and not pond:
             lines.append("• Сейчас активных катастроф нет")
 
+        await update.message.reply_text("\n".join(lines))
+
+    async def events_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Управление событиями на локациях (owner) и просмотр статуса."""
+        user_id = update.effective_user.id
+        args = context.args or []
+
+        from location_events import (
+            SPAWN_EVENT_TYPE,
+            MURDER_EVENT_TYPE,
+            SCHOOL_EVENT_TYPE,
+            ECO_DISASTER_TYPE,
+            get_event_description,
+            calculate_event_duration,
+            generate_event_params,
+        )
+
+        if args and self._is_owner(user_id):
+            action = str(args[0]).strip().lower()
+            
+            if action == 'start':
+                if len(args) < 3:
+                    await update.message.reply_text(
+                        "Использование: /events start <тип> <локация>\n\n"
+                        "Типы событий:\n"
+                        "• spawn - нерест (+20% к улову)\n"
+                        "• murder - убийство (одна рыба)\n"
+                        "• school - стайный инстинкт\n"
+                        "• eco - эко-катастрофа"
+                    )
+                    return
+                
+                event_type_raw = str(args[1]).strip().lower()
+                location = ' '.join(args[2:]).strip()
+                
+                # Маппинг типов
+                event_type_map = {
+                    'spawn': SPAWN_EVENT_TYPE,
+                    'нерест': SPAWN_EVENT_TYPE,
+                    'murder': MURDER_EVENT_TYPE,
+                    'убийство': MURDER_EVENT_TYPE,
+                    'school': SCHOOL_EVENT_TYPE,
+                    'стая': SCHOOL_EVENT_TYPE,
+                    'eco': ECO_DISASTER_TYPE,
+                    'эко': ECO_DISASTER_TYPE,
+                }
+                
+                event_type = event_type_map.get(event_type_raw)
+                if not event_type:
+                    await update.message.reply_text(
+                        f"❌ Неизвестный тип события: {event_type_raw}\n"
+                        "Доступны: spawn, murder, school, eco"
+                    )
+                    return
+                
+                # Получаем рыб на локации для параметров
+                location_fish = []
+                try:
+                    with db._connect() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            'SELECT DISTINCT fish_name FROM fish_locations WHERE LOWER(TRIM(location_name)) = LOWER(TRIM(?))',
+                            (location,)
+                        )
+                        location_fish = [row[0] for row in cursor.fetchall()]
+                except:
+                    pass
+                
+                duration = calculate_event_duration(event_type)
+                params = generate_event_params(event_type, location_fish)
+                
+                started = await _run_sync(
+                    db.start_location_event,
+                    event_type=event_type,
+                    location=location,
+                    duration_minutes=duration,
+                    params=params
+                )
+                
+                if not started:
+                    await update.message.reply_text("❌ Не удалось запустить событие.")
+                    return
+                
+                desc = get_event_description(event_type)
+                event_info = f"{desc['name']}\n{desc['description']}"
+                
+                if event_type == MURDER_EVENT_TYPE:
+                    forced_fish = params.get('forced_fish', 'нет')
+                    event_info += f"\nРыба: {forced_fish}"
+                elif event_type == SCHOOL_EVENT_TYPE:
+                    school_fish = params.get('school_fish', 'нет')
+                    event_info += f"\nСтая: {school_fish}"
+                
+                await update.message.reply_text(
+                    f"✅ Событие запущено\n\n"
+                    f"Локация: {location}\n"
+                    f"{event_info}\n"
+                    f"Длительность: {duration} минут"
+                )
+                return
+            
+            if action == 'stop':
+                if len(args) < 3:
+                    await update.message.reply_text("Использование: /events stop <тип> <локация>")
+                    return
+                
+                event_type_raw = str(args[1]).strip().lower()
+                location = ' '.join(args[2:]).strip()
+                
+                event_type_map = {
+                    'spawn': SPAWN_EVENT_TYPE,
+                    'murder': MURDER_EVENT_TYPE,
+                    'school': SCHOOL_EVENT_TYPE,
+                    'eco': ECO_DISASTER_TYPE,
+                }
+                
+                event_type = event_type_map.get(event_type_raw)
+                if not event_type:
+                    await update.message.reply_text(f"❌ Неизвестный тип события: {event_type_raw}")
+                    return
+                
+                stopped = await _run_sync(db.stop_location_event, location, event_type)
+                
+                if not stopped:
+                    await update.message.reply_text(f"ℹ️ Активного события '{event_type_raw}' на этой локации нет.")
+                    return
+                
+                await update.message.reply_text(f"✅ Событие '{event_type_raw}' на локации '{location}' остановлено.")
+                return
+
+        # Показываем статус событий на текущей локации
+        chat_id = update.effective_chat.id
+        player = await _run_sync(db.get_player, user_id, chat_id)
+        location = (player or {}).get('current_location') or 'Городской пруд'
+        
+        spawn_event = await _run_sync(db.get_active_location_event, location, SPAWN_EVENT_TYPE)
+        murder_event = await _run_sync(db.get_active_location_event, location, MURDER_EVENT_TYPE)
+        school_event = await _run_sync(db.get_active_location_event, location, SCHOOL_EVENT_TYPE)
+        
+        lines = [f"🎪 События на локации {location}"]
+        
+        if spawn_event:
+            desc = get_event_description(SPAWN_EVENT_TYPE)
+            lines.append(f"\n{desc['name']}")
+            lines.append(desc['description'])
+        
+        if murder_event:
+            desc = get_event_description(MURDER_EVENT_TYPE)
+            forced_fish = murder_event['params'].get('forced_fish', 'неизвестно')
+            lines.append(f"\n{desc['name']}")
+            lines.append(f"Ловится только: {forced_fish}")
+        
+        if school_event:
+            desc = get_event_description(SCHOOL_EVENT_TYPE)
+            school_fish = school_event['params'].get('school_fish', 'неизвестно')
+            lines.append(f"\n{desc['name']}")
+            lines.append(f"Стая: {school_fish}")
+            
+            # Показываем цепочку игрока
+            school_chain = await _run_sync(db.get_school_chain, user_id, school_event['id'])
+            chain_count = school_chain.get('chain_count', 0)
+            if chain_count > 0:
+                lines.append(f"Ваша цепочка: {chain_count}")
+        
+        if not spawn_event and not murder_event and not school_event:
+            lines.append("\nСейчас активных событий нет")
+        
         await update.message.reply_text("\n".join(lines))
 
     async def guild_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -11601,6 +12908,17 @@ class FishBot:
         weather = await _run_sync(db.get_or_update_weather, location)
         eco = await _run_sync(db.get_active_ecological_disaster, location)
         
+        # Проверяем новые события на локации
+        from location_events import (
+            SPAWN_EVENT_TYPE,
+            MURDER_EVENT_TYPE,
+            SCHOOL_EVENT_TYPE,
+            format_event_info,
+        )
+        spawn_event = await _run_sync(db.get_active_location_event, location, SPAWN_EVENT_TYPE)
+        murder_event = await _run_sync(db.get_active_location_event, location, MURDER_EVENT_TYPE)
+        school_event = await _run_sync(db.get_active_location_event, location, SCHOOL_EVENT_TYPE)
+        
         season = get_current_season()
         weather_info = weather_system.get_weather_info(weather['condition'], weather['temperature'], season)
         weather_desc = weather_system.get_weather_description(weather['condition'])
@@ -11612,6 +12930,54 @@ class FishBot:
             multiplier = eco.get('reward_multiplier', 1)
             eco_line = f"\n\n🌪️ <b>Эко-катастрофа в этой локации!</b>\nКлюёт только мусор, но награда за него увеличена: <b>x{multiplier} на {reward_type}</b>!"
 
+        # Добавляем информацию о новых событиях
+        events_line = ""
+        if spawn_event:
+            from location_events import LocationEvent
+            event_obj = LocationEvent(
+                event_id=spawn_event['id'],
+                event_type=spawn_event['event_type'],
+                location=spawn_event['location'],
+                started_at=spawn_event['started_at'],
+                ends_at=spawn_event['ends_at'],
+                is_active=spawn_event['is_active'],
+                params=spawn_event['params']
+            )
+            events_line += f"\n\n{format_event_info(event_obj)}"
+        
+        if murder_event:
+            from location_events import LocationEvent
+            event_obj = LocationEvent(
+                event_id=murder_event['id'],
+                event_type=murder_event['event_type'],
+                location=murder_event['location'],
+                started_at=murder_event['started_at'],
+                ends_at=murder_event['ends_at'],
+                is_active=murder_event['is_active'],
+                params=murder_event['params']
+            )
+            events_line += f"\n\n{format_event_info(event_obj)}"
+        
+        if school_event:
+            from location_events import LocationEvent
+            # Получаем цепочку пользователя
+            school_chain = await _run_sync(db.get_school_chain, user_id, school_event['id'])
+            chain_count = school_chain.get('chain_count', 0)
+            
+            event_obj = LocationEvent(
+                event_id=school_event['id'],
+                event_type=school_event['event_type'],
+                location=school_event['location'],
+                started_at=school_event['started_at'],
+                ends_at=school_event['ends_at'],
+                is_active=school_event['is_active'],
+                params=school_event['params']
+            )
+            event_info = format_event_info(event_obj)
+            if chain_count > 0:
+                event_info += f"\nВаша цепочка: {chain_count}"
+            events_line += f"\n\n{event_info}"
+
         message = f"""🌍 Погода в локации {location}
 
 {weather_info}
@@ -11619,7 +12985,7 @@ class FishBot:
 
 {weather_desc}
 
-💡 Влияние на клёв: {bonus:+d}%{eco_line}
+💡 Влияние на клёв: {bonus:+d}%{eco_line}{events_line}
 
 Погода обновляется несколько раз в день."""
         
@@ -12438,6 +13804,27 @@ class FishBot:
             if self._is_user_beer_drunk(target_user_id):
                 await query.answer(ok=False, error_message="Соперник в состоянии опьянения. Дуэль недоступна.")
                 return
+        elif payload.startswith("project_donate_"):
+            parsed_donate = self._parse_project_donate_payload(payload)
+            if not parsed_donate:
+                await query.answer(ok=False, error_message="Счёт устарел. Запросите новый через /donat.")
+                return
+            if int(parsed_donate.get("user_id") or 0) != int(user_id):
+                await query.answer(ok=False, error_message="Этот счёт создан для другого пользователя.")
+                return
+            expected_amount = int(parsed_donate.get("amount") or 0)
+            if expected_amount <= 0 or expected_amount != int(getattr(query, "total_amount", 0) or 0):
+                await query.answer(ok=False, error_message="Сумма счёта не совпадает. Запросите новый через /donat.")
+                return
+            created_ts = parsed_donate.get("created_ts")
+            now_ts = int(datetime.now().timestamp())
+            if isinstance(created_ts, int) and now_ts - created_ts > 3600:
+                await query.answer(ok=False, error_message="Срок действия счёта истёк. Запросите новый через /donat.")
+                return
+        elif payload.startswith("send_gift_"):
+            # Проверка отправки подарка
+            await self.handle_send_gift_precheckout(update, context)
+            return
         # Проверяем, не был ли этот инвойс уже оплачен
         if payload and payload in self.paid_payloads:
             await query.answer(ok=False, error_message="Этот инвойс уже был оплачен. Запросите новый.")
@@ -12533,6 +13920,7 @@ class FishBot:
 
         telegram_payment_charge_id = getattr(payment, "telegram_payment_charge_id", None)
         total_amount = getattr(payment, "total_amount", 0)
+        is_project_donate = payload.startswith("project_donate_")
 
         # Сохраняем транзакцию
         if telegram_payment_charge_id:
@@ -12545,8 +13933,9 @@ class FishBot:
                     chat_id=accounting_chat_id,
                     chat_title=accounting_chat_title,
                 )
-                # update chat-level aggregate (this will also save chat_title in chat_configs)
-                await _run_sync(db.increment_chat_stars, accounting_chat_id, total_amount, chat_title=accounting_chat_title)
+                if not is_project_donate:
+                    # update chat-level aggregate (this will also save chat_title in chat_configs)
+                    await _run_sync(db.increment_chat_stars, accounting_chat_id, total_amount, chat_title=accounting_chat_title)
             except Exception as e:
                 logger.warning("Failed to record star transaction or increment chat stars: %s", e)
             # If DB has explicit star_transactions chat columns we will keep them in migration
@@ -12555,6 +13944,40 @@ class FishBot:
         timeout_key = f"payment_{update.effective_chat.id}_{update.message.message_id}"
         if timeout_key in self.active_timeouts:
             del self.active_timeouts[timeout_key]
+
+        if is_project_donate:
+            parsed_donate = self._parse_project_donate_payload(payload)
+            username = update.effective_user.username or update.effective_user.first_name or str(user_id)
+            donate_amount = int(total_amount or 0)
+            if parsed_donate and int(parsed_donate.get("amount") or 0) > 0:
+                donate_amount = int(parsed_donate["amount"])
+            try:
+                await _run_sync(
+                    db.add_project_donation,
+                    user_id,
+                    donate_amount,
+                    telegram_payment_charge_id,
+                    username=username,
+                )
+            except Exception:
+                logger.exception("Failed to record project donation user=%s", user_id)
+
+            total_collected = await _run_sync(db.get_project_donations_total)
+            user_total = await _run_sync(db.get_user_project_donations_total, user_id)
+            await update.message.reply_text(
+                "💛 *Огромное спасибо за поддержку проекта!*\n\n"
+                f"Ваше пожертвование: *{donate_amount}* ⭐\n"
+                f"Всего собрано на развитие бота: *{total_collected}* ⭐\n"
+                f"Ваш общий вклад: *{user_total}* ⭐\n\n"
+                "Благодаря вам FishBot становится лучше! 🎣",
+                parse_mode="Markdown",
+            )
+            return
+        
+        # Обработка отправки подарка
+        if payload and payload.startswith("send_gift_"):
+            await self.handle_send_gift_successful_payment(update, context)
+            return
         
         # Извлекаем локацию и chat_id из payload (если есть) или используем текущую
         if payload and payload.startswith("net_skip_cd_"):
@@ -13706,10 +15129,15 @@ def main():
             # Ensure DB table exists synchronously, then schedule the async worker
             notifications.init_notifications_table()
             await notifications.start_worker(application)
+            asyncio.create_task(bot_instance.warm_up_image_file_id_cache(application.bot))
         except Exception as e:
             logger.exception("post_init: failed to start notifications worker: %s", e)
 
     async def _post_shutdown(application: Application):
+        try:
+            await bot_instance._image_file_id_cache.save_if_dirty()
+        except Exception:
+            logger.exception("post_shutdown: failed to save image file_id cache")
         await close_global_clients()
 
     application = (
@@ -14301,6 +15729,7 @@ def main():
     application.add_handler(CommandHandler("new_ref", bot_instance.new_ref_command))
     application.add_handler(CommandHandler("check", bot_instance.check_command))
     application.add_handler(CommandHandler("raf", bot_instance.raf_command))
+    application.add_handler(CommandHandler("send", bot_instance.send_command))
     application.add_handler(CommandHandler("cancel", bot_instance.cancel_command))
     application.add_handler(CommandHandler("new_tour", bot_instance.new_tour_command))
     application.add_handler(CommandHandler("tour", bot_instance.tour_command))
@@ -14318,6 +15747,7 @@ def main():
     # debug handlers removed
     application.add_handler(CommandHandler("app", bot_instance.app_command))
     application.add_handler(CommandHandler("fish", bot_instance.fish_command))
+    application.add_handler(CommandHandler("pray", bot_instance.pray_command))
     application.add_handler(CommandHandler("menu", bot_instance.menu_command))
     application.add_handler(CommandHandler("buy_boat", bot_instance.buy_paid_boat_command))
     application.add_handler(CommandHandler("cure_seasick", bot_instance.cure_seasick_command))
@@ -14337,12 +15767,14 @@ def main():
     application.add_handler(CommandHandler("info", bot_instance.info_command))
     application.add_handler(CommandHandler("treasureinfo", bot_instance.treasureinfo_command))
     application.add_handler(CommandHandler("stars", bot_instance.stars_command))
+    application.add_handler(CommandHandler("donat", bot_instance.donat_command))
     application.add_handler(CommandHandler("topl", bot_instance.topl_command))
     application.add_handler(CommandHandler("leaderboard", bot_instance.leaderboard_command))
     application.add_handler(CommandHandler("repair", bot_instance.repair_command))
     application.add_handler(CommandHandler("bait", bot_instance.bait_command))
     application.add_handler(CommandHandler("market", bot_instance.market_command))
     application.add_handler(CommandHandler("disaster", bot_instance.disaster_command))
+    application.add_handler(CommandHandler("events", bot_instance.events_command))
     application.add_handler(CommandHandler("guild", bot_instance.guild_command))
     application.add_handler(CommandHandler("artel", bot_instance.guild_command))
     application.add_handler(CommandHandler("help", bot_instance.help_command))
@@ -14381,6 +15813,7 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_change_bait_location, pattern="^change_bait_loc_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_change_rod, pattern="^change_rod_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_change_bait, pattern=r"^change_bait_\d+$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_locked_location, pattern="^locked_location_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_select_location, pattern="^select_location_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_select_rod, pattern="^select_rod_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_select_rod, pattern="^sr_"))  # Короткий формат
@@ -14464,6 +15897,21 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_cancel_ref_callback, pattern="^cancel_ref_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_withdraw_stars_callback, pattern="^withdraw_stars_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_approve_withdraw_callback, pattern="^approve_withdraw_"))
+    
+    # Обработчики отправки подарков /send
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_send_cancel, pattern="^send_cancel$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_send_back_main, pattern="^send_back_main$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_send_select_type, pattern="^send_select_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_send_rods_page, pattern="^send_rods_page_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_send_rod_selection, pattern="^send_rod_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_send_clothing_page, pattern="^send_clothing_page_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_send_clothing_selection, pattern="^send_clothing_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_send_baits_page, pattern="^send_baits_page_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_send_bait_location_selection, pattern="^send_bait_loc_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_send_bait_selection, pattern="^send_bait_"))
+    
+    # Обработчик текстового ввода для /send (в отдельной группе)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_send_text_input), group=4)
     
     # Обработчик ошибок
     application.add_error_handler(bot_instance.error_handler)
