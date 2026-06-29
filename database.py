@@ -480,22 +480,6 @@ class Database:
             cursor.execute("INSERT OR REPLACE INTO system_flags (key, value) VALUES (?, ?)", (key, value))
             conn.commit()
 
-    def get_system_flag(self, key: str) -> Optional[str]:
-        """Получить значение системного флага по ключу."""
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT value FROM system_flags WHERE key = ?", (key,))
-            row = cursor.fetchone()
-            return row[0] if row else None
-
-    def set_system_flag(self, key: str, value: str):
-        """Установить значение системного флага."""
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            # Используем INSERT OR REPLACE (эмулируется в PostgresWrapper)
-            cursor.execute("INSERT OR REPLACE INTO system_flags (key, value) VALUES (?, ?)", (key, value))
-            conn.commit()
-
     def update_player_fish_stats(self, user_id: int, fish_name: str, weight: float, is_trash: bool = False):
         """Обновить статистику пользователя при ловле рыбы."""
         with self._connect() as conn:
@@ -11898,6 +11882,23 @@ class Database:
         if not clean_item:
             return {'ok': False, 'reason': 'bad_item'}
 
+        current_level = int(clan.get('level') or 1)
+        requirements = self.get_clan_upgrade_requirements(current_level + 1)
+        if requirements and clean_item in requirements:
+            donations = self.get_clan_donations(int(clan['id']))
+            already_donated = int(donations.get(clean_item, 0) or 0)
+            required_qty = int(requirements[clean_item])
+            remaining = required_qty - already_donated
+            if remaining <= 0:
+                return {
+                    'ok': False,
+                    'reason': 'already_complete',
+                    'item': clean_item,
+                    'required': required_qty,
+                }
+            if donate_qty > remaining:
+                donate_qty = remaining
+
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -13200,7 +13201,7 @@ class Database:
 
             # Initialize as a GLOBAL rod entry (chat_id = -1) so rod state is shared across chats
             cursor.execute('''
-                INSERT OR IGNORE INTO player_rods (user_id, rod_name, current_durability, max_durability, chat_id)
+                INSERT OR REPLACE INTO player_rods (user_id, rod_name, current_durability, max_durability, chat_id)
                 VALUES (?, ?, ?, ?, -1)
             ''', (user_id, rod_name, uses, uses))
             conn.commit()
