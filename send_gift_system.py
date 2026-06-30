@@ -226,7 +226,8 @@ def validate_gift_item(user_id: int, chat_id: int, gift_type: str, item_name: st
     
     elif gift_type == GIFT_TYPE_CLOTHING:
         # Проверяем наличие одежды
-        clothing = db.get_player_clothing(user_id, item_name)
+        from database import db
+        clothing = db.get_player_clothing_item(user_id, item_name)
         if not clothing:
             return False, f"У вас нет одежды {item_name}"
         

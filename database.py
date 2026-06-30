@@ -2136,13 +2136,28 @@ class Database:
         return amt
 
     def break_active_rod_by_divine_wrath(self, user_id: int, chat_id: int) -> Optional[str]:
-        """Сломать текущую активную удочку (бамбук → 0 прочности, остальные → 0)."""
+        """Сломать текущую активную удочку (бамбук → 0 прочности, временные → удаление)."""
         player = self.get_player(int(user_id), int(chat_id))
         if not player:
             player = self.get_player(int(user_id), -1) or self.get_player(int(user_id), 0)
         if not player:
             return None
         rod_name = str(player.get('current_rod') or BAMBOO_ROD)
+        
+        if rod_name in TEMP_ROD_RANGES:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'DELETE FROM player_rods WHERE user_id = ? AND (chat_id IS NULL OR chat_id < 1) AND rod_name = ?',
+                    (int(user_id), rod_name),
+                )
+                cursor.execute(
+                    'UPDATE players SET current_rod = ? WHERE user_id = ?',
+                    (BAMBOO_ROD, int(user_id)),
+                )
+                conn.commit()
+            return rod_name
+        
         self.init_player_rod(int(user_id), rod_name, chat_id=int(chat_id))
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -3025,40 +3040,36 @@ class Database:
                     last_end_dt = datetime.fromisoformat(last_end_dt)
                 if now < last_end_dt + timedelta(hours=cooldown_hours):
                     return None
-        
-        # 4. Проверяем шанс
-        if random.random() > float(chance):
-            return None
-        
-        # 5. Начинаем событие
-        from location_events import calculate_event_duration, generate_event_params
-        
-        # Получаем рыб на локации для генерации параметров
-        location_fish = []
-        try:
-            with self._connect() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    '''
-                    SELECT DISTINCT fish_name 
-                    FROM fish_locations 
-                    WHERE LOWER(TRIM(location_name)) = LOWER(TRIM(?))
-                    ''',
-                    (location,)
-                )
-                location_fish = [row[0] for row in cursor.fetchall()]
-        except:
-            pass
-        
-        duration = calculate_event_duration(event_type)
-        params = generate_event_params(event_type, location_fish)
-        
-        return self.start_location_event(
-            event_type=event_type,
-            location=location,
-            duration_minutes=duration,
-            params=params
-        )
+            
+            # 4. Проверяем шанс
+            if random.random() > float(chance):
+                return None
+            
+            # 5. Начинаем событие
+            from location_events import calculate_event_duration, generate_event_params
+            
+            # Получаем рыб на локации для генерации параметров
+            location_fish = []
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT DISTINCT name 
+                FROM fish 
+                WHERE locations LIKE '%' || ? || '%'
+                ''',
+                (location,)
+            )
+            location_fish = [row[0] for row in cursor.fetchall()]
+            
+            duration = calculate_event_duration(event_type)
+            params = generate_event_params(event_type, location_fish)
+            
+            return self.start_location_event(
+                event_type=event_type,
+                location=location,
+                duration_minutes=duration,
+                params=params
+            )
 
     def get_school_chain(self, user_id: int, event_id: int) -> Dict[str, Any]:
         """Получить цепочку стайного инстинкта для пользователя."""
@@ -11314,8 +11325,8 @@ class Database:
             cursor = conn.cursor()
             # Получаем рыб локации
             cursor.execute('''
-                SELECT DISTINCT fish_name FROM fish_locations 
-                WHERE LOWER(TRIM(location_name)) = LOWER(TRIM(?))
+                SELECT DISTINCT f.name FROM fish f
+                WHERE f.locations LIKE '%' || ? || '%'
             ''', (location,))
             fish_names = [row[0] for row in cursor.fetchall()]
             
@@ -11351,13 +11362,13 @@ class Database:
                 return dict(zip(columns, row))
             return None
     
-    def get_player_clothing(self, user_id: int, clothing_code: str) -> Optional[Dict[str, Any]]:
-        """Проверить наличие одежды у игрока."""
+    def get_player_clothing_item(self, user_id: int, clothing_code: str) -> Optional[Dict[str, Any]]:
+        """Проверить наличие конкретного предмета одежды у игрока."""
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT * FROM player_clothing 
-                WHERE user_id = ? AND clothing_code = ?
+                WHERE user_id = ? AND item_key = ?
             ''', (user_id, clothing_code))
             row = cursor.fetchone()
             if row:

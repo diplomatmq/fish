@@ -3832,6 +3832,7 @@ class FishBot:
         await query.answer()
         
         user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
         
         # Проверяем состояние
         draft = context.user_data.get('send_gift_draft')
@@ -11335,7 +11336,7 @@ _«Прими этот дар — и помни, океан всегда смо�
                     with db._connect() as conn:
                         cursor = conn.cursor()
                         cursor.execute(
-                            'SELECT DISTINCT fish_name FROM fish_locations WHERE LOWER(TRIM(location_name)) = LOWER(TRIM(?))',
+                            "SELECT DISTINCT name FROM fish WHERE locations LIKE '%' || ? || '%'",
                             (location,)
                         )
                         location_fish = [row[0] for row in cursor.fetchall()]

@@ -223,36 +223,36 @@ def format_event_info(event: LocationEvent) -> str:
     return result
 
 
-def should_apply_spawn_bonus(event: Optional[LocationEvent]) -> Tuple[bool, int]:
+def should_apply_spawn_bonus(event: Optional[Dict[str, Any]]) -> Tuple[bool, int]:
     """
     Проверить, нужно ли применять бонус нереста.
     
     Returns:
         (применять ли бонус, процент бонуса)
     """
-    if not event or event.event_type != SPAWN_EVENT_TYPE:
+    if not event or event.get('event_type') != SPAWN_EVENT_TYPE:
         return False, 0
     
-    bonus = event.params.get("catch_bonus_percent", SPAWN_CATCH_BONUS)
+    bonus = event.get('params', {}).get("catch_bonus_percent", SPAWN_CATCH_BONUS)
     return True, bonus
 
 
-def should_force_murder_fish(event: Optional[LocationEvent]) -> Tuple[bool, str]:
+def should_force_murder_fish(event: Optional[Dict[str, Any]]) -> Tuple[bool, str]:
     """
     Проверить, нужно ли принудительно выдавать определенную рыбу (убийство).
     
     Returns:
         (принудительно ли, название рыбы)
     """
-    if not event or event.event_type != MURDER_EVENT_TYPE:
+    if not event or event.get('event_type') != MURDER_EVENT_TYPE:
         return False, ""
     
-    forced_fish = event.params.get("forced_fish", "")
+    forced_fish = event.get('params', {}).get("forced_fish", "")
     return bool(forced_fish), forced_fish
 
 
 def calculate_school_weight_bonus(
-    event: Optional[LocationEvent],
+    event: Optional[Dict[str, Any]],
     caught_fish_name: str,
     current_chain: int
 ) -> Tuple[int, bool]:
@@ -260,24 +260,24 @@ def calculate_school_weight_bonus(
     Вычислить бонус к весу для стайного инстинкта.
     
     Args:
-        event: событие на локации
+        event: событие на локации (dict)
         caught_fish_name: название пойманной рыбы
         current_chain: текущая цепочка (сколько рыб поймано подряд)
     
     Returns:
         (процент бонуса к весу, продолжается ли цепочка)
     """
-    if not event or event.event_type != SCHOOL_EVENT_TYPE:
+    if not event or event.get('event_type') != SCHOOL_EVENT_TYPE:
         return 0, False
     
-    school_fish = event.params.get("school_fish", "")
+    school_fish = event.get('params', {}).get("school_fish", "")
     if not school_fish or caught_fish_name != school_fish:
         # Цепочка прервана
         return 0, False
     
     # Цепочка продолжается
-    bonus_per_catch = event.params.get("weight_bonus_per_catch", SCHOOL_WEIGHT_BONUS_PER_CATCH)
-    max_bonus = event.params.get("max_bonus", SCHOOL_MAX_BONUS)
+    bonus_per_catch = event.get('params', {}).get("weight_bonus_per_catch", SCHOOL_WEIGHT_BONUS_PER_CATCH)
+    max_bonus = event.get('params', {}).get("max_bonus", SCHOOL_MAX_BONUS)
     
     bonus = min(current_chain * bonus_per_catch, max_bonus)
     return bonus, True
