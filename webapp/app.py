@@ -622,7 +622,8 @@ def inventory():
 		with db._connect() as conn:
 			cursor = conn.cursor()
 			cursor.execute('''
-				SELECT cf.id, cf.fish_name, cf.weight, cf.length, cf.location, f.rarity, f.price, f.sticker_id
+				SELECT cf.id, cf.fish_name, cf.weight, cf.length, cf.location, f.rarity, f.price, f.sticker_id,
+				       f.min_weight, f.max_weight, f.min_length, f.max_length
 				FROM caught_fish cf
 				JOIN fish f ON cf.fish_name = f.name
 				WHERE cf.user_id = ? AND cf.sold = 0
@@ -634,15 +635,31 @@ def inventory():
 			items = []
 			for r in rows:
 				fish_name = r[1]
+				weight = r[2]
+				length = r[3]
 				image_file = r[7] or fish_stickers_dict.get(fish_name) or 'fishdef.webp'
+				
+				# Собираем данные для calculate_fish_price
+				fish_data = {
+					'name': fish_name,
+					'fish_name': fish_name,
+					'rarity': r[5],
+					'price': r[6],
+					'min_weight': r[8],
+					'max_weight': r[9],
+					'min_length': r[10],
+					'max_length': r[11]
+				}
+				calculated_price = db.calculate_fish_price(fish_data, weight, length)
+				
 				items.append({
 					"id": r[0],
 					"name": fish_name,
-					"weight": r[2],
-					"length": r[3],
+					"weight": weight,
+					"length": length,
 					"location": r[4],
 					"rarity": r[5],
-					"price": r[6],
+					"price": calculated_price,
 					"image_url": f"/api/fish-image/{image_file}"
 				})
 			return jsonify({"ok": True, "items": items})
@@ -667,9 +684,11 @@ def sell_fish():
 	try:
 		with db._connect() as conn:
 			cursor = conn.cursor()
-			# Проверяем владельца, цену и вес
+			# Получаем все данные для расчета цены
 			cursor.execute('''
-				SELECT f.price, cf.weight, cf.fish_name FROM caught_fish cf
+				SELECT cf.weight, cf.length, cf.fish_name, f.rarity, f.price,
+				       f.min_weight, f.max_weight, f.min_length, f.max_length
+				FROM caught_fish cf
 				JOIN fish f ON cf.fish_name = f.name
 				WHERE cf.id = ? AND cf.user_id = ? AND cf.sold = 0
 			''', (fish_id, user_id))
@@ -677,19 +696,30 @@ def sell_fish():
 			if not row:
 				return jsonify({"ok": False, "error": "fish_not_found"}), 404
 			
-			price = row[0]
-			weight = row[1]
-			fish_name = row[2]
+			weight, length, fish_name, rarity, base_price, min_w, max_w, min_l, max_l = row
+			
+			# Вычисляем цену через calculate_fish_price
+			fish_data = {
+				'name': fish_name,
+				'fish_name': fish_name,
+				'rarity': rarity,
+				'price': base_price,
+				'min_weight': min_w,
+				'max_weight': max_w,
+				'min_length': min_l,
+				'max_length': max_l
+			}
+			calculated_price = db.calculate_fish_price(fish_data, weight, length)
 			
 			# Обновляем статистику продажи
-			db.update_player_sale_stats(user_id, weight, price)
+			db.update_player_sale_stats(user_id, weight, calculated_price)
 			
 			# УДАЛЯЕМ рыбу вместо пометки sold=1
 			cursor.execute('DELETE FROM caught_fish WHERE id = ?', (fish_id,))
-			cursor.execute('UPDATE players SET coins = coins + ? WHERE user_id = ?', (price, user_id))
+			cursor.execute('UPDATE players SET coins = coins + ? WHERE user_id = ?', (calculated_price, user_id))
 			conn.commit()
 			
-			return jsonify({"ok": True, "earned": price})
+			return jsonify({"ok": True, "earned": calculated_price})
 	except Exception as e:
 		logger.exception("API sell-fish failed")
 		return jsonify({"ok": False, "error": "internal_error"}), 500
@@ -704,30 +734,90 @@ def inventory_grouped():
 	try:
 		with db._connect() as conn:
 			cursor = conn.cursor()
-			# Оптимизированный запрос с использованием STRING_AGG и LIMIT
+			# Получаем все данные для расчета цены
 			cursor.execute('''
-				SELECT cf.fish_name, f.rarity, f.price, f.sticker_id, COUNT(cf.id), SUM(cf.weight), STRING_AGG(CAST(cf.id AS TEXT), ',')
+				SELECT cf.id, cf.fish_name, cf.weight, cf.length, f.rarity, f.price, f.sticker_id,
+				       f.min_weight, f.max_weight, f.min_length, f.max_length
 				FROM caught_fish cf
 				LEFT JOIN fish f ON cf.fish_name = f.name
 				WHERE cf.user_id = ? AND cf.sold = 0
-				GROUP BY cf.fish_name, f.rarity, f.price, f.sticker_id
-				ORDER BY f.rarity IS NOT NULL DESC, COUNT(cf.id) DESC
-				LIMIT 500
+				ORDER BY f.rarity IS NOT NULL DESC
+				LIMIT 1000
 			''', (user_id,))
 			rows = cursor.fetchall()
-			items = []
+			
+			# Группируем по fish_name
+			grouped_data = {}
 			for r in rows:
-				fish_name, rarity, price, sticker_id, count, tw, ids_str = r
-				price = price or 0
-				ids = [int(i) for i in ids_str.split(',') if i]
-				if not rarity:
+				fish_id, fish_name, weight, length, rarity, base_price, sticker_id, min_w, max_w, min_l, max_l = r
+				
+				if fish_name not in grouped_data:
+					grouped_data[fish_name] = {
+						'ids': [],
+						'name': fish_name,
+						'rarity': rarity,
+						'base_price': base_price,
+						'sticker_id': sticker_id,
+						'min_weight': min_w,
+						'max_weight': max_w,
+						'min_length': min_l,
+						'max_length': max_l,
+						'total_weight': 0,
+						'total_price': 0,
+						'count': 0
+					}
+				
+				# Для каждой рыбы вычисляем её цену
+				if rarity:  # Это рыба, а не мусор
+					fish_data = {
+						'name': fish_name,
+						'fish_name': fish_name,
+						'rarity': rarity,
+						'price': base_price,
+						'min_weight': min_w,
+						'max_weight': max_w,
+						'min_length': min_l,
+						'max_length': max_l
+					}
+					calculated_price = db.calculate_fish_price(fish_data, weight, length)
+				else:
+					# Для мусора берем базовую цену
+					calculated_price = base_price or 0
+				
+				grouped_data[fish_name]['ids'].append(fish_id)
+				grouped_data[fish_name]['total_weight'] += weight
+				grouped_data[fish_name]['total_price'] += calculated_price
+				grouped_data[fish_name]['count'] += 1
+			
+			# Формируем результат
+			items = []
+			for fish_name, data in grouped_data.items():
+				# Если это мусор (нет rarity), проверяем в таблице trash
+				if not data['rarity']:
 					cursor.execute('SELECT price, sticker_id FROM trash WHERE name = ?', (fish_name,))
 					tr = cursor.fetchone()
 					if tr:
-						price, sticker_id = tr
-					rarity = "Мусор"
-				im = sticker_id or fish_stickers_dict.get(fish_name) or 'fishdef.webp'
-				items.append({"ids": ids, "name": fish_name, "count": count, "total_weight": tw, "rarity": rarity, "price": price * count, "unit_price": price, "image_url": f"/api/fish-image/{im}"})
+						data['base_price'], data['sticker_id'] = tr
+						# Пересчитываем цену для мусора
+						data['total_price'] = data['base_price'] * data['count']
+					data['rarity'] = "Мусор"
+				
+				im = data['sticker_id'] or fish_stickers_dict.get(fish_name) or 'fishdef.webp'
+				items.append({
+					"ids": data['ids'],
+					"name": fish_name,
+					"count": data['count'],
+					"total_weight": data['total_weight'],
+					"rarity": data['rarity'],
+					"price": data['total_price'],
+					"unit_price": int(data['total_price'] / data['count']) if data['count'] > 0 else 0,
+					"image_url": f"/api/fish-image/{im}"
+				})
+			
+			# Сортируем как в оригинале
+			items.sort(key=lambda x: (x['rarity'] != 'Мусор', -x['count']))
+			items = items[:500]
+			
 			return jsonify({"ok": True, "items": items})
 	except Exception as e:
 		logger.exception("Grouped API error")
@@ -746,36 +836,79 @@ def sell_bulk():
 		with db._connect() as conn:
 			cursor = conn.cursor()
 			if category:
-				if category == "all": cursor.execute('SELECT id, fish_name, weight FROM caught_fish WHERE user_id = ? AND sold = 0', (user_id,))
-				elif category == "trash": cursor.execute('SELECT cf.id, cf.fish_name, cf.weight FROM caught_fish cf LEFT JOIN fish f ON cf.fish_name = f.name WHERE cf.user_id = ? AND cf.sold = 0 AND f.name IS NULL', (user_id,))
+				if category == "all":
+					cursor.execute('''
+						SELECT cf.id, cf.fish_name, cf.weight, cf.length, f.rarity, f.price,
+						       f.min_weight, f.max_weight, f.min_length, f.max_length
+						FROM caught_fish cf
+						LEFT JOIN fish f ON cf.fish_name = f.name
+						WHERE cf.user_id = ? AND cf.sold = 0
+					''', (user_id,))
+				elif category == "trash":
+					cursor.execute('''
+						SELECT cf.id, cf.fish_name, cf.weight, cf.length, NULL, NULL, NULL, NULL, NULL, NULL
+						FROM caught_fish cf
+						LEFT JOIN fish f ON cf.fish_name = f.name
+						WHERE cf.user_id = ? AND cf.sold = 0 AND f.name IS NULL
+					''', (user_id,))
 				else:
 					rmap = {"common": "Обычная", "rare": "Редкая", "legendary": "Легендарная", "anomaly": "Аномалия", "aquarium": "Аквариумная", "mythic": "Мифическая"}
-					cursor.execute('SELECT cf.id, cf.fish_name, cf.weight FROM caught_fish cf JOIN fish f ON cf.fish_name = f.name WHERE cf.user_id = ? AND cf.sold = 0 AND f.rarity = ?', (user_id, rmap.get(category)))
+					cursor.execute('''
+						SELECT cf.id, cf.fish_name, cf.weight, cf.length, f.rarity, f.price,
+						       f.min_weight, f.max_weight, f.min_length, f.max_length
+						FROM caught_fish cf
+						JOIN fish f ON cf.fish_name = f.name
+						WHERE cf.user_id = ? AND cf.sold = 0 AND f.rarity = ?
+					''', (user_id, rmap.get(category)))
 			elif ids:
 				p = ",".join("?" for _ in ids)
-				cursor.execute(f'SELECT id, fish_name, weight FROM caught_fish WHERE id IN ({p}) AND user_id = ? AND sold = 0', (*ids, user_id))
+				cursor.execute(f'''
+					SELECT cf.id, cf.fish_name, cf.weight, cf.length, f.rarity, f.price,
+					       f.min_weight, f.max_weight, f.min_length, f.max_length
+					FROM caught_fish cf
+					LEFT JOIN fish f ON cf.fish_name = f.name
+					WHERE cf.id IN ({p}) AND cf.user_id = ? AND cf.sold = 0
+				''', (*ids, user_id))
 			else: return jsonify({"ok": False}), 400
 			
 			rows = cursor.fetchall()
 			if not rows: return jsonify({"ok": True, "earned_coins": 0, "earned_xp": 0})
-			actual_ids = [r[0] for r in rows]
-			names = list(set(r[1] for r in rows))
-			p_names = ",".join("?" for _ in names)
-			cursor.execute(f'SELECT name, rarity, price FROM fish WHERE name IN ({p_names})', names)
-			fdict = {r[0]: {"r": r[1], "p": r[2]} for r in cursor.fetchall()}
-			cursor.execute(f'SELECT name, price FROM trash WHERE name IN ({p_names})', names)
-			tdict = {r[0]: r[1] for r in cursor.fetchall()}
+			
+			# Получаем цены мусора
+			trash_names = list(set(r[1] for r in rows if r[4] is None))
+			if trash_names:
+				p_trash = ",".join("?" for _ in trash_names)
+				cursor.execute(f'SELECT name, price FROM trash WHERE name IN ({p_trash})', trash_names)
+				tdict = {r[0]: r[1] for r in cursor.fetchall()}
+			else:
+				tdict = {}
 			
 			tot_price = 0
 			tot_xp = 0
 			fish_items = []
+			actual_ids = []
+			
 			for r in rows:
-				nm = r[1]
-				if nm in fdict:
-					tot_price += fdict[nm]["p"]
-					fish_items.append({"name": nm, "weight": r[2], "rarity": fdict[nm]["r"]})
-				elif nm in tdict:
-					tot_price += tdict[nm]
+				fish_id, fish_name, weight, length, rarity, base_price, min_w, max_w, min_l, max_l = r
+				actual_ids.append(fish_id)
+				
+				if rarity:  # Это рыба
+					# Вычисляем цену через calculate_fish_price
+					fish_data = {
+						'name': fish_name,
+						'fish_name': fish_name,
+						'rarity': rarity,
+						'price': base_price,
+						'min_weight': min_w,
+						'max_weight': max_w,
+						'min_length': min_l,
+						'max_length': max_l
+					}
+					calculated_price = db.calculate_fish_price(fish_data, weight, length)
+					tot_price += calculated_price
+					fish_items.append({"name": fish_name, "weight": weight, "length": length, "rarity": rarity})
+				elif fish_name in tdict:  # Это мусор
+					tot_price += tdict[fish_name]
 					tot_xp += 1
 			
 			if fish_items:
