@@ -8570,7 +8570,7 @@ class Database:
             cursor = conn.cursor()
             query = '''
                 SELECT * FROM fish 
-                WHERE locations LIKE ? AND (seasons LIKE ? OR seasons LIKE '%Все%')
+                WHERE locations LIKE ? AND (seasons LIKE ? OR seasons LIKE '%Все%' OR seasons LIKE '%Круглый Год%')
             '''
             params: List[Union[str, int]] = [f"%{location}%", f"%{season}%"]
             # min_level игнорируется: никакой рыбе не нужно уровень
