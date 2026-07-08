@@ -811,7 +811,7 @@ class FishBot:
         Возвращает dict с ключами: payload_user_id, group_chat_id, created_ts, location (если есть)
         """
         # Пример payload: guaranteed_2011062098_-1003716809697_1774724390
-        # или guaranteed_2011062098_-1003716809697_1774724390_Lake
+        # или guaranteed_2011062098_-1003716809697_1774724390_Coral_reef (с _ вместо пробелов)
         try:
             parts = payload.split("_", 4)
             if len(parts) < 4:
@@ -819,7 +819,7 @@ class FishBot:
             payload_user_id = int(parts[1])
             group_chat_id = int(parts[2])
             created_ts = int(parts[3])
-            location = parts[4] if len(parts) > 4 else None
+            location = parts[4].replace("_", " ") if len(parts) > 4 else None
             return {
                 "payload_user_id": payload_user_id,
                 "group_chat_id": group_chat_id,

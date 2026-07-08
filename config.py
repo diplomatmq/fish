@@ -24,7 +24,7 @@ STAR_NAME = "звезды"
 # Ссылки и тексты для команд /rules и /info
 RULES_TEXT = "Правила: уважайте участников, без спама и оскорблений."
 RULES_LINK = "https://t.me/monkeys_giveaways/66"
-INFO_LINK = "https://t.me/monkeys_giveaways/66"
+INFO_LINK = "https://t.me/rubalovka/299"
 
 # Настройки механики
 CATCH_CHANCE = 50  # Шанс поймать рыбу в процентах (для реки)
