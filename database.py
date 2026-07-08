@@ -464,6 +464,18 @@ CLAN_UPGRADE_REQUIREMENTS = {
 }
 
 class Database:
+    @staticmethod
+    def get_safe_fish_column_name(fish_name: str) -> str:
+        safe_name = 'fish_' + ''.join(
+            c if c.isalnum() or c == '_' else '_' 
+            for c in fish_name.lower().strip()
+        )
+        # PostgreSQL limit is 63 bytes. Truncate safely.
+        encoded = safe_name.encode('utf-8')
+        if len(encoded) > 63:
+            safe_name = encoded[:63].decode('utf-8', 'ignore')
+        return safe_name
+
     def get_system_flag(self, key: str) -> Optional[str]:
         """Получить значение системного флага по ключу."""
         with self._connect() as conn:
@@ -488,10 +500,7 @@ class Database:
             # Обновляем энциклопедию (отмечаем, что рыба поймана)
             if not is_trash:
                 # Создаем безопасное имя колонки
-                safe_column_name = 'fish_' + ''.join(
-                    c if c.isalnum() or c == '_' else '_' 
-                    for c in fish_name.lower().strip()
-                )
+                safe_column_name = Database.get_safe_fish_column_name(fish_name)
                 
                 # Создаем запись для пользователя если её нет
                 cursor.execute(
@@ -788,10 +797,7 @@ class Database:
                 fish_name = str(fish_row[0] or '').strip()
                 if not fish_name:
                     continue
-                safe_column_name = 'fish_' + ''.join(
-                    c if c.isalnum() or c == '_' else '_' 
-                    for c in fish_name.lower()
-                )
+                safe_column_name = Database.get_safe_fish_column_name(fish_name)
                 column_to_fish[safe_column_name] = fish_name
             
             # Получаем значения из строки пользователя
@@ -937,10 +943,7 @@ class Database:
                 fish_name = str(fish_row[0] or '').strip()
                 if not fish_name:
                     continue
-                safe_column_name = 'fish_' + ''.join(
-                    c if c.isalnum() or c == '_' else '_' 
-                    for c in fish_name.lower()
-                )
+                safe_column_name = Database.get_safe_fish_column_name(fish_name)
                 fish_column_map[fish_name.lower()] = safe_column_name
             
             # Для каждой рыбы обновляем всех пользователей, кто её поймал (батчинг по рыбам)
@@ -5881,10 +5884,7 @@ class Database:
                     continue
                 
                 # Создаем безопасное имя колонки (заменяем пробелы и спецсимволы)
-                safe_column_name = 'fish_' + ''.join(
-                    c if c.isalnum() or c == '_' else '_' 
-                    for c in fish_name.lower()
-                )
+                safe_column_name = Database.get_safe_fish_column_name(fish_name)
                 
                 if safe_column_name not in existing_columns:
                     try:
@@ -7232,14 +7232,14 @@ class Database:
                 ("Морской еж", 80, 5, "Все"),
                 ("Мшанки", 35, 1, "Все"),
                 ("Насекомые", 30, 1, "Все"),
-                ("Неизвестно", 10, 0, "Все"),
+
                 ("Обрастания", 20, 0, "Все"),
                 ("Органические частицы", 20, 0, "Все"),
                 ("Остатки пищи", 15, 0, "Все"),
                 ("Осьминог", 100, 6, "Все"),
                 ("Падаль", 25, 0, "Все"),
                 ("Паразиты", 20, 0, "Все"),
-                ("Питается за счёт самки", 10, 0, "Все"),
+
                 ("Планктон", 30, 1, "Все"),
                 ("Полипы", 35, 1, "Все"),
                 ("Рак", 70, 4, "Все"),
@@ -7646,7 +7646,7 @@ class Database:
                 ("Рыба-перчатка", "Обычная", 0.01, 0.03, 5.0, 10.0, 10, "Глубоководный желоб", "Круглый Год", "Планктон,Детрит", 6, None),
                 ("Рыба-змея глубоководная", "Редкая", 0.1, 0.5, 20.0, 60.0, 25, "Глубоководный желоб", "Круглый Год", "Рыба,Кальмар", 6, None),
                 ("Рыба-лента глубоководная", "Редкая", 0.05, 0.3, 20.0, 80.0, 25, "Глубоководный желоб", "Круглый Год", "Планктон,Рачки", 6, None),
-                ("Глубоководный удильщик самец", "Редкая", 0.01, 0.05, 2.0, 5.0, 25, "Глубоководный желоб", "Круглый Год", "Питается за счёт самки", 6, None),
+                ("Глубоководный удильщик самец", "Редкая", 0.01, 0.05, 2.0, 5.0, 25, "Глубоководный желоб", "Круглый Год", "Крупный кусок мяса", 6, None),
                 ("Личинка удильщика", "Обычная", 0.001, 0.005, 1.0, 3.0, 10, "Глубоководный желоб", "Круглый Год", "Планктон", 6, None),
                 ("Рыба-фонарик (малакостеус)", "Редкая", 0.05, 0.2, 10.0, 20.0, 25, "Глубоководный желоб", "Круглый Год", "Мелкая рыба,Рачки", 6, None),
                 ("Рыба-гигант глубоководная", "Мифическая", 400.0, 800.0, 400.0, 800.0, 800, "Глубоководный желоб", "Круглый Год", "Крупная рыба,Кальмар", 80, None),
@@ -12330,10 +12330,7 @@ class Database:
                         fish_name = str(fish_row[0] or '').strip()
                         if not fish_name:
                             continue
-                        safe_column_name = 'fish_' + ''.join(
-                            c if c.isalnum() or c == '_' else '_' 
-                            for c in fish_name.lower()
-                        )
+                        safe_column_name = Database.get_safe_fish_column_name(fish_name)
                         column_to_fish[safe_column_name] = fish_name
                     
                     # Проверяем какие рыбы пойманы (значение = 1)
