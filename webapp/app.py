@@ -737,19 +737,20 @@ def inventory_grouped():
 			# Получаем все данные для расчета цены
 			cursor.execute('''
 				SELECT cf.id, cf.fish_name, cf.weight, cf.length, f.rarity, f.price, f.sticker_id,
-				       f.min_weight, f.max_weight, f.min_length, f.max_length
+				       f.min_weight, f.max_weight, f.min_length, f.max_length,
+				       t.name AS trash_name, t.price AS trash_price, t.sticker_id AS trash_sticker_id
 				FROM caught_fish cf
-				LEFT JOIN fish f ON cf.fish_name = f.name
+				LEFT JOIN fish f ON LOWER(TRIM(cf.fish_name)) = LOWER(f.name)
+				LEFT JOIN trash t ON LOWER(TRIM(cf.fish_name)) = LOWER(t.name)
 				WHERE cf.user_id = ? AND cf.sold = 0
 				ORDER BY f.rarity IS NOT NULL DESC
-				LIMIT 1000
 			''', (user_id,))
 			rows = cursor.fetchall()
 			
 			# Группируем по fish_name
 			grouped_data = {}
 			for r in rows:
-				fish_id, fish_name, weight, length, rarity, base_price, sticker_id, min_w, max_w, min_l, max_l = r
+				fish_id, fish_name, weight, length, rarity, base_price, sticker_id, min_w, max_w, min_l, max_l, trash_name, trash_price, trash_sticker_id = r
 				
 				if fish_name not in grouped_data:
 					grouped_data[fish_name] = {
@@ -781,8 +782,8 @@ def inventory_grouped():
 					}
 					calculated_price = db.calculate_fish_price(fish_data, weight, length)
 				else:
-					# Для мусора берем базовую цену
-					calculated_price = base_price or 0
+					# Для мусора берем базовую цену из trash таблицы
+					calculated_price = trash_price or base_price or 0
 				
 				grouped_data[fish_name]['ids'].append(fish_id)
 				grouped_data[fish_name]['total_weight'] += weight
@@ -792,14 +793,12 @@ def inventory_grouped():
 			# Формируем результат
 			items = []
 			for fish_name, data in grouped_data.items():
-				# Если это мусор (нет rarity), проверяем в таблице trash
+				# Если это мусор (нет rarity), используем данные из trash JOIN
 				if not data['rarity']:
-					cursor.execute('SELECT price, sticker_id FROM trash WHERE name = ?', (fish_name,))
-					tr = cursor.fetchone()
-					if tr:
-						data['base_price'], data['sticker_id'] = tr
-						# Пересчитываем цену для мусора
-						data['total_price'] = data['base_price'] * data['count']
+					if data.get('base_price') is None:
+						data['base_price'] = 0
+					if data.get('sticker_id') is None:
+						data['sticker_id'] = None
 					data['rarity'] = "Мусор"
 				
 				im = data['sticker_id'] or fish_stickers_dict.get(fish_name) or 'fishdef.webp'
@@ -816,7 +815,6 @@ def inventory_grouped():
 			
 			# Сортируем как в оригинале
 			items.sort(key=lambda x: (x['rarity'] != 'Мусор', -x['count']))
-			items = items[:500]
 			
 			return jsonify({"ok": True, "items": items})
 	except Exception as e:
