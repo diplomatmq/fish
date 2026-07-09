@@ -9,6 +9,7 @@ import re
 import shlex
 import uuid
 import collections
+import json
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -1318,7 +1319,12 @@ class FishBot:
             stars_total = await _run_sync(db.get_chat_stars_total, ref_chat_id)
             matured_stars_total = await _run_sync(db.get_chat_stars_total, ref_chat_id, min_age_days=21)
             refunds_total = await _run_sync(db.get_chat_refunds_total, ref_chat_id)
-            percent_sum = int((matured_stars_total * 0.85) / 2)
+            stars_before, stars_from = await _run_sync(db.get_chat_stars_split_by_date, ref_chat_id, min_age_days=21)
+            # До 9 июля 2026: 50% после 15% вычета = 0.85 / 2 = 0.425
+            percent_before = int(float(stars_before) * 0.85 / 2)
+            # С 9 июля 2026: 40% после 15% вычета = 0.85 * 0.4 = 0.34
+            percent_from = int(float(stars_from) * 0.85 * 0.4)
+            percent_sum = percent_before + percent_from
             available_stars = await _run_sync(db.get_available_stars_for_withdraw, user_id, ref_chat_id)
             withdrawn_stars = await _run_sync(db.get_withdrawn_stars, user_id, ref_chat_id)
             lines.append(
@@ -1630,31 +1636,37 @@ class FishBot:
             return
 
         draft['tournament_type'] = selected_type
+        draft['selected_locations'] = []
         if selected_type == 'specific_fish':
             # Для specific_fish: сначала локация, потом критерий, потом рыба
             locations = await _run_sync(db.get_locations)
-            keyboard = [
-                [InlineKeyboardButton(loc['name'], callback_data=f'tour_location_{loc["name"]}')]
-                for loc in locations
-            ]
+            keyboard = self._build_location_selection_keyboard(locations, [])
             draft['step'] = 'location'
             context.user_data['new_tour'] = draft
             await query.edit_message_text(
-                f"Выбран тип: {self.TOUR_TYPES[selected_type]}\n\nВыберите локацию:",
+                f"Выбран тип: {self.TOUR_TYPES[selected_type]}\n\nВыберите локации (можно несколько):",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
 
         if selected_type in ('longest_fish', 'biggest_weight'):
             locations = await _run_sync(db.get_locations)
-            keyboard = [
-                [InlineKeyboardButton(loc['name'], callback_data=f'tour_location_{loc["name"]}')]
-                for loc in locations
-            ]
+            keyboard = self._build_location_selection_keyboard(locations, [])
             draft['step'] = 'location'
             context.user_data['new_tour'] = draft
             await query.edit_message_text(
-                f"Выбран тип: {self.TOUR_TYPES[selected_type]}\n\nВыберите локацию:",
+                f"Выбран тип: {self.TOUR_TYPES[selected_type]}\n\nВыберите локации (можно несколько):",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
+
+        if selected_type in ('total_weight', 'total_length'):
+            locations = await _run_sync(db.get_locations)
+            keyboard = self._build_location_selection_keyboard(locations, [])
+            draft['step'] = 'location'
+            context.user_data['new_tour'] = draft
+            await query.edit_message_text(
+                f"Выбран тип: {self.TOUR_TYPES[selected_type]}\n\nВыберите локации (можно несколько):",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
@@ -1665,8 +1677,22 @@ class FishBot:
             f"Выбран тип: {self.TOUR_TYPES[selected_type]}\n\nВведите название турнира:"
         )
 
+    def _build_location_selection_keyboard(self, locations, selected_locations):
+        """Построить клавиатуру для выбора локаций с галочками."""
+        keyboard = []
+        for loc in locations:
+            loc_name = loc['name']
+            is_selected = loc_name in selected_locations
+            checkmark = '✅ ' if is_selected else ''
+            keyboard.append([InlineKeyboardButton(f"{checkmark}{loc_name}", callback_data=f'tour_loc_toggle_{loc_name}')])
+        
+        # Кнопки управления
+        keyboard.append([InlineKeyboardButton("🌍 Все локации", callback_data='tour_loc_select_all')])
+        keyboard.append([InlineKeyboardButton("➡️ Продолжить", callback_data='tour_loc_continue')])
+        return keyboard
+
     async def handle_tour_location_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Выбор локации для турнира 'Улов определённой рыбы'."""
+        """Выбор локации для турнира с поддержкой мульти-выбора."""
         query = update.callback_query
         await query.answer()
 
@@ -1679,19 +1705,67 @@ class FishBot:
             await query.edit_message_text("Сессия не найдена. Запустите /new_tour заново.")
             return
 
-        location_name = query.data.replace('tour_location_', '', 1)
-        draft['target_location'] = location_name
-        # Новый шаг: выбор критерия
-        draft['step'] = 'criteria'
-        context.user_data['new_tour'] = draft
-        keyboard = [
-            [InlineKeyboardButton("Общий вес рыбы", callback_data='tour_criteria_weight')],
-            [InlineKeyboardButton("Количество рыбы", callback_data='tour_criteria_count')],
-        ]
-        await query.edit_message_text(
-            f"📍 Локация: {location_name}\n\nВыберите критерий турнира:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        callback_data = query.data
+        selected_locations = draft.get('selected_locations', [])
+        locations = await _run_sync(db.get_locations)
+
+        if callback_data == 'tour_loc_select_all':
+            # Выбрать все локации
+            selected_locations = [loc['name'] for loc in locations]
+            draft['selected_locations'] = selected_locations
+            context.user_data['new_tour'] = draft
+            keyboard = self._build_location_selection_keyboard(locations, selected_locations)
+            await query.edit_message_text(
+                f"Выбран тип: {self.TOUR_TYPES[draft['tournament_type']]}\n\nВыберите локации (можно несколько):",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
+
+        if callback_data == 'tour_loc_continue':
+            # Продолжить после выбора локаций
+            if not selected_locations:
+                await query.answer("Выберите хотя бы одну локацию", show_alert=True)
+                return
+            
+            tournament_type = draft.get('tournament_type')
+            if tournament_type == 'specific_fish':
+                # Для specific_fish: после локаций - критерий, потом рыба
+                draft['step'] = 'criteria'
+                context.user_data['new_tour'] = draft
+                keyboard = [
+                    [InlineKeyboardButton("Общий вес рыбы", callback_data='tour_criteria_weight')],
+                    [InlineKeyboardButton("Количество рыбы", callback_data='tour_criteria_count')],
+                ]
+                locations_str = ', '.join(selected_locations)
+                await query.edit_message_text(
+                    f"📍 Локации: {locations_str}\n\nВыберите критерий турнира:",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            else:
+                # Для остальных типов - сразу название турнира
+                draft['step'] = 'title'
+                context.user_data['new_tour'] = draft
+                locations_str = ', '.join(selected_locations)
+                await query.edit_message_text(
+                    f"📍 Локации: {locations_str}\n\nВведите название турнира:"
+                )
+            return
+
+        if callback_data.startswith('tour_loc_toggle_'):
+            # Переключить выбор локации
+            loc_name = callback_data.replace('tour_loc_toggle_', '', 1)
+            if loc_name in selected_locations:
+                selected_locations.remove(loc_name)
+            else:
+                selected_locations.append(loc_name)
+            draft['selected_locations'] = selected_locations
+            context.user_data['new_tour'] = draft
+            keyboard = self._build_location_selection_keyboard(locations, selected_locations)
+            await query.edit_message_text(
+                f"Выбран тип: {self.TOUR_TYPES[draft['tournament_type']]}\n\nВыберите локации (можно несколько):",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
 
     async def handle_tour_criteria_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Выбор критерия турнира (вес/количество) после локации."""
@@ -1813,6 +1887,11 @@ class FishBot:
             extra_title = ''
             if draft.get('tournament_type') == 'specific_fish' and draft.get('criteria'):
                 extra_title = f" ({'вес' if draft['criteria']=='weight' else 'кол-во'})"
+
+            # Сохраняем выбранные локации как JSON
+            selected_locations = draft.get('selected_locations', [])
+            target_locations_json = json.dumps(selected_locations) if selected_locations else None
+            
             tournament_id = await _run_sync(db.create_tournament,
                 chat_id=int(draft['chat_id']),
                 created_by=int(draft['created_by']),
@@ -1823,6 +1902,7 @@ class FishBot:
                 target_fish=draft.get('target_fish'),
                 target_location=draft.get('target_location'),
                 prize_places=prize_places,
+                target_locations=target_locations_json,
             )
 
             if tournament_id:
@@ -1834,10 +1914,17 @@ class FishBot:
                 if fish_name:
                     fish_line = f"\n🎯 Рыба: {fish_name}"
                 places_count = int(created.get('prize_places') or prize_places or 10)
+                
+                # Показываем выбранные локации
+                locations_line = ""
+                if selected_locations:
+                    locations_str = ', '.join(selected_locations)
+                    locations_line = f"\n📍 Локации: {locations_str}"
+                
                 await update.message.reply_text(
                     f"✅ Турнир создан (ID: {tournament_id})\n"
                     f"🏆 {created.get('title') or draft.get('title')}\n"
-                    f"📌 Тип: {t_type_name}{fish_line}\n"
+                    f"📌 Тип: {t_type_name}{fish_line}{locations_line}\n"
                     f"🏅 Призовых мест: {places_count}\n"
                     f"🕒 {starts_at.strftime('%d.%m.%Y %H:%M')} — {ends_at.strftime('%d.%m.%Y %H:%M')}"
                 )
@@ -1873,6 +1960,8 @@ class FishBot:
         ends_str = tour['ends_at'].strftime('%d.%m.%Y %H:%M') if hasattr(tour['ends_at'], 'strftime') else str(tour['ends_at'])[:16]
         t_type = tour.get('tournament_type', 'total_weight')
         target_location = tour.get('target_location')
+        target_locations_json = tour.get('target_locations')
+        target_locations = json.loads(target_locations_json) if target_locations_json else None
         top_limit = int(tour.get('prize_places') or 10)
 
         lines = [
@@ -1882,32 +1971,80 @@ class FishBot:
             "",
         ]
 
+        # Показываем локации
+        if target_locations:
+            locations_str = ', '.join(target_locations)
+            lines.insert(1, f"📍 Локации: {locations_str}")
+        elif target_location:
+            lines.insert(1, f"📍 Локация: {target_location}")
+
         user_row = None
         user_place = None
-        if target_location:
-            if t_type == 'longest_fish':
-                rows = await _run_sync(db.get_location_leaderboard_length, target_location, tour['starts_at'], tour['ends_at'], top_limit)
-                all_rows = await _run_sync(db.get_location_leaderboard_length, target_location, tour['starts_at'], tour['ends_at'], 1000)
-            elif t_type == 'biggest_weight':
-                rows = await _run_sync(db.get_location_leaderboard_weight, target_location, tour['starts_at'], tour['ends_at'], top_limit)
-                all_rows = await _run_sync(db.get_location_leaderboard_weight, target_location, tour['starts_at'], tour['ends_at'], 1000)
+        if target_location or target_locations:
+            if target_locations:
+                # Мульти-локация: используем новые функции с параметром locations
+                if t_type == 'specific_fish':
+                    # Турнир "Улов определённой рыбы" на нескольких локациях
+                    target_fish = tour.get('target_fish')
+                    criteria = tour.get('criteria', 'weight')
+                    if not target_fish:
+                        lines.append("Ошибка: не указана целевая рыба для турнира.")
+                        rows = []
+                        all_rows = []
+                    elif criteria == 'weight':
+                        rows = await _run_sync(db.get_multi_location_fish_leaderboard_weight, target_locations, target_fish, tour['starts_at'], tour['ends_at'], top_limit)
+                        all_rows = await _run_sync(db.get_multi_location_fish_leaderboard_weight, target_locations, target_fish, tour['starts_at'], tour['ends_at'], 1000)
+                    else:  # count
+                        rows = await _run_sync(db.get_multi_location_fish_leaderboard_count, target_locations, target_fish, tour['starts_at'], tour['ends_at'], top_limit)
+                        all_rows = await _run_sync(db.get_multi_location_fish_leaderboard_count, target_locations, target_fish, tour['starts_at'], tour['ends_at'], 1000)
+                elif t_type == 'total_length':
+                    rows = await _run_sync(db.get_tour_leaderboard_length, tour['starts_at'], tour['ends_at'], top_limit, target_locations)
+                    all_rows = await _run_sync(db.get_tour_leaderboard_length, tour['starts_at'], tour['ends_at'], 1000, target_locations)
+                else:
+                    rows = await _run_sync(db.get_tour_leaderboard_weight, tour['starts_at'], tour['ends_at'], top_limit, target_locations)
+                    all_rows = await _run_sync(db.get_tour_leaderboard_weight, tour['starts_at'], tour['ends_at'], 1000, target_locations)
             else:
-                rows = []
-                all_rows = []
-            lines.insert(1, f"📍 Локация: {target_location}")
+                # Одиночная локация: старая логика
+                if t_type == 'longest_fish':
+                    rows = await _run_sync(db.get_location_leaderboard_length, target_location, tour['starts_at'], tour['ends_at'], top_limit)
+                    all_rows = await _run_sync(db.get_location_leaderboard_length, target_location, tour['starts_at'], tour['ends_at'], 1000)
+                elif t_type == 'biggest_weight':
+                    rows = await _run_sync(db.get_location_leaderboard_weight, target_location, tour['starts_at'], tour['ends_at'], top_limit)
+                    all_rows = await _run_sync(db.get_location_leaderboard_weight, target_location, tour['starts_at'], tour['ends_at'], 1000)
+                else:
+                    rows = []
+                    all_rows = []
             if not rows:
                 lines.append("Пока никто не поймал рыбу на этой локации.")
             else:
                 for i, r in enumerate(rows, 1):
                     medal = medals[i - 1] if i <= 3 else f"{i}."
                     name = html.escape(r.get('username') or str(r['user_id']))
-                    fish = html.escape(r.get('fish_name', '?'))
-                    if t_type == 'longest_fish':
-                        length = round(float(r.get('best_length') or 0), 1)
-                        lines.append(f"{medal} {name} — {fish} — {length} см")
+                    if target_locations:
+                        # Мульти-локация: показываем общий вес/длину или результат specific_fish
+                        if t_type == 'specific_fish':
+                            criteria = tour.get('criteria', 'weight')
+                            if criteria == 'count':
+                                count = int(r.get('total_fish') or 0)
+                                lines.append(f"{medal} {name} — {count} шт.")
+                            else:
+                                weight = round(float(r.get('total_weight') or 0), 2)
+                                lines.append(f"{medal} {name} — {weight} кг")
+                        elif t_type == 'total_length':
+                            length = round(float(r.get('total_length') or 0), 1)
+                            lines.append(f"{medal} {name} — {length} см")
+                        else:
+                            weight = round(float(r.get('total_weight') or 0), 2)
+                            lines.append(f"{medal} {name} — {weight} кг")
                     else:
-                        weight = round(float(r.get('best_weight') or 0), 2)
-                        lines.append(f"{medal} {name} — {fish} — {weight} кг")
+                        # Одиночная локация: показываем конкретную рыбу
+                        fish = html.escape(r.get('fish_name', '?'))
+                        if t_type == 'longest_fish':
+                            length = round(float(r.get('best_length') or 0), 1)
+                            lines.append(f"{medal} {name} — {fish} — {length} см")
+                        else:
+                            weight = round(float(r.get('best_weight') or 0), 2)
+                            lines.append(f"{medal} {name} — {fish} — {weight} кг")
                 # Поиск пользователя вне топа
                 for idx, r in enumerate(all_rows, 1):
                     if r.get('user_id') == user_id:
@@ -1916,21 +2053,40 @@ class FishBot:
                         break
                 if user_row and user_place > top_limit:
                     name = html.escape(user_row.get('username') or str(user_row['user_id']))
-                    fish = html.escape(user_row.get('fish_name', '?'))
                     lines.append("")
-                    if t_type == 'longest_fish':
-                        length = round(float(user_row.get('best_length') or 0), 1)
-                        lines.append(f"<i>Ваше место: {user_place}. {name} — {fish} — {length} см</i>")
+                    if target_locations:
+                        # Мульти-локация
+                        if t_type == 'specific_fish':
+                            criteria = tour.get('criteria', 'weight')
+                            if criteria == 'count':
+                                count = int(user_row.get('total_fish') or 0)
+                                lines.append(f"<i>Ваше место: {user_place}. {name} — {count} шт.</i>")
+                            else:
+                                weight = round(float(user_row.get('total_weight') or 0), 2)
+                                lines.append(f"<i>Ваше место: {user_place}. {name} — {weight} кг</i>")
+                        elif t_type == 'total_length':
+                            length = round(float(user_row.get('total_length') or 0), 1)
+                            lines.append(f"<i>Ваше место: {user_place}. {name} — {length} см</i>")
+                        else:
+                            weight = round(float(user_row.get('total_weight') or 0), 2)
+                            lines.append(f"<i>Ваше место: {user_place}. {name} — {weight} кг</i>")
                     else:
-                        weight = round(float(user_row.get('best_weight') or 0), 2)
-                        lines.append(f"<i>Ваше место: {user_place}. {name} — {fish} — {weight} кг</i>")
+                        # Одиночная локация
+                        fish = html.escape(user_row.get('fish_name', '?'))
+                        if t_type == 'longest_fish':
+                            length = round(float(user_row.get('best_length') or 0), 1)
+                            lines.append(f"<i>Ваше место: {user_place}. {name} — {fish} — {length} см</i>")
+                        else:
+                            weight = round(float(user_row.get('best_weight') or 0), 2)
+                            lines.append(f"<i>Ваше место: {user_place}. {name} — {fish} — {weight} кг</i>")
         else:
+            # Без локации или с мульти-локацией (total_weight/total_length)
             if t_type == 'total_length':
-                rows = await _run_sync(db.get_tour_leaderboard_length, tour['starts_at'], tour['ends_at'], top_limit)
-                all_rows = await _run_sync(db.get_tour_leaderboard_length, tour['starts_at'], tour['ends_at'], 1000)
+                rows = await _run_sync(db.get_tour_leaderboard_length, tour['starts_at'], tour['ends_at'], top_limit, target_locations)
+                all_rows = await _run_sync(db.get_tour_leaderboard_length, tour['starts_at'], tour['ends_at'], 1000, target_locations)
             else:
-                rows = await _run_sync(db.get_tour_leaderboard_weight, tour['starts_at'], tour['ends_at'], top_limit)
-                all_rows = await _run_sync(db.get_tour_leaderboard_weight, tour['starts_at'], tour['ends_at'], 1000)
+                rows = await _run_sync(db.get_tour_leaderboard_weight, tour['starts_at'], tour['ends_at'], top_limit, target_locations)
+                all_rows = await _run_sync(db.get_tour_leaderboard_weight, tour['starts_at'], tour['ends_at'], 1000, target_locations)
             if not rows:
                 lines.append("Пока никто не поймал рыбу.")
             else:
@@ -12154,16 +12310,16 @@ _«Прими этот дар — и помни, океан всегда смо�
             roll_max = 20000
             trash_max = 7999
             common_max = 14999
-            rare_max = 18999
-            legendary_max = 19899
-            aquarium_max = 19949
-            mythic_max = 19989
+            rare_max = 16999
+            legendary_max = 18999
+            aquarium_max = 19499
+            mythic_max = 19949
             anomaly_max = 19999
             nft_max = 20001
         else:
             roll_max = 20000
-            no_bite_max = 4999
-            trash_max = 9999
+            no_bite_max = 3999
+            trash_max = 8999
             common_max = 14999
             rare_max = 18999
             legendary_max = 19899
@@ -14494,6 +14650,32 @@ _«Прими этот дар — и помни, океан всегда смо�
 
             result = await _run_sync(game.fish, user_id, group_chat_id, location, guaranteed=True)
             
+            # Check for NFT win FIRST!
+            if result.get('nft_win'):
+                nft_message = (
+                    "🎉 Поздравляю, вы выиграли NFT!\n"
+                    "Какой? Секрет.\n"
+                    "С вами свяжется админ для передачи.\n"
+                    "Если в течение дня никто не отпишет вам, свяжитесь через t.me/monkeys_giveaways"
+                )
+                try:
+                    await update.message.reply_text(nft_message)
+                except Exception as e:
+                    logger.error(f"Error sending NFT win message: {e}")
+
+                try:
+                    await self.application.bot.send_message(
+                        chat_id=793216884,
+                        text=(
+                            "NFT win detected.\n"
+                            f"User: {update.effective_user.id} ({update.effective_user.username or update.effective_user.full_name})\n"
+                            f"Chat: {group_chat_id} ({accounting_chat_title or ''})"
+                        ),
+                    )
+                except Exception as e:
+                    logger.error(f"Error sending NFT admin DM: {e}")
+                return
+            
         except Exception as e:
             logger.error(f"Critical error in guaranteed catch for user {user_id}: {e}", exc_info=True)
             message = f"❌ Произошла критическая ошибка при выполнении улова: {str(e)}. Пожалуйста, обратитесь в поддержку."
@@ -15887,7 +16069,7 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_stats_callback, pattern="^stats_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_leaderboard_callback, pattern="^leaderboard$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_tour_type_callback, pattern="^tour_type_"))
-    application.add_handler(CallbackQueryHandler(bot_instance.handle_tour_location_callback, pattern="^tour_location_"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_tour_location_callback, pattern="^tour_loc_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_tour_criteria_callback, pattern="^tour_criteria_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_payment_expired_callback, pattern="^payment_expired$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_invoice_cancelled_callback, pattern="^invoice_cancelled$"))

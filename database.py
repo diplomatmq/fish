@@ -1434,6 +1434,34 @@ class Database:
             cols = [d[0] for d in cursor.description]
             return [dict(zip(cols, r)) for r in rows]
 
+    def get_multi_location_fish_leaderboard_weight(self, locations: List[str], fish_name: str, starts_at: datetime, ends_at: datetime, limit: int = 10) -> list:
+        """Топ по суммарному весу определённой рыбы на нескольких локациях."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            location_conditions = ' OR '.join(['cf.location = ?' for _ in locations])
+            query = f'''
+                SELECT
+                    COALESCE(MAX(p.username), 'Неизвестно') AS username,
+                    cf.user_id,
+                    COALESCE(SUM(cf.weight), 0) AS total_weight,
+                    COUNT(cf.id) AS total_fish
+                FROM caught_fish cf
+                LEFT JOIN players p ON p.user_id = cf.user_id
+                WHERE LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(?))
+                  AND cf.caught_at >= ?
+                  AND cf.caught_at <= ?
+                  AND COALESCE(cf.sold, 0) = 0
+                  AND ({location_conditions})
+                GROUP BY cf.user_id
+                ORDER BY total_weight DESC, total_fish DESC
+                LIMIT ?
+                '''
+            params = [fish_name, starts_at, ends_at] + locations + [max(1, int(limit or 10))]
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, r)) for r in rows]
+
     def get_location_fish_leaderboard_count(self, location_name: str, fish_name: str, starts_at: datetime, ends_at: datetime, limit: int = 10) -> list:
         """Топ по количеству определённой рыбы на локации."""
         with self._connect() as conn:
@@ -1458,6 +1486,34 @@ class Database:
                 ''',
                 (location_name, fish_name, starts_at, ends_at, max(1, int(limit or 10)))
             )
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, r)) for r in rows]
+
+    def get_multi_location_fish_leaderboard_count(self, locations: List[str], fish_name: str, starts_at: datetime, ends_at: datetime, limit: int = 10) -> list:
+        """Топ по количеству определённой рыбы на нескольких локациях."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            location_conditions = ' OR '.join(['cf.location = ?' for _ in locations])
+            query = f'''
+                SELECT
+                    COALESCE(MAX(p.username), 'Неизвестно') AS username,
+                    cf.user_id,
+                    COUNT(cf.id) AS total_fish,
+                    COALESCE(SUM(cf.weight), 0) AS total_weight
+                FROM caught_fish cf
+                LEFT JOIN players p ON p.user_id = cf.user_id
+                WHERE LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(?))
+                  AND cf.caught_at >= ?
+                  AND cf.caught_at <= ?
+                  AND COALESCE(cf.sold, 0) = 0
+                  AND ({location_conditions})
+                GROUP BY cf.user_id
+                ORDER BY total_fish DESC, total_weight DESC
+                LIMIT ?
+                '''
+            params = [fish_name, starts_at, ends_at] + locations + [max(1, int(limit or 10))]
+            cursor.execute(query, params)
             rows = cursor.fetchall()
             cols = [d[0] for d in cursor.description]
             return [dict(zip(cols, r)) for r in rows]
@@ -7033,6 +7089,10 @@ class Database:
                 cursor.execute("ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS prize_places INTEGER DEFAULT 10")
             except Exception:
                 pass
+            try:
+                cursor.execute("ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS target_locations TEXT")
+            except Exception:
+                pass
 
             # Ensure clan_tournaments table exists
             try:
@@ -10472,6 +10532,7 @@ class Database:
         target_location: Optional[str] = None,
         prize_pool: int = 50,
         prize_places: int = 10,
+        target_locations: Optional[str] = None,
     ) -> Optional[int]:
         """Создать турнир и вернуть его ID."""
         with self._connect() as conn:
@@ -10494,9 +10555,9 @@ class Database:
                     INSERT INTO tournaments (
                         chat_id, created_by, title, tournament_type,
                         starts_at, ends_at, target_fish, prize_pool,
-                        target_location, prize_places
+                        target_location, prize_places, target_locations
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     RETURNING id
                     ''',
                     (
@@ -10510,6 +10571,7 @@ class Database:
                         int(prize_pool or 50),
                         target_location,
                         safe_places,
+                        target_locations,
                     ),
                 )
                 row = None
@@ -11027,11 +11089,13 @@ class Database:
 
             return None
 
-    def get_tour_leaderboard_weight(self, starts_at: datetime, ends_at: datetime, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_tour_leaderboard_weight(self, starts_at: datetime, ends_at: datetime, limit: int = 10, locations: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                '''
+            if locations:
+                # Фильтр по нескольким локациям
+                location_conditions = ' OR '.join(['cf.location = ?' for _ in locations])
+                query = f'''
                 SELECT
                     COALESCE(MAX(p.username), 'Неизвестно') AS username,
                     cf.user_id,
@@ -11042,21 +11106,43 @@ class Database:
                 WHERE cf.caught_at >= ?
                   AND cf.caught_at <= ?
                   AND COALESCE(cf.sold, 0) = 0
+                  AND ({location_conditions})
                 GROUP BY cf.user_id
                 ORDER BY total_weight DESC, total_fish DESC
                 LIMIT ?
-                ''',
-                (starts_at, ends_at, max(1, int(limit or 10))),
-            )
+                '''
+                params = [starts_at, ends_at] + locations + [max(1, int(limit or 10))]
+                cursor.execute(query, params)
+            else:
+                cursor.execute(
+                    '''
+                    SELECT
+                        COALESCE(MAX(p.username), 'Неизвестно') AS username,
+                        cf.user_id,
+                        COUNT(cf.id) AS total_fish,
+                        COALESCE(SUM(cf.weight), 0) AS total_weight
+                    FROM caught_fish cf
+                    LEFT JOIN players p ON p.user_id = cf.user_id
+                    WHERE cf.caught_at >= ?
+                      AND cf.caught_at <= ?
+                      AND COALESCE(cf.sold, 0) = 0
+                    GROUP BY cf.user_id
+                    ORDER BY total_weight DESC, total_fish DESC
+                    LIMIT ?
+                    ''',
+                    (starts_at, ends_at, max(1, int(limit or 10))),
+                )
             rows = cursor.fetchall()
             cols = [d[0] for d in cursor.description]
             return [dict(zip(cols, r)) for r in rows]
 
-    def get_tour_leaderboard_length(self, starts_at: datetime, ends_at: datetime, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_tour_leaderboard_length(self, starts_at: datetime, ends_at: datetime, limit: int = 10, locations: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                '''
+            if locations:
+                # Фильтр по нескольким локациям
+                location_conditions = ' OR '.join(['cf.location = ?' for _ in locations])
+                query = f'''
                 SELECT
                     COALESCE(MAX(p.username), 'Неизвестно') AS username,
                     cf.user_id,
@@ -11067,12 +11153,32 @@ class Database:
                 WHERE cf.caught_at >= ?
                   AND cf.caught_at <= ?
                   AND COALESCE(cf.sold, 0) = 0
+                  AND ({location_conditions})
                 GROUP BY cf.user_id
                 ORDER BY total_length DESC, total_fish DESC
                 LIMIT ?
-                ''',
-                (starts_at, ends_at, max(1, int(limit or 10))),
-            )
+                '''
+                params = [starts_at, ends_at] + locations + [max(1, int(limit or 10))]
+                cursor.execute(query, params)
+            else:
+                cursor.execute(
+                    '''
+                    SELECT
+                        COALESCE(MAX(p.username), 'Неизвестно') AS username,
+                        cf.user_id,
+                        COUNT(cf.id) AS total_fish,
+                        COALESCE(SUM(cf.length), 0) AS total_length
+                    FROM caught_fish cf
+                    LEFT JOIN players p ON p.user_id = cf.user_id
+                    WHERE cf.caught_at >= ?
+                      AND cf.caught_at <= ?
+                      AND COALESCE(cf.sold, 0) = 0
+                    GROUP BY cf.user_id
+                    ORDER BY total_length DESC, total_fish DESC
+                    LIMIT ?
+                    ''',
+                    (starts_at, ends_at, max(1, int(limit or 10))),
+                )
             rows = cursor.fetchall()
             cols = [d[0] for d in cursor.description]
             return [dict(zip(cols, r)) for r in rows]
@@ -14467,6 +14573,42 @@ class Database:
             logger.exception("get_chat_refunds_total failed chat=%s", chat_id)
             return 0
 
+    def get_chat_stars_split_by_date(self, chat_id: int, min_age_days: Optional[int] = None, cutoff_date: str = '2026-07-09 00:00:00') -> tuple:
+        """Возвращает кортеж (stars_before_cutoff, stars_from_cutoff) по чату из star_transactions (без рефандов).
+        cutoff_date: дата с которой применяется новый процент (по умолчанию 9 июля 2026)"""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                if min_age_days is not None and int(min_age_days) > 0:
+                    cutoff = datetime.utcnow() - timedelta(days=int(min_age_days))
+                    cursor.execute(
+                        '''
+                        SELECT COALESCE(SUM(CASE WHEN created_at < ? THEN total_amount ELSE 0 END), 0),
+                               COALESCE(SUM(CASE WHEN created_at >= ? THEN total_amount ELSE 0 END), 0)
+                        FROM star_transactions
+                        WHERE chat_id = ?
+                          AND COALESCE(refund_status, 'none') = 'none'
+                          AND created_at <= ?
+                        ''',
+                        (cutoff_date, cutoff_date, int(chat_id), cutoff.strftime('%Y-%m-%d %H:%M:%S')),
+                    )
+                else:
+                    cursor.execute(
+                        '''
+                        SELECT COALESCE(SUM(CASE WHEN created_at < ? THEN total_amount ELSE 0 END), 0),
+                               COALESCE(SUM(CASE WHEN created_at >= ? THEN total_amount ELSE 0 END), 0)
+                        FROM star_transactions
+                        WHERE chat_id = ?
+                          AND COALESCE(refund_status, 'none') = 'none'
+                        ''',
+                        (cutoff_date, cutoff_date, int(chat_id)),
+                    )
+                row = cursor.fetchone()
+                return (int(row[0] or 0), int(row[1] or 0)) if row else (0, 0)
+        except Exception:
+            logger.exception("get_chat_stars_split_by_date failed chat=%s min_age_days=%s", chat_id, min_age_days)
+            return (0, 0)
+
     def get_withdrawn_stars(self, user_id: int, chat_id: Optional[int] = None) -> int:
         try:
             with self._connect() as conn:
@@ -14509,9 +14651,13 @@ class Database:
             return False
 
     def get_available_stars_for_withdraw(self, user_id: int, chat_id: int) -> int:
-        """Доступно к выводу = 50% от (85% stars старше 21 дня) минус уже выведенное."""
-        matured = self.get_chat_stars_total(chat_id, min_age_days=21)
-        gross = int((float(matured) * 0.85) / 2)
+        """Доступно к выводу = 50% от (85% stars старше 21 дня до 9 июля 2026) + 40% от (85% stars старше 21 дня с 9 июля 2026) минус уже выведенное."""
+        stars_before, stars_from = self.get_chat_stars_split_by_date(chat_id, min_age_days=21)
+        # До 9 июля 2026: 50% после 15% вычета = 0.85 / 2 = 0.425
+        gross_before = int(float(stars_before) * 0.85 / 2)
+        # С 9 июля 2026: 40% после 15% вычета = 0.85 * 0.4 = 0.34
+        gross_from = int(float(stars_from) * 0.85 * 0.4)
+        gross = gross_before + gross_from
         withdrawn = self.get_withdrawn_stars(user_id, chat_id)
         return max(0, gross - withdrawn)
 

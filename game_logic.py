@@ -420,7 +420,7 @@ class FishingGame:
         # Регулировка шансов на основе ROLL_MAX = 20000
         if is_on_boat:
             NO_BITE_MAX = 1999
-            TRASH_MAX = 3999
+            TRASH_MAX = 3499
             COMMON_MAX = 11999
             RARE_MAX = 17999
             LEGENDARY_MAX = 18999
@@ -429,8 +429,8 @@ class FishingGame:
             ANOMALY_MAX = 19999
             NFT_MAX = 20001
         else:
-            NO_BITE_MAX = 4999
-            TRASH_MAX = 9999
+            NO_BITE_MAX = 3999
+            TRASH_MAX = 8999
             COMMON_MAX = 14999
             RARE_MAX = 18999
             LEGENDARY_MAX = 19899
@@ -456,7 +456,7 @@ class FishingGame:
         # Также применяем бонус нереста (+20% конвертируем в +1000 к броску для упрощения)
         spawn_roll_bonus = int(spawn_bonus_percent * 10) if spawn_bonus_percent > 0 else 0
         adjusted_roll = roll + (weather_bonus * 50) + (feeder_bonus * 250) + (clothing_bonus_percent * 50) + (beer_bonus_percent * 50) + (sea_god_bonus_percent * 50) + spawn_roll_bonus
-        adjusted_roll = max(0, min(ROLL_MAX, adjusted_roll))  # Ограничиваем от 0 до 15000
+        adjusted_roll = max(0, min(ROLL_MAX, adjusted_roll))  # Ограничиваем от 0 до 20000
 
         # Применяем штраф популяции (снижаем roll за перелов на одной локации)
         population_penalty = db.get_population_penalty(user_id)
@@ -467,7 +467,7 @@ class FishingGame:
         adjusted_roll = max(0, min(ROLL_MAX - 1, adjusted_roll))  # Ограничиваем до 14999 для обычных расчетов
         
         logger.info(f"   🌍 Population penalty: {population_penalty:.1f}% ({penalty_points} points)")
-        logger.info(f"   📊 Final adjusted roll: {adjusted_roll}/15000")
+        logger.info(f"   📊 Final adjusted roll: {adjusted_roll}/{ROLL_MAX}")
 
         # --- ГАРПУН: спец.логика ---
         if rod and rod['name'] == 'Гарпун':
@@ -491,9 +491,9 @@ class FishingGame:
             f"   🎲 Random roll: {roll}/{ROLL_MAX} (adjusted: {adjusted_roll}/{ROLL_MAX} "
             f"with weather {weather_condition}, feeder {feeder_bonus:+d}%, clothing +{clothing_bonus_percent:.2f}%, beer +{beer_bonus_percent:.2f}%, sea god {sea_god_bonus_percent:+.1f}%)"
         )
-        logger.info("   📊 Ranges: 0-4999=NO_BITE, 5000-9999=TRASH, 10000-14999=COMMON, 15000-18999=RARE, 19000-19899=LEGENDARY, 19900-19999=TOP_TIER, 20000=NFT")
+        logger.info("   📊 Ranges: 0-3999=NO_BITE, 4000-8999=TRASH, 9000-14999=COMMON, 15000-18999=RARE, 19000-19899=LEGENDARY, 19900-19999=TOP_TIER, 20000=NFT")
         
-        if roll == ROLL_MAX: # NFT win only on exact raw roll 15000
+        if roll == ROLL_MAX: # NFT win only on exact raw roll 20000
             db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
             return {
                 "success": False,
