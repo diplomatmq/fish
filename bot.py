@@ -2890,6 +2890,7 @@ class FishBot:
         location: Optional[str] = None,
         payment_footer: str = "\n\n⭐ Оплатите 1 Telegram Stars для гарантированного улова!",
     ) -> None:
+        """Добавляет кнопку оплаты к существующему сообщению (инвойс создается сразу)."""
         try:
             invoice_url = await self._create_guaranteed_invoice_url(user_id, chat_id, location=location)
             if not invoice_url:
@@ -2926,22 +2927,41 @@ class FishBot:
         location: Optional[str] = None,
         payment_footer: str = "\n\n⭐ Оплатите 1 Telegram Stars для гарантированного улова!",
     ) -> Optional[Message]:
-        """Мгновенно отправляет текст; кнопку оплаты добавляет в фоне."""
+        """Мгновенно отправляет текст с кнопкой оплаты (инвойс создается сразу)."""
+        # Создаем инвойс URL СРАЗУ для мгновенной отправки
+        invoice_url = await self._create_guaranteed_invoice_url(user_id, chat_id, location=location)
+        
+        if not invoice_url:
+            # Если не удалось создать инвойс, отправляем просто текст
+            return await self._safe_send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_to_message_id=reply_to_message_id,
+            )
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                f"⭐ Оплатить {GUARANTEED_CATCH_COST} Telegram Stars",
+                url=invoice_url,
+            )]
+        ])
+        final_text = text if payment_footer.strip() in text else f"{text}{payment_footer}"
+        
         msg = await self._safe_send_message(
             chat_id=chat_id,
-            text=text,
+            text=final_text,
             reply_to_message_id=reply_to_message_id,
+            reply_markup=keyboard,
         )
-        if not msg:
-            return None
-        asyncio.create_task(self._attach_guaranteed_invoice_to_message(
-            chat_id=chat_id,
-            user_id=user_id,
-            message_id=msg.message_id,
-            text=text,
-            location=location,
-            payment_footer=payment_footer,
-        ))
+        
+        if msg:
+            self._store_active_invoice_context(
+                user_id=user_id,
+                chat_id=chat_id,
+                message_id=msg.message_id,
+                invoice_url=invoice_url,
+            )
+        
         return msg
 
     async def _attach_repair_invoice_to_message(
@@ -2992,32 +3012,48 @@ class FishBot:
         item_type: str = "fish",
         fish_meta: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Сначала текст (мгновенно), картинку — в фоне без блокировки ответа."""
-        await self._safe_send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_to_message_id=reply_to_message_id,
-        )
+        """Сначала стикер (мгновенно), текст — сразу после без блокировки ответа."""
         if not item_name:
+            await self._safe_send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_to_message_id=reply_to_message_id,
+            )
             return
 
-        async def _send_image() -> None:
-            try:
-                sticker_message = await self._send_catch_image(
-                    chat_id=chat_id,
-                    item_name=item_name,
-                    item_type=item_type,
-                    reply_to_message_id=reply_to_message_id,
-                )
-                if not sticker_message:
-                    return
+        # Отправляем стикер первым
+        try:
+            sticker_message = await self._send_catch_image(
+                chat_id=chat_id,
+                item_name=item_name,
+                item_type=item_type,
+                reply_to_message_id=reply_to_message_id,
+            )
+            if sticker_message:
                 context.bot_data.setdefault("last_bot_stickers", {})[chat_id] = sticker_message.message_id
                 if fish_meta:
                     context.bot_data.setdefault("sticker_fish_map", {})[sticker_message.message_id] = fish_meta
-            except Exception:
-                logger.exception("_send_catch_text_and_image failed chat=%s item=%s", chat_id, item_name)
-
-        asyncio.create_task(_send_image())
+                # Отправляем текст с reply_to на стикер
+                await self._safe_send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    reply_to_message_id=sticker_message.message_id,
+                )
+            else:
+                # Если стикер не отправился, отправляем текст обычным образом
+                await self._safe_send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    reply_to_message_id=reply_to_message_id,
+                )
+        except Exception:
+            logger.exception("_send_catch_text_and_image failed chat=%s item=%s", chat_id, item_name)
+            # При ошибке отправляем текст обычным образом
+            await self._safe_send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_to_message_id=reply_to_message_id,
+            )
 
     def _schedule_fish_catch_followups(
         self,
@@ -6446,20 +6482,26 @@ _«Прими этот дар — и помни, океан всегда смо�
                     ))
 
                 loc = str(result.get('location') or player.get('current_location') or '').replace(' ', '_')
-                await self._send_text_then_guaranteed_invoice_button(
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    text=message.strip(),
-                    reply_to_message_id=update.effective_message.message_id if update.effective_message else None,
-                    location=loc or None,
-                )
+                
+                # Сначала отправляем стикер (если есть), потом текст с инвойсом
                 if trash_item_name:
-                    asyncio.create_task(self._send_catch_image(
+                    sticker_message = await self._send_catch_image(
                         chat_id=update.effective_chat.id,
                         item_name=trash_item_name,
                         item_type="trash",
                         reply_to_message_id=update.message.message_id,
-                    ))
+                    )
+                    reply_to = sticker_message.message_id if sticker_message else update.effective_message.message_id
+                else:
+                    reply_to = update.effective_message.message_id if update.effective_message else None
+                
+                await self._send_text_then_guaranteed_invoice_button(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    text=message.strip(),
+                    reply_to_message_id=reply_to,
+                    location=loc or None,
+                )
                 return
             else:
                 # Если арест рыбнадзора — не показываем кнопку платного заброса
@@ -6484,20 +6526,14 @@ _«Прими этот дар — и помни, океан всегда смо�
                         parse_mode=None,
                     )
                     return
-                # Сначала текст, кнопку оплаты добавляем в фоне
+                # Сразу отправляем текст с кнопкой оплаты (инвойс создается мгновенно)
                 fail_text = f"😔 {result['message']}"
-                fail_msg = await self._safe_send_message(
+                await self._send_text_then_guaranteed_invoice_button(
                     chat_id=chat_id,
+                    user_id=user_id,
                     text=fail_text,
                     reply_to_message_id=update.effective_message.message_id if update.effective_message else None,
                 )
-                if fail_msg:
-                    asyncio.create_task(self._attach_guaranteed_invoice_to_message(
-                        chat_id=chat_id,
-                        user_id=user_id,
-                        message_id=fail_msg.message_id,
-                        text=fail_text,
-                    ))
                 return
     
     async def menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -12664,18 +12700,18 @@ _«Прими этот дар — и помни, океан всегда смо�
         if penalty_lines:
             message += "\n\n" + "\n".join(penalty_lines)
 
-        # Отправляем стикер и сообщение ПАРАЛЛЕЛЬНО для ускорения реакции
-        await asyncio.gather(
-            self._safe_send_sticker(
-                chat_id=chat_id,
-                sticker=dynamite_sticker_file_id,
-                reply_to_message_id=reply_to_message_id,
-            ),
-            self._safe_send_message(
-                chat_id=chat_id,
-                text=message,
-                reply_to_message_id=reply_to_message_id,
-            )
+        # Отправляем стикер СНАЧАЛА, потом текст для быстрой реакции
+        sticker_message = await self._safe_send_sticker(
+            chat_id=chat_id,
+            sticker=dynamite_sticker_file_id,
+            reply_to_message_id=reply_to_message_id,
+        )
+        # Отправляем текст с reply_to на стикер (если стикер отправился)
+        reply_to = sticker_message.message_id if sticker_message else reply_to_message_id
+        await self._safe_send_message(
+            chat_id=chat_id,
+            text=message,
+            reply_to_message_id=reply_to,
         )
 
     async def dynamite_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
