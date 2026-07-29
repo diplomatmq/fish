@@ -3678,7 +3678,8 @@ class FishBot:
         length = float(fight_result.get('length') or 0)
         fish_price = int(fight_result.get('fish_price') or fish.get('price') or 0)
 
-        tickets_awarded, tickets_jackpot, tickets_total = self._award_tickets(
+        tickets_awarded, tickets_jackpot, tickets_total = await _run_sync(
+            self._award_tickets,
             user_id,
             self._calculate_tickets_for_result(fight_result),
             username=update.effective_user.username or update.effective_user.first_name or str(user_id),
@@ -5967,8 +5968,25 @@ _«Прими этот дар — и помни, океан всегда смо�
         await _run_sync(self._sync_player_username_if_changed, user_id, chat_id, player, current_username)
 
         # Проверка на алкогольное опьянение
-        if 'beer' in effects:
-            await update.message.reply_text(self._generate_drunk_gibberish())
+        if BEER_DRUNK_EFFECT in effects:
+            remaining_seconds = int(effects[BEER_DRUNK_EFFECT])
+            minutes = remaining_seconds // 60
+            seconds = remaining_seconds % 60
+            time_str = f"{minutes} мин {seconds} сек" if minutes > 0 else f"{seconds} сек"
+            drunk_messages = [
+                f"🤪 {self._generate_drunk_gibberish()}\n\n"
+                f"🍺 Вы в состоянии опьянения! Рыбачить нельзя.\n"
+                f"⏳ Осталось протрезветь: {time_str}",
+                
+                f"🤪 {self._generate_drunk_gibberish()}\n\n"
+                f"🍺 Слишком много пива! Не можете нормально держать удочку.\n"
+                f"⏳ Трезвость вернётся через: {time_str}",
+                
+                f"🤪 {self._generate_drunk_gibberish()}\n\n"
+                f"🍺 В таком состоянии рыбалка опасна! Подождите, пока протрезвеете.\n"
+                f"⏳ Опьянение пройдёт через: {time_str}",
+            ]
+            await update.message.reply_text(random.choice(drunk_messages))
             return
 
         # Проверка на морскую болезнь
