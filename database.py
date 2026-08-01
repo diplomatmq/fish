@@ -6351,6 +6351,15 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_raf_prizes_event_claimed
                 ON raf_event_prizes (event_id, is_claimed)
             ''')
+
+            # Таблица подписчиков на рассылку о RAF-ивентах
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS raf_event_subscribers (
+                    user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             
             # Initialize boat-related tables
             self._ensure_boat_tables()
@@ -7134,6 +7143,19 @@ class Database:
                 )
             except Exception:
                 pass
+
+            # Ensure announce_message_link column exists in raf_events
+            raf_events_cols = get_columns('raf_events')
+            if 'announce_message_link' not in raf_events_cols:
+                try:
+                    cursor.execute('ALTER TABLE raf_events ADD COLUMN announce_message_link TEXT')
+                    conn.commit()
+                except Exception:
+                    logger.exception("Failed to add announce_message_link column to raf_events")
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
 
             conn.commit()
     
@@ -11088,6 +11110,122 @@ class Database:
                 }
 
             return None
+
+    # --- Методы для работы с подписчиками на RAF-ивенты ---
+
+    def subscribe_to_raf_events(self, user_id: int, username: Optional[str] = None) -> bool:
+        """Подписать пользователя на рассылку о RAF-ивентах."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            try:
+                safe_username = (username or "").strip()[:128] or None
+                cursor.execute(
+                    '''
+                    INSERT INTO raf_event_subscribers (user_id, username)
+                    VALUES (?, ?)
+                    ON CONFLICT (user_id) DO UPDATE SET username = ?
+                    ''',
+                    (int(user_id), safe_username, safe_username),
+                )
+                conn.commit()
+                return True
+            except Exception:
+                logger.exception("subscribe_to_raf_events failed for user_id=%s", user_id)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return False
+
+    def unsubscribe_from_raf_events(self, user_id: int) -> bool:
+        """Отписать пользователя от рассылки о RAF-ивентах."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    'DELETE FROM raf_event_subscribers WHERE user_id = ?',
+                    (int(user_id),),
+                )
+                conn.commit()
+                return True
+            except Exception:
+                logger.exception("unsubscribe_from_raf_events failed for user_id=%s", user_id)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return False
+
+    def is_subscribed_to_raf_events(self, user_id: int) -> bool:
+        """Проверить, подписан ли пользователь на рассылку о RAF-ивентах."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT 1 FROM raf_event_subscribers WHERE user_id = ? LIMIT 1',
+                (int(user_id),),
+            )
+            return cursor.fetchone() is not None
+
+    def get_all_raf_subscribers(self) -> List[Dict[str, Any]]:
+        """Получить всех подписчиков на рассылку о RAF-ивентах."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT user_id, username, subscribed_at
+                FROM raf_event_subscribers
+                ORDER BY subscribed_at ASC
+                '''
+            )
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, row)) for row in rows]
+
+    def update_raf_event_message_link(self, event_id: int, message_link: str) -> bool:
+        """Обновить ссылку на сообщение о начале RAF-ивента (announce_message_link)."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    '''
+                    UPDATE raf_events
+                    SET announce_message_link = ?
+                    WHERE id = ?
+                    ''',
+                    (str(message_link or '').strip()[:1000], int(event_id)),
+                )
+                conn.commit()
+                return bool(getattr(cursor, 'rowcount', 0))
+            except Exception:
+                logger.exception("update_raf_event_message_link failed for event_id=%s", event_id)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return False
+
+    def get_raf_event_with_chat_info(self, event_id: int) -> Optional[Dict[str, Any]]:
+        """Получить RAF-ивент с информацией о чате."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT 
+                    re.*,
+                    cc.chat_title,
+                    cc.chat_link
+                FROM raf_events re
+                LEFT JOIN chat_configs cc ON cc.chat_id = re.target_chat_id
+                WHERE re.id = ?
+                LIMIT 1
+                ''',
+                (int(event_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
 
     def get_tour_leaderboard_weight(self, starts_at: datetime, ends_at: datetime, limit: int = 10, locations: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         with self._connect() as conn:

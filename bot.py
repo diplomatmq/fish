@@ -3944,6 +3944,46 @@ class FishBot:
             "Шаг 1/5: Введите название ивента."
         )
 
+    async def reg_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Регистрация на рассылку о RAF-ивентах."""
+        if update.effective_chat.type != 'private':
+            await update.message.reply_text("⚠️ Команда /reg работает только в личных сообщениях с ботом.")
+            return
+
+        user_id = update.effective_user.id
+        username = update.effective_user.username or update.effective_user.first_name or str(user_id)
+
+        # Проверяем, подписан ли уже
+        is_subscribed = await _run_sync(db.is_subscribed_to_raf_events, user_id)
+        
+        if is_subscribed:
+            # Предлагаем отписаться
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Отписаться от рассылки", callback_data=f"unreg_raf")]
+            ])
+            await update.message.reply_text(
+                "✅ Вы уже подписаны на рассылку о RAF-ивентах!\n\n"
+                "Вы будете получать уведомления о новых розыгрышах с информацией о чате, призах и прямыми ссылками.",
+                reply_markup=keyboard
+            )
+        else:
+            # Подписываем
+            success = await _run_sync(db.subscribe_to_raf_events, user_id, username)
+            
+            if success:
+                await update.message.reply_text(
+                    "✅ Вы успешно подписались на рассылку о RAF-ивентах!\n\n"
+                    "Теперь вы будете получать уведомления, когда кто-то создаст новый розыгрыш:\n"
+                    "• Название и призы ивента\n"
+                    "• Чат, где проходит розыгрыш\n"
+                    "• Прямая ссылка на сообщение о розыгрыше\n\n"
+                    "Чтобы отписаться, используйте команду /reg снова."
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Не удалось подписаться на рассылку. Попробуйте позже."
+                )
+
     async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отменить создание RAF-ивента или отправку подарка."""
         if update.effective_chat.type != 'private':
@@ -5040,6 +5080,24 @@ _«Прими этот дар — и помни, океан всегда смо�
 
         return False
 
+    async def handle_unreg_raf(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка отписки от рассылки о RAF-ивентах."""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = update.effective_user.id
+        success = await _run_sync(db.unsubscribe_from_raf_events, user_id)
+
+        if success:
+            await query.edit_message_text(
+                "✅ Вы успешно отписались от рассылки о RAF-ивентах.\n\n"
+                "Чтобы подписаться снова, используйте команду /reg"
+            )
+        else:
+            await query.edit_message_text(
+                "❌ Не удалось отписаться. Попробуйте позже."
+            )
+
     async def handle_raf_start_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Запуск оплаченного RAF-ивента (кнопка из лички)."""
         query = update.callback_query
@@ -5100,9 +5158,35 @@ _«Прими этот дар — и помни, океан всегда смо�
             parse_mode="HTML",
         )
 
+        message_link = None
         if sent_msg:
+            # Формируем ссылку на сообщение
+            try:
+                chat = await context.bot.get_chat(target_chat_id)
+                chat_username = getattr(chat, 'username', None)
+                if chat_username:
+                    # Публичный чат с username
+                    message_link = f"https://t.me/{chat_username}/{sent_msg.message_id}"
+                else:
+                    # Приватный чат - используем формат с chat_id
+                    # Убираем префикс -100 для супергрупп
+                    chat_id_str = str(target_chat_id)
+                    if chat_id_str.startswith('-100'):
+                        chat_id_str = chat_id_str[4:]
+                    message_link = f"https://t.me/c/{chat_id_str}/{sent_msg.message_id}"
+                
+                # Сохраняем ссылку в БД
+                if message_link:
+                    await _run_sync(db.update_raf_event_message_link, event_id, message_link)
+            except Exception as e:
+                logger.exception("Failed to generate message link for RAF event")
+            
+            # Отправляем уведомления подписчикам
+            await self._notify_raf_subscribers(event_id, activated, prizes, message_link, context)
+            
             await query.edit_message_text(
-                f"✅ Ивент запущен и опубликован в чате {target_chat_id}.",
+                f"✅ Ивент запущен и опубликован в чате {target_chat_id}.\n"
+                f"Уведомления отправлены подписчикам.",
                 reply_markup=None,
             )
         else:
@@ -5111,6 +5195,92 @@ _«Прими этот дар — и помни, океан всегда смо�
                 "Проверьте, что бот есть в чате и имеет право писать.",
                 reply_markup=None,
             )
+
+    async def _notify_raf_subscribers(
+        self,
+        event_id: int,
+        event: Dict[str, Any],
+        prizes: List[Dict[str, Any]],
+        message_link: Optional[str],
+        context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Отправить уведомления о новом RAF-ивенте всем подписчикам."""
+        try:
+            subscribers = await _run_sync(db.get_all_raf_subscribers)
+            if not subscribers:
+                logger.info("No RAF subscribers to notify for event_id=%s", event_id)
+                return
+            
+            # Получаем информацию о чате
+            target_chat_id = int(event.get('target_chat_id'))
+            event_full = await _run_sync(db.get_raf_event_with_chat_info, event_id)
+            
+            chat_title = event_full.get('chat_title') if event_full else None
+            chat_link = event_full.get('chat_link') if event_full else None
+            
+            # Если нет названия чата в БД, пробуем получить из API
+            if not chat_title:
+                try:
+                    chat = await context.bot.get_chat(target_chat_id)
+                    chat_title = chat.title or str(target_chat_id)
+                except Exception:
+                    chat_title = str(target_chat_id)
+            
+            # Формируем текст уведомления
+            prizes_text = self._format_raf_prizes_summary(prizes)
+            event_title = html.escape(str(event.get('title') or 'RAF-ивент'))
+            chat_title_safe = html.escape(chat_title)
+            
+            starts_at = event.get('starts_at') or event.get('activated_at')
+            ends_at = event.get('ends_at')
+            starts_at_text = self._format_raf_datetime(starts_at)
+            ends_at_text = self._format_raf_datetime(ends_at) if ends_at else "до выдачи всех призов"
+            
+            notification_text = (
+                f"🎉 <b>Новый RAF-ивент!</b>\n\n"
+                f"🏷 <b>Название:</b> {event_title}\n"
+                f"💬 <b>Чат:</b> {chat_title_safe}\n"
+                f"⏱ <b>Время:</b> {starts_at_text} - {ends_at_text}\n\n"
+                f"🎁 <b>Призы:</b>\n{prizes_text}\n"
+            )
+            
+            # Добавляем кнопку со ссылкой на сообщение или чат
+            keyboard = None
+            if message_link:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔗 Перейти к ивенту", url=message_link)]
+                ])
+            elif chat_link:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💬 Перейти в чат", url=chat_link)]
+                ])
+            
+            # Отправляем уведомления подписчикам
+            sent_count = 0
+            failed_count = 0
+            
+            for subscriber in subscribers:
+                subscriber_id = int(subscriber.get('user_id'))
+                try:
+                    await self._safe_send_message(
+                        chat_id=subscriber_id,
+                        text=notification_text,
+                        parse_mode="HTML",
+                        reply_markup=keyboard
+                    )
+                    sent_count += 1
+                    # Небольшая задержка между отправками
+                    await asyncio.sleep(0.05)
+                except Exception as e:
+                    failed_count += 1
+                    logger.warning("Failed to notify subscriber %s about RAF event %s: %s", subscriber_id, event_id, e)
+            
+            logger.info(
+                "RAF event %s notifications sent: %s succeeded, %s failed out of %s subscribers",
+                event_id, sent_count, failed_count, len(subscribers)
+            )
+        except Exception:
+            logger.exception("Failed to notify RAF subscribers for event_id=%s", event_id)
 
     def _remember_document_file_id(self, cache_key: str, file_id: str) -> None:
         self._image_file_id_cache.set(cache_key, file_id)
@@ -15964,6 +16134,7 @@ def main():
     application.add_handler(CommandHandler("new_ref", bot_instance.new_ref_command))
     application.add_handler(CommandHandler("check", bot_instance.check_command))
     application.add_handler(CommandHandler("raf", bot_instance.raf_command))
+    application.add_handler(CommandHandler("reg", bot_instance.reg_command))
     application.add_handler(CommandHandler("send", bot_instance.send_command))
     application.add_handler(CommandHandler("cancel", bot_instance.cancel_command))
     application.add_handler(CommandHandler("new_tour", bot_instance.new_tour_command))
@@ -16041,6 +16212,7 @@ def main():
     # Обработчики callback
     application.add_handler(CallbackQueryHandler(bot_instance.handle_noop, pattern=r"^noop$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_raf_start_callback, pattern=r"^raf_start_\d+_\d+$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_unreg_raf, pattern=r"^unreg_raf$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_start_fishing, pattern="^start_fishing_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_fight_action, pattern=r"^fight_[a-f0-9]{10}_(jerk|hold|slack)_\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_change_location, pattern="^change_location_"))
