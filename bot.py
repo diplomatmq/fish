@@ -5167,6 +5167,7 @@ _«Прими этот дар — и помни, океан всегда смо�
                 if chat_username:
                     # Публичный чат с username
                     message_link = f"https://t.me/{chat_username}/{sent_msg.message_id}"
+                    logger.info("RAF event %s: public chat link generated: %s", event_id, message_link)
                 else:
                     # Приватный чат - используем формат с chat_id
                     # Убираем префикс -100 для супергрупп
@@ -5174,12 +5175,17 @@ _«Прими этот дар — и помни, океан всегда смо�
                     if chat_id_str.startswith('-100'):
                         chat_id_str = chat_id_str[4:]
                     message_link = f"https://t.me/c/{chat_id_str}/{sent_msg.message_id}"
+                    logger.info("RAF event %s: private chat link generated: %s (original chat_id: %s)", event_id, message_link, target_chat_id)
                 
                 # Сохраняем ссылку в БД
                 if message_link:
-                    await _run_sync(db.update_raf_event_message_link, event_id, message_link)
+                    saved = await _run_sync(db.update_raf_event_message_link, event_id, message_link)
+                    if saved:
+                        logger.info("RAF event %s: message link saved to DB", event_id)
+                    else:
+                        logger.warning("RAF event %s: failed to save message link to DB", event_id)
             except Exception as e:
-                logger.exception("Failed to generate message link for RAF event")
+                logger.exception("Failed to generate message link for RAF event %s", event_id)
             
             # Отправляем уведомления подписчикам
             await self._notify_raf_subscribers(event_id, activated, prizes, message_link, context)
@@ -5211,12 +5217,22 @@ _«Прими этот дар — и помни, океан всегда смо�
                 logger.info("No RAF subscribers to notify for event_id=%s", event_id)
                 return
             
+            # Если нет ссылки на сообщение, не отправляем уведомления
+            if not message_link:
+                logger.warning("No message_link for RAF event %s, skipping notifications", event_id)
+                return
+            
             # Получаем информацию о чате
             target_chat_id = int(event.get('target_chat_id'))
-            event_full = await _run_sync(db.get_raf_event_with_chat_info, event_id)
             
-            chat_title = event_full.get('chat_title') if event_full else None
-            chat_link = event_full.get('chat_link') if event_full else None
+            # Пробуем получить название чата
+            chat_title = None
+            try:
+                # Сначала пробуем из БД
+                event_full = await _run_sync(db.get_raf_event_with_chat_info, event_id)
+                chat_title = event_full.get('chat_title') if event_full else None
+            except Exception:
+                pass
             
             # Если нет названия чата в БД, пробуем получить из API
             if not chat_title:
@@ -5244,16 +5260,10 @@ _«Прими этот дар — и помни, океан всегда смо�
                 f"🎁 <b>Призы:</b>\n{prizes_text}\n"
             )
             
-            # Добавляем кнопку со ссылкой на сообщение или чат
-            keyboard = None
-            if message_link:
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔗 Перейти к ивенту", url=message_link)]
-                ])
-            elif chat_link:
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💬 Перейти в чат", url=chat_link)]
-                ])
+            # Добавляем кнопку со ссылкой на сообщение о начале ивента
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔗 Перейти к ивенту", url=message_link)]
+            ])
             
             # Отправляем уведомления подписчикам
             sent_count = 0

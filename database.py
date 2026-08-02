@@ -11212,8 +11212,7 @@ class Database:
                 '''
                 SELECT 
                     re.*,
-                    cc.chat_title,
-                    cc.chat_link
+                    cc.chat_title
                 FROM raf_events re
                 LEFT JOIN chat_configs cc ON cc.chat_id = re.target_chat_id
                 WHERE re.id = ?
