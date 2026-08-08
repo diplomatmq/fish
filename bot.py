@@ -4606,12 +4606,6 @@ class FishBot:
             roll_pray_outcome,
         )
 
-        if update.effective_chat.type == 'private':
-            await update.message.reply_text(
-                "🌊 Молитва Морскому Повелителю принимается только в рыбацких чатах."
-            )
-            return
-
         if not update.message:
             return
 
@@ -4635,8 +4629,8 @@ class FishBot:
             minutes = (total_sec % 3600) // 60
             await update.message.reply_text(
                 f"🌊 Боги уже слышали вашу молитву.\n"
-                f"Следующая — через *{hours}ч {minutes}мин*.",
-                parse_mode="Markdown",
+                f"Следующая — через <b>{hours}ч {minutes}мин</b>.",
+                parse_mode='HTML',
             )
             return
 
@@ -4653,11 +4647,11 @@ class FishBot:
             await self._safe_send_message(
                 chat_id=chat_id,
                 text=PRAY_INTRO_CAPTION,
-                parse_mode="Markdown",
+                parse_mode='HTML',
                 reply_to_message_id=reply_id,
             )
         else:
-            await update.message.reply_text(PRAY_INTRO_CAPTION, parse_mode="Markdown")
+            await update.message.reply_text(PRAY_INTRO_CAPTION, parse_mode='HTML')
 
         await asyncio.sleep(1.2)
 
@@ -4672,7 +4666,7 @@ class FishBot:
                 db.apply_timed_effect, user_id, WRATH_EFFECT, effect_minutes, True,
             )
             await self._safe_send_message(
-                chat_id=chat_id, text=base_text, parse_mode="Markdown", reply_to_message_id=reply_id,
+                chat_id=chat_id, text=base_text, parse_mode='HTML', reply_to_message_id=reply_id,
             )
             return
 
@@ -4682,7 +4676,7 @@ class FishBot:
                 db.apply_timed_effect, user_id, BLESSING_EFFECT, effect_minutes, True,
             )
             await self._safe_send_message(
-                chat_id=chat_id, text=base_text, parse_mode="Markdown", reply_to_message_id=reply_id,
+                chat_id=chat_id, text=base_text, parse_mode='HTML', reply_to_message_id=reply_id,
             )
             return
 
@@ -4691,19 +4685,19 @@ class FishBot:
             await _run_sync(db.add_player_coins_all_profiles, user_id, amount)
             await self._safe_send_message(
                 chat_id=chat_id,
-                text=f"{base_text}\n\n💰 Получено: *{amount}* 🪙",
-                parse_mode="Markdown",
+                text=f"{base_text}\n\n{BAG_EMOJI_TAG} Получено: {amount} {COIN_EMOJI_TAG}",
+                parse_mode='HTML',
                 reply_to_message_id=reply_id,
             )
             return
 
         if outcome_id == "rod_break":
             broken_rod = await _run_sync(db.break_active_rod_by_divine_wrath, user_id, chat_id)
-            rod_line = f"\n\n🎣 Пострадала удочка: *{broken_rod or 'неизвестно'}*"
+            rod_line = f"\n\n{FISHING_EMOJI_TAG} Пострадала удочка: <b>{broken_rod or 'неизвестно'}</b>"
             await self._safe_send_message(
                 chat_id=chat_id,
                 text=f"{base_text}{rod_line}",
-                parse_mode="Markdown",
+                parse_mode='HTML',
                 reply_to_message_id=reply_id,
             )
             return
@@ -4711,11 +4705,11 @@ class FishBot:
         if outcome_id == "gift_net":
             net_name = pick_gift_net_name()
             ok = await _run_sync(db.grant_net, user_id, net_name, chat_id, 1)
-            extra = f"\n\n🕸️ Вам дарована: *{net_name}*" if ok else "\n\n⚠️ Не удалось вручить сеть."
+            extra = f"\n\n🕸️ Вам дарована: <b>{net_name}</b>" if ok else "\n\n⚠️ Не удалось вручить сеть."
             await self._safe_send_message(
                 chat_id=chat_id,
                 text=f"{base_text}{extra}",
-                parse_mode="Markdown",
+                parse_mode='HTML',
                 reply_to_message_id=reply_id,
             )
             return
@@ -4723,11 +4717,11 @@ class FishBot:
         if outcome_id == "gift_rod":
             rod_name = pick_gift_rod_name()
             ok = await _run_sync(db.grant_rod, user_id, rod_name, chat_id)
-            extra = f"\n\n🔱 Вам даровано: *{rod_name}*" if ok else "\n\n⚠️ Не удалось вручить удочку."
+            extra = f"\n\n🔱 Вам даровано: <b>{rod_name}</b>" if ok else "\n\n⚠️ Не удалось вручить удочку."
             await self._safe_send_message(
                 chat_id=chat_id,
                 text=f"{base_text}{extra}",
-                parse_mode="Markdown",
+                parse_mode='HTML',
                 reply_to_message_id=reply_id,
             )
             return
@@ -4736,7 +4730,7 @@ class FishBot:
             ok = await _run_sync(db.grant_paid_boat_divine, user_id)
             if ok:
                 await self._safe_send_message(
-                    chat_id=chat_id, text=base_text, parse_mode="Markdown", reply_to_message_id=reply_id,
+                    chat_id=chat_id, text=base_text, parse_mode='HTML', reply_to_message_id=reply_id,
                 )
             else:
                 fallback_coins = pick_coin_reward("coins_atlantis")
@@ -4744,11 +4738,11 @@ class FishBot:
                 await self._safe_send_message(
                     chat_id=chat_id,
                     text=(
-                        "⛵ *Корабль уже стоит у вашего причала…*\n\n"
+                        "⛵ <b>Корабль уже стоит у вашего причала…</b>\n\n"
                         "Аргонавты не привели второй корабль, но Посейдон послал сокровища!\n"
-                        f"💰 Получено: *{fallback_coins}* 🪙"
+                        f"{BAG_EMOJI_TAG} Получено: <b>{fallback_coins}</b> {COIN_EMOJI_TAG}"
                     ),
-                    parse_mode="Markdown",
+                    parse_mode='HTML',
                     reply_to_message_id=reply_id,
                 )
             return
@@ -4769,7 +4763,7 @@ class FishBot:
                 await self._safe_send_message(
                     chat_id=chat_id,
                     text=f"{base_text}\n\n⚠️ Океан замолчал — трофей растворился в тумане.",
-                    parse_mode="Markdown",
+                    parse_mode='HTML',
                     reply_to_message_id=reply_id,
                 )
                 return
@@ -4813,7 +4807,7 @@ _«Прими этот дар — и помни, океан всегда смо�
             return
 
         await self._safe_send_message(
-            chat_id=chat_id, text=base_text, parse_mode="Markdown", reply_to_message_id=reply_id,
+            chat_id=chat_id, text=base_text, parse_mode='HTML', reply_to_message_id=reply_id,
         )
 
     async def donat_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4826,12 +4820,12 @@ _«Прими этот дар — и помни, океан всегда смо�
             "user_id": user_id,
         }
         await update.message.reply_text(
-            "💛 *Поддержка проекта FishBot*\n\n"
+            "💛 <b>Поддержка проекта FishBot</b>\n\n"
             "Спасибо, что хотите помочь развитию бота!\n\n"
             f"Введите сумму пожертвования в Telegram Stars (целое число от "
             f"{self.DONATION_MIN_STARS} до {self.DONATION_MAX_STARS}).\n\n"
             "Для отмены отправьте /cancel.",
-            parse_mode="Markdown",
+            parse_mode='HTML',
         )
 
     async def handle_donation_amount_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6113,13 +6107,6 @@ _«Прими этот дар — и помни, океан всегда смо�
             getattr(update.effective_chat, "id", None),
         )
         """Команда /fish - просто забросить удочку"""
-        # Команда работает только в группах/каналах, не в личных чатах
-        if update.effective_chat.type == 'private':
-            try:
-                await update.message.reply_text("Команда /fish работает только в чатах с группой. Для платежей проверьте входящие инвойсы.")
-            except Exception as e:
-                logger.error(f"Error replying to fish command: {e}")
-            return
         
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
@@ -6736,10 +6723,6 @@ _«Прими этот дар — и помни, океан всегда смо�
     
     async def menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /menu - показать меню рыбалки"""
-        # Команда работает только в группах/каналах, не в личных чатах
-        if update.effective_chat and update.effective_chat.type == 'private':
-            await update.message.reply_text("Команда /menu работает только в чатах с группой. Для платежей проверьте входящие инвойсы.")
-            return
         
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
@@ -11507,25 +11490,25 @@ _«Прими этот дар — и помни, океан всегда смо�
         convertible = await _run_sync(db.get_convertible_fish_list, user_id, chat_id)
         if not convertible:
             await update.message.reply_text(
-                "🪱 *Переработка рыбы в наживку*\n\n"
+                f"{WORM_EMOJI_TAG} <b>Переработка рыбы в наживку</b>\n\n"
                 "У вас нет подходящей рыбы в инвентаре.\n"
                 "Можно переработать: Плотву, Верховку, а также любую рыбу, которая есть в магазине наживок (Шпрот, Сардина, Сельдь и др.).",
-                parse_mode='Markdown'
+                parse_mode='HTML'
             )
             return
 
-        text = "🪱 *Выберите рыбу для переработки:*\n\n"
+        text = f"{WORM_EMOJI_TAG} <b>Выберите рыбу для переработки:</b>\n\n"
         for idx, item in enumerate(convertible, 1):
             text += f"{idx}. {item['name']} ({item['weight']:.2f} кг)\n"
 
-        text += "\nВведите номера рыб через пробел (например: `1 3 5`), чтобы превратить их в наживку."
+        text += "\nВведите номера рыб через пробел (например: <code>1 3 5</code>), чтобы превратить их в наживку."
         
         context.user_data['waiting_bait_selection'] = {
             'user_id': user_id,
             'items': convertible
         }
         
-        await update.message.reply_text(text, parse_mode='Markdown')
+        await update.message.reply_text(text, parse_mode='HTML')
 
     async def market_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать рыбный рынок дня или установить его (owner)."""
@@ -12914,9 +12897,6 @@ _«Прими этот дар — и помни, океан всегда смо�
 
     async def dynamite_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда/слово динамит: 12 независимых роллов с КД 8 часов."""
-        if update.effective_chat.type == 'private':
-            await update.message.reply_text("Команда динамита работает только в группах.")
-            return
 
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
@@ -13050,11 +13030,11 @@ _«Прими этот дар — и помни, океан всегда смо�
                 details = result.get('details', {})
                 detail_lines = [f"• {name}: +{qty} шт." for name, qty in details.items()]
                 await update.message.reply_text(
-                    "✅ *Переработка завершена!*\n\n"
+                    "✅ <b>Переработка завершена!</b>\n\n"
                     f"Переработано рыб: {result['converted_count']}\n"
                     "Получена наживка:\n"
                     + "\n".join(detail_lines),
-                    parse_mode='Markdown'
+                    parse_mode='HTML'
                 )
             else:
                 await update.message.reply_text(f"❌ Ошибка переработки: {result.get('reason', 'unknown')}")
@@ -14354,12 +14334,12 @@ _«Прими этот дар — и помни, океан всегда смо�
             total_collected = await _run_sync(db.get_project_donations_total)
             user_total = await _run_sync(db.get_user_project_donations_total, user_id)
             await update.message.reply_text(
-                "💛 *Огромное спасибо за поддержку проекта!*\n\n"
-                f"Ваше пожертвование: *{donate_amount}* ⭐\n"
-                f"Всего собрано на развитие бота: *{total_collected}* ⭐\n"
-                f"Ваш общий вклад: *{user_total}* ⭐\n\n"
+                "💛 <b>Огромное спасибо за поддержку проекта!</b>\n\n"
+                f"Ваше пожертвование: <b>{donate_amount}</b> {STAR_EMOJI_TAG}\n"
+                f"Всего собрано на развитие бота: <b>{total_collected}</b> {STAR_EMOJI_TAG}\n"
+                f"Ваш общий вклад: <b>{user_total}</b> {STAR_EMOJI_TAG}\n\n"
                 "Благодаря вам FishBot становится лучше! 🎣",
-                parse_mode="Markdown",
+                parse_mode='HTML',
             )
             return
         
