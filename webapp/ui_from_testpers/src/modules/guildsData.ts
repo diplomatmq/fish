@@ -367,6 +367,33 @@ export async function donateToGuild(itemName: string, quantity = 1): Promise<boo
   return false;
 }
 
+export async function donateAllToGuild(itemName: string): Promise<boolean> {
+  try {
+    const data = await fetchApi<any>('/api/guilds/donate_all', {
+      method: 'POST',
+      body: JSON.stringify({ item_name: itemName })
+    });
+    if (data && data.ok) {
+      await loadClans();
+      return true;
+    }
+    if (data && !data.ok) {
+      if (data.reason === 'not_enough_trash') {
+        alert('У вас нет этого предмета в инвентаре.');
+      } else if (data.reason === 'not_in_clan') {
+        alert('Вы не состоите в артели.');
+      } else if (data.reason === 'already_complete') {
+        alert('Этот ресурс уже полностью собран для улучшения.');
+      } else {
+        alert(`Ошибка пожертвования: ${data.reason || data.error || 'неизвестная ошибка'}`);
+      }
+    }
+  } catch (e) {
+    console.error('Failed to donate all to guild:', e);
+  }
+  return false;
+}
+
 export async function upgradeGuild(): Promise<boolean> {
   try {
     const data = await fetchApi<any>('/api/guilds/upgrade', { method: 'POST' });

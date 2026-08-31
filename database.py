@@ -674,6 +674,14 @@ class Database:
             row = cursor.fetchone()
             return int(row[0] or 0) if row else 0
 
+    def get_all_user_ids(self) -> List[int]:
+        """Get all unique user IDs from the players table."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT DISTINCT user_id FROM players')
+            rows = cursor.fetchall()
+            return [int(row[0]) for row in rows if row[0]]
+
     def get_user_achievement_progress(self, user_id: int) -> Dict[str, Any]:
         uid = int(user_id)
         stat_values = self._collect_achievement_stats(uid)
@@ -12504,6 +12512,108 @@ class Database:
                 selected_ids,
             )
 
+            cursor.execute(
+                '''
+                INSERT INTO clan_donations (clan_id, item_name, quantity, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (clan_id, item_name)
+                DO UPDATE SET
+                    quantity = clan_donations.quantity + EXCLUDED.quantity,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (int(clan['id']), clean_item, donate_qty),
+            )
+            cursor.execute(
+                '''
+                SELECT quantity
+                FROM clan_donations
+                WHERE clan_id = ? AND item_name = ?
+                ''',
+                (int(clan['id']), clean_item),
+            )
+            total_row = cursor.fetchone()
+            conn.commit()
+
+        return {
+            'ok': True,
+            'clan_id': int(clan['id']),
+            'item_name': clean_item,
+            'donated': donate_qty,
+            'clan_total': int(total_row[0] or 0) if total_row else donate_qty,
+        }
+
+    def donate_all_trash_to_clan(self, user_id: int, chat_id: int, item_name: str) -> Dict[str, Any]:
+        """Пожертвовать весь мусор определённого типа в артель."""
+        clan = self.get_clan_by_user(user_id)
+        if not clan:
+            return {'ok': False, 'reason': 'not_in_clan'}
+
+        clean_item = str(item_name or '').strip()
+        if not clean_item:
+            return {'ok': False, 'reason': 'bad_item'}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            
+            # Get all available items of this type
+            cursor.execute(
+                '''
+                SELECT cf.id
+                FROM caught_fish cf
+                LEFT JOIN fish f ON LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(f.name))
+                WHERE cf.user_id = ?
+                  AND (cf.chat_id = ? OR cf.chat_id IS NULL OR cf.chat_id < 1)
+                  AND COALESCE(cf.sold, 0) = 0
+                  AND f.name IS NULL
+                  AND LOWER(TRIM(cf.fish_name)) = LOWER(TRIM(?))
+                ORDER BY cf.id ASC
+                ''',
+                (int(user_id), int(chat_id), clean_item),
+            )
+            rows = cursor.fetchall() or []
+            selected_ids = [int(r[0]) for r in rows]
+            
+            if not selected_ids:
+                return {
+                    'ok': False,
+                    'reason': 'not_enough_trash',
+                    'available': 0,
+                    'required': 1,
+                }
+
+            donate_qty = len(selected_ids)
+            
+            # Check upgrade requirements and limit if needed
+            current_level = int(clan.get('level') or 1)
+            requirements = self.get_clan_upgrade_requirements(current_level + 1)
+            if requirements and clean_item in requirements:
+                donations = self.get_clan_donations(int(clan['id']))
+                already_donated = int(donations.get(clean_item, 0) or 0)
+                required_qty = int(requirements[clean_item])
+                remaining = required_qty - already_donated
+                if remaining <= 0:
+                    return {
+                        'ok': False,
+                        'reason': 'already_complete',
+                        'item': clean_item,
+                        'required': required_qty,
+                    }
+                if donate_qty > remaining:
+                    donate_qty = remaining
+                    selected_ids = selected_ids[:donate_qty]
+
+            # Mark as sold
+            sold_placeholders = ','.join('?' for _ in selected_ids)
+            cursor.execute(
+                f'''
+                UPDATE caught_fish
+                SET sold = 1, sold_at = CURRENT_TIMESTAMP
+                WHERE id IN ({sold_placeholders})
+                ''',
+                selected_ids,
+            )
+
+            # Add to clan donations
             cursor.execute(
                 '''
                 INSERT INTO clan_donations (clan_id, item_name, quantity, updated_at)

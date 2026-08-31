@@ -1704,6 +1704,31 @@ def guild_donate():
 		return jsonify({"ok": False, "error": "db_write_failed"}), 500
 
 
+@app.post("/api/guilds/donate_all")
+def guild_donate_all():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	data = request.get_json(silent=True) or {}
+	item_name = str(data.get("item_name") or "").strip()
+
+	if not item_name:
+		return jsonify({"ok": False, "error": "item_required"}), 400
+
+	db = _get_fish_db()
+	if not db:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		result = db.donate_all_trash_to_clan(user_id, 0, item_name)
+		return jsonify(result)
+	except Exception:
+		logger.exception("WebApp guild donate_all failed for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+
 @app.post("/api/guilds/upgrade")
 def guild_upgrade():
 	auth_user, auth_error = _get_verified_user_from_request()

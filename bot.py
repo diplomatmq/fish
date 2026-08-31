@@ -12351,6 +12351,93 @@ _«Прими этот дар — и помни, океан всегда смо�
             chunks.append(chunk)
         return " ".join(chunks)
 
+    async def ls_broadcast_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start broadcast message mode for owner."""
+        context.user_data['ls_broadcast_mode'] = True
+        context.user_data['ls_photo'] = None
+        await update.message.reply_text(
+            "📢 Режим рассылки активирован.\n\n"
+            "Отправьте текст или фото с подписью для рассылки всем пользователям в личку.\n"
+            "Для отмены отправьте /cancel"
+        )
+
+    async def ls_broadcast_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle photo for broadcast."""
+        if not context.user_data.get('ls_broadcast_mode'):
+            return
+        
+        photo = update.message.photo[-1]
+        caption = update.message.caption or ""
+        
+        context.user_data['ls_photo'] = photo.file_id
+        context.user_data['ls_caption'] = caption
+        
+        await update.message.reply_text(
+            f"📷 Фото получено.\n"
+            f"Подпись: {caption if caption else '(без подписи)'}\n\n"
+            "Отправьте для подтверждения или /cancel для отмены."
+        )
+
+    async def ls_broadcast_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle text for broadcast and send to all users."""
+        if not context.user_data.get('ls_broadcast_mode'):
+            return
+        
+        text = update.message.text
+        photo_file_id = context.user_data.get('ls_photo')
+        caption = context.user_data.get('ls_caption', '')
+        
+        if photo_file_id:
+            # Send photo with caption
+            final_caption = caption if caption else text
+        else:
+            # Send text only
+            final_caption = text
+        
+        # Get all user IDs
+        user_ids = await _run_sync(db.get_all_user_ids)
+        
+        if not user_ids:
+            await update.message.reply_text("❌ Нет пользователей в базе.")
+            context.user_data['ls_broadcast_mode'] = False
+            return
+        
+        await update.message.reply_text(f"📤 Начинаю рассылку {len(user_ids)} пользователям...")
+        
+        success_count = 0
+        fail_count = 0
+        
+        for user_id in user_ids:
+            try:
+                if photo_file_id:
+                    await self.application.bot.send_photo(
+                        chat_id=user_id,
+                        photo=photo_file_id,
+                        caption=final_caption
+                    )
+                else:
+                    await self.application.bot.send_message(
+                        chat_id=user_id,
+                        text=final_caption
+                    )
+                success_count += 1
+                # Small delay to avoid rate limiting
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                logger.warning(f"Failed to send broadcast to user {user_id}: {e}")
+                fail_count += 1
+        
+        # Reset broadcast mode
+        context.user_data['ls_broadcast_mode'] = False
+        context.user_data['ls_photo'] = None
+        context.user_data['ls_caption'] = None
+        
+        await update.message.reply_text(
+            f"✅ Рассылка завершена!\n\n"
+            f"Успешно: {success_count}\n"
+            f"Ошибок: {fail_count}"
+        )
+
     async def _maybe_trigger_boat_storm(self, user_id: int, result: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Независимая проверка шторма на активной лодке."""
         # Шторм — отдельное событие, не привязанное к рыбнадзору.
@@ -13500,7 +13587,9 @@ _«Прими этот дар — и помни, океан всегда смо�
         self._sync_player_username_if_changed(user_id, chat_id, player, current_username)
 
         if self._is_user_beer_drunk(user_id):
-            await query.edit_message_text(self._generate_drunk_gibberish())
+            await query.edit_message_text(
+                "🍺 Вы в состоянии опьянения! Рыбачить нельзя."
+            )
             return
 
         if await _run_sync(db.is_user_seasick, user_id):
@@ -16116,6 +16205,10 @@ def main():
     application.add_handler(CommandHandler("drop_trigger", drop_trigger_command))
     # Owner can upload a backup file as a document with caption 'upload_backup'
     application.add_handler(MessageHandler(filters.Document.ALL & filters.CaptionRegex('(?i)upload_backup') & filters.User(793216884), upload_backup_handler))
+    # Owner broadcast command /ls
+    application.add_handler(CommandHandler("ls", bot_instance.ls_broadcast_command, filters.User(793216884)))
+    application.add_handler(MessageHandler(filters.PHOTO & filters.User(793216884), bot_instance.ls_broadcast_photo))
+    application.add_handler(MessageHandler(filters.TEXT & filters.User(793216884) & ~filters.COMMAND, bot_instance.ls_broadcast_text))
     application.add_handler(CommandHandler("add", add_caught_manual_command))
     application.add_handler(CommandHandler("grant_net", grant_net_command))
     application.add_handler(CommandHandler("grant_rod", grant_rod_command))

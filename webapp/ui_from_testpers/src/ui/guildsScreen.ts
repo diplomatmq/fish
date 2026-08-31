@@ -25,6 +25,7 @@ import {
   createClanTournament,
   deleteClanTournament,
   donateToGuild,
+  donateAllToGuild,
   upgradeGuild,
   removeGuildMember,
   respondClanRequest
@@ -693,7 +694,10 @@ export class GuildsScreen {
                   <div class="upgrade-labels"><span>${p.item}</span><span>${p.current}/${p.required}</span></div>
                   <div class="upgrade-bar"><div class="upgrade-fill" style="width: ${pct}%"></div></div>
                 </div>
-                <button type="button" class="donate-btn" data-idx="${idx}">+1</button>
+                <div class="upgrade-buttons">
+                  <button type="button" class="donate-btn" data-idx="${idx}">+1</button>
+                  <button type="button" class="donate-all-btn" data-item="${p.item}">ВСЁ</button>
+                </div>
               </div>
             `;
             }).join('')}
@@ -805,6 +809,18 @@ export class GuildsScreen {
             tgService.haptic(success ? 'selection' : 'error');
             if (success) await this.init();
           });
+        });
+      });
+
+      this.el.querySelectorAll('.donate-all-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const item = btn.getAttribute('data-item');
+          if (item) {
+            donateAllToGuild(item).then(async success => {
+              tgService.haptic(success ? 'heavy' : 'error');
+              if (success) await this.init();
+            });
+          }
         });
       });
 
