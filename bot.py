@@ -12362,81 +12362,102 @@ _«Прими этот дар — и помни, океан всегда смо�
         )
 
     async def ls_broadcast_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle photo for broadcast."""
+        """Handle photo for broadcast - send immediately."""
         if not context.user_data.get('ls_broadcast_mode'):
             return
         
         photo = update.message.photo[-1]
         caption = update.message.caption or ""
         
-        context.user_data['ls_photo'] = photo.file_id
-        context.user_data['ls_caption'] = caption
-        
-        await update.message.reply_text(
-            f"📷 Фото получено.\n"
-            f"Подпись: {caption if caption else '(без подписи)'}\n\n"
-            "Отправьте для подтверждения или /cancel для отмены."
-        )
-
-    async def ls_broadcast_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text for broadcast and send to all users."""
-        if not context.user_data.get('ls_broadcast_mode'):
-            return
-        
-        text = update.message.text
-        photo_file_id = context.user_data.get('ls_photo')
-        caption = context.user_data.get('ls_caption', '')
-        
-        if photo_file_id:
-            # Send photo with caption
-            final_caption = caption if caption else text
-        else:
-            # Send text only
-            final_caption = text
+        # Disable broadcast mode immediately so user's next messages don't trigger new broadcasts
+        context.user_data['ls_broadcast_mode'] = False
         
         # Get all user IDs
         user_ids = await _run_sync(db.get_all_user_ids)
         
         if not user_ids:
             await update.message.reply_text("❌ Нет пользователей в базе.")
-            context.user_data['ls_broadcast_mode'] = False
             return
         
         await update.message.reply_text(f"📤 Начинаю рассылку {len(user_ids)} пользователям...")
         
+        # Run broadcast in background
+        asyncio.create_task(self._execute_broadcast_photo(update.effective_user.id, photo.file_id, caption, user_ids))
+
+    async def _execute_broadcast_photo(self, owner_id: int, photo_file_id: str, caption: str, user_ids: List[int]):
+        """Execute photo broadcast in background."""
         success_count = 0
         fail_count = 0
         
         for user_id in user_ids:
             try:
-                if photo_file_id:
-                    await self.application.bot.send_photo(
-                        chat_id=user_id,
-                        photo=photo_file_id,
-                        caption=final_caption
-                    )
-                else:
-                    await self.application.bot.send_message(
-                        chat_id=user_id,
-                        text=final_caption
-                    )
+                await self.application.bot.send_photo(
+                    chat_id=user_id,
+                    photo=photo_file_id,
+                    caption=caption if caption else None
+                )
                 success_count += 1
-                # Small delay to avoid rate limiting
                 await asyncio.sleep(0.1)
             except Exception as e:
                 logger.warning(f"Failed to send broadcast to user {user_id}: {e}")
                 fail_count += 1
         
-        # Reset broadcast mode
-        context.user_data['ls_broadcast_mode'] = False
-        context.user_data['ls_photo'] = None
-        context.user_data['ls_caption'] = None
+        # Send completion message to owner
+        try:
+            await self.application.bot.send_message(
+                chat_id=owner_id,
+                text=f"✅ Рассылка завершена!\n\nУспешно: {success_count}\nОшибок: {fail_count}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send completion message to owner: {e}")
+
+    async def ls_broadcast_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle text for broadcast - send immediately."""
+        if not context.user_data.get('ls_broadcast_mode'):
+            return
         
-        await update.message.reply_text(
-            f"✅ Рассылка завершена!\n\n"
-            f"Успешно: {success_count}\n"
-            f"Ошибок: {fail_count}"
-        )
+        text = update.message.text
+        
+        # Disable broadcast mode immediately so user's next messages don't trigger new broadcasts
+        context.user_data['ls_broadcast_mode'] = False
+        
+        # Get all user IDs
+        user_ids = await _run_sync(db.get_all_user_ids)
+        
+        if not user_ids:
+            await update.message.reply_text("❌ Нет пользователей в базе.")
+            return
+        
+        await update.message.reply_text(f"📤 Начинаю рассылку {len(user_ids)} пользователям...")
+        
+        # Run broadcast in background
+        asyncio.create_task(self._execute_broadcast_text(update.effective_user.id, text, user_ids))
+
+    async def _execute_broadcast_text(self, owner_id: int, text: str, user_ids: List[int]):
+        """Execute text broadcast in background."""
+        success_count = 0
+        fail_count = 0
+        
+        for user_id in user_ids:
+            try:
+                await self.application.bot.send_message(
+                    chat_id=user_id,
+                    text=text
+                )
+                success_count += 1
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                logger.warning(f"Failed to send broadcast to user {user_id}: {e}")
+                fail_count += 1
+        
+        # Send completion message to owner
+        try:
+            await self.application.bot.send_message(
+                chat_id=owner_id,
+                text=f"✅ Рассылка завершена!\n\nУспешно: {success_count}\nОшибок: {fail_count}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send completion message to owner: {e}")
 
     async def _maybe_trigger_boat_storm(self, user_id: int, result: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Независимая проверка шторма на активной лодке."""
