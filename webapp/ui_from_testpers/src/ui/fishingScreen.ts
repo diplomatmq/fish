@@ -19,9 +19,12 @@ export class FishingScreen {
   // Location requirements
   private readonly LOCATIONS: Array<{name: string, icon: string, minLevel: number}> = [
     { name: 'Городской пруд', icon: '🏞️', minLevel: 0 },
-    { name: 'Река', icon: '🌊', minLevel: 5 },
-    { name: 'Озеро', icon: '🏔️', minLevel: 10 },
-    { name: 'Море', icon: '🌅', minLevel: 15 },
+    { name: 'Река', icon: '🌊', minLevel: 0 },
+    { name: 'Озеро', icon: '🏔️', minLevel: 0 },
+    { name: 'Море', icon: '🌅', minLevel: 0 },
+    { name: 'Коралловый риф', icon: '🪸', minLevel: 5 },
+    { name: 'Глубоководный желоб', icon: '🌊', minLevel: 8 },
+    { name: 'Мангровые заросли', icon: '🌴', minLevel: 10 },
   ];
 
   constructor() {
