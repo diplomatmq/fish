@@ -36,6 +36,17 @@ export class FishingScreen {
     screen.id = 'screen-fishing';
     screen.className = 'screen fishing-screen';
     screen.innerHTML = `
+      <!-- Underwater background -->
+      <div class="fishing-background">
+        <div class="fishing-bubbles">
+          <div class="bubble"></div>
+          <div class="bubble"></div>
+          <div class="bubble"></div>
+          <div class="bubble"></div>
+          <div class="bubble"></div>
+        </div>
+      </div>
+
       <div class="fishing-container">
         <!-- Header with balance and back button -->
         <div class="fishing-header">
@@ -45,60 +56,43 @@ export class FishingScreen {
             </svg>
           </button>
           
-          <div class="fishing-balance-container">
-            <button class="fishing-balance-btn" id="balance-toggle-btn">
-              <div class="balance-icon stars-icon">⭐</div>
-              <div class="balance-value" id="balance-value">0</div>
-              <div class="balance-arrow">▼</div>
-            </button>
-            
-            <div class="balance-dropdown" id="balance-dropdown">
-              <div class="balance-option" data-currency="stars">
-                <span class="balance-opt-icon">⭐</span>
-                <span class="balance-opt-label">Звезды</span>
-                <span class="balance-opt-value" id="stars-balance-opt">0</span>
-              </div>
-              <button class="balance-action-btn" id="topup-stars-btn">
-                Пополнить звезды
-              </button>
-              
-              <div class="balance-divider"></div>
-              
-              <div class="balance-option" data-currency="ton">
-                <span class="balance-opt-icon">💎</span>
-                <span class="balance-opt-label">TON</span>
-                <span class="balance-opt-value" id="ton-balance-opt">0.00</span>
-              </div>
-              <button class="balance-action-btn" id="topup-ton-btn">
-                Пополнить TON
-              </button>
+          <div class="fishing-balance-simple">
+            <div class="balance-icon">⭐</div>
+            <div class="balance-value" id="balance-value">0</div>
+          </div>
+        </div>
+
+        <!-- Single slot reel with scroll animation -->
+        <div class="fishing-slot-container">
+          <div class="fishing-slot-frame">
+            <div class="slot-reel-single" id="slot-reel">
+              <img src="/api/fish-image/fishdef.webp" alt="Fish" class="slot-image" />
             </div>
           </div>
         </div>
 
-        <!-- Current location display -->
-        <div class="fishing-current-location" id="current-location-display">
-          <span class="location-icon">🏞️</span>
-          <span class="location-name">Городской пруд</span>
-        </div>
-
-        <!-- Single slot reel -->
-        <div class="fishing-slots">
-          <div class="slot-reel-single" id="slot-reel">
-            <img src="/api/fish-image/fishdef.webp" alt="Fish" class="slot-image" />
-          </div>
-        </div>
-
-        <!-- Fish button -->
-        <button class="fishing-fish-btn" id="fishing-fish-btn">
-          <span class="fish-btn-text">FISH</span>
+        <!-- Fish button - large circular with glow -->
+        <button class="fishing-fish-btn-circular" id="fishing-fish-btn">
+          <span class="fish-btn-text">ФИШ</span>
           <span class="fish-btn-cooldown" id="fish-btn-cooldown" style="display: none;"></span>
         </button>
 
-        <!-- Boat status -->
-        <div class="fishing-boat-status" id="boat-status">
-          <div class="boat-icon">🚣</div>
-          <div class="boat-text">На берегу</div>
+        <!-- Location card -->
+        <div class="fishing-location-card" id="fishing-location-card">
+          <div class="location-card-icon">
+            <div class="location-preview-image" id="location-preview-icon">🏞️</div>
+          </div>
+          <div class="location-card-info">
+            <div class="location-card-name" id="location-card-name">Городской пруд</div>
+            <div class="location-card-subtitle">Базовая локация</div>
+          </div>
+          <div class="location-card-status">
+            <div class="boat-status-compact" id="boat-status-compact">
+              <div class="boat-icon-compact">🚣</div>
+              <div class="boat-text-compact">ЛОДКА</div>
+              <div class="boat-status-indicator" id="boat-status-indicator">АКТИВНА</div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -131,15 +125,8 @@ export class FishingScreen {
 
     // Bind events
     const backBtn = this.el.querySelector('#fishing-back-btn') as HTMLButtonElement;
-    const balanceToggleBtn = this.el.querySelector('#balance-toggle-btn') as HTMLButtonElement;
-    const balanceDropdown = this.el.querySelector('#balance-dropdown') as HTMLElement;
     const fishBtn = this.el.querySelector('#fishing-fish-btn') as HTMLButtonElement;
-    const topupStarsBtn = this.el.querySelector('#topup-stars-btn') as HTMLButtonElement;
-    const topupTonBtn = this.el.querySelector('#topup-ton-btn') as HTMLButtonElement;
-    const topupModal = this.el.querySelector('#topup-modal') as HTMLElement;
-    const topupClose = this.el.querySelector('#topup-close') as HTMLButtonElement;
-    const topupPayBtn = this.el.querySelector('#topup-pay-btn') as HTMLButtonElement;
-    const locationDisplay = this.el.querySelector('#current-location-display') as HTMLElement;
+    const locationCard = this.el.querySelector('#fishing-location-card') as HTMLElement;
     const locationModal = this.el.querySelector('#location-modal') as HTMLElement;
     const locationModalClose = this.el.querySelector('#location-modal-close') as HTMLButtonElement;
 
@@ -151,9 +138,9 @@ export class FishingScreen {
       });
     }
 
-    // Location click - open modal
-    if (locationDisplay) {
-      locationDisplay.addEventListener('click', () => {
+    // Location card click - open modal
+    if (locationCard) {
+      locationCard.addEventListener('click', () => {
         tgService.haptic('selection');
         this.openLocationModal();
       });
@@ -163,32 +150,6 @@ export class FishingScreen {
     if (locationModalClose) {
       locationModalClose.addEventListener('click', () => {
         this.closeLocationModal();
-      });
-    }
-
-    // Balance toggle
-    if (balanceToggleBtn && balanceDropdown) {
-      balanceToggleBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        tgService.haptic('selection');
-        balanceDropdown.classList.toggle('visible');
-      });
-
-      // Close dropdown on outside click
-      document.addEventListener('click', (e) => {
-        if (!balanceToggleBtn.contains(e.target as Node) && !balanceDropdown.contains(e.target as Node)) {
-          balanceDropdown.classList.remove('visible');
-        }
-      });
-
-      // Currency selection
-      const currencyOptions = balanceDropdown.querySelectorAll('.balance-option');
-      currencyOptions.forEach(option => {
-        option.addEventListener('click', () => {
-          const currency = option.getAttribute('data-currency') as 'stars' | 'ton';
-          this.selectCurrency(currency);
-          tgService.haptic('selection');
-        });
       });
     }
 
@@ -203,33 +164,6 @@ export class FishingScreen {
           tgService.haptic('light');
           this.fish(); // Will handle guaranteed catch inside
         }
-      });
-    }
-
-    // Top-up buttons
-    if (topupStarsBtn) {
-      topupStarsBtn.addEventListener('click', () => {
-        this.openTopupModal('stars');
-      });
-    }
-
-    if (topupTonBtn) {
-      topupTonBtn.addEventListener('click', () => {
-        this.openTopupModal('ton');
-      });
-    }
-
-    // Top-up modal close
-    if (topupClose) {
-      topupClose.addEventListener('click', () => {
-        this.closeTopupModal();
-      });
-    }
-
-    // Top-up payment
-    if (topupPayBtn) {
-      topupPayBtn.addEventListener('click', () => {
-        this.processTopup();
       });
     }
 
@@ -261,18 +195,32 @@ export class FishingScreen {
   }
 
   private updateLocationDisplay(): void {
-    const locationDisplay = this.el.querySelector('#current-location-display') as HTMLElement;
-    const locationName = locationDisplay?.querySelector('.location-name') as HTMLElement;
-    const locationIcon = locationDisplay?.querySelector('.location-icon') as HTMLElement;
+    const locationCardName = this.el.querySelector('#location-card-name') as HTMLElement;
+    const locationPreviewIcon = this.el.querySelector('#location-preview-icon') as HTMLElement;
     
-    if (locationName) {
-      locationName.textContent = this.currentLocation;
+    if (locationCardName) {
+      locationCardName.textContent = this.currentLocation;
     }
     
     // Set appropriate icon
-    if (locationIcon) {
+    if (locationPreviewIcon) {
       const loc = this.LOCATIONS.find(l => l.name === this.currentLocation);
-      locationIcon.textContent = loc?.icon || '🏞️';
+      locationPreviewIcon.textContent = loc?.icon || '🏞️';
+    }
+  }
+
+  private updateBoatStatus(isOnBoat: boolean): void {
+    const boatStatusIndicator = this.el.querySelector('#boat-status-indicator') as HTMLElement;
+    const boatIconCompact = this.el.querySelector('.boat-icon-compact') as HTMLElement;
+    
+    if (boatStatusIndicator) {
+      if (isOnBoat) {
+        boatStatusIndicator.textContent = 'АКТИВНА';
+        boatStatusIndicator.style.color = '#4ade80';
+      } else {
+        boatStatusIndicator.textContent = 'НЕТ';
+        boatStatusIndicator.style.color = '#6b7280';
+      }
     }
   }
 
@@ -352,47 +300,12 @@ export class FishingScreen {
     }
   }
 
-  private updateBoatStatus(isOnBoat: boolean): void {
-    const boatStatus = this.el.querySelector('#boat-status') as HTMLElement;
-    if (!boatStatus) return;
-
-    const boatIcon = boatStatus.querySelector('.boat-icon') as HTMLElement;
-    const boatText = boatStatus.querySelector('.boat-text') as HTMLElement;
-
-    if (isOnBoat) {
-      if (boatIcon) boatIcon.textContent = '⛵';
-      if (boatText) boatText.textContent = 'В лодке';
-      boatStatus.style.borderColor = 'rgba(244, 168, 46, 0.5)';
-    } else {
-      if (boatIcon) boatIcon.textContent = '🚣';
-      if (boatText) boatText.textContent = 'На берегу';
-      boatStatus.style.borderColor = 'rgba(72, 202, 228, 0.3)';
-    }
-  }
-
-  private selectCurrency(currency: 'stars' | 'ton'): void {
-    this.selectedCurrency = currency;
-    this.updateBalanceDisplay();
-  }
-
   private updateBalanceDisplay(): void {
     const balanceValue = this.el.querySelector('#balance-value') as HTMLElement;
-    const balanceIcon = this.el.querySelector('.balance-icon') as HTMLElement;
-    const starsBalanceOpt = this.el.querySelector('#stars-balance-opt') as HTMLElement;
-    const tonBalanceOpt = this.el.querySelector('#ton-balance-opt') as HTMLElement;
-
-    if (this.selectedCurrency === 'stars') {
+    
+    if (balanceValue) {
       balanceValue.textContent = this.starsBalance.toString();
-      balanceIcon.textContent = '⭐';
-      balanceIcon.className = 'balance-icon stars-icon';
-    } else {
-      balanceValue.textContent = this.tonBalance.toFixed(2);
-      balanceIcon.textContent = '💎';
-      balanceIcon.className = 'balance-icon ton-icon';
     }
-
-    if (starsBalanceOpt) starsBalanceOpt.textContent = this.starsBalance.toString();
-    if (tonBalanceOpt) tonBalanceOpt.textContent = this.tonBalance.toFixed(2);
   }
 
   private spinSlots(): void {
