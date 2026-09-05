@@ -1,0 +1,627 @@
+/* ════════════════════════════════════════════════════════════════════════════
+   FISHING SCREEN — Full-featured fishing game interface
+   ════════════════════════════════════════════════════════════════════════════ */
+
+.fishing-screen {
+  background: linear-gradient(180deg, rgba(7, 18, 32, 0.95) 0%, rgba(13, 31, 60, 0.95) 100%);
+}
+
+.fishing-container {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  height: 100%;
+  padding: 16px;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+.fishing-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  background: rgba(8, 30, 65, 0.6);
+  border: 1px solid rgba(72, 202, 228, 0.3);
+  border-radius: var(--radius-md);
+  backdrop-filter: blur(10px);
+}
+
+.fishing-back-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  background: rgba(72, 202, 228, 0.2);
+  border: 1px solid rgba(72, 202, 228, 0.4);
+  border-radius: 50%;
+  color: var(--teal-glow);
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.fishing-back-btn:hover {
+  background: rgba(72, 202, 228, 0.3);
+  transform: scale(1.05);
+}
+
+.fishing-back-btn svg {
+  width: 24px;
+  height: 24px;
+}
+
+/* ── Balance Container ──────────────────────────────────────────────────── */
+.fishing-balance-container {
+  position: relative;
+}
+
+.fishing-balance-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: rgba(72, 202, 228, 0.15);
+  border: 1px solid rgba(72, 202, 228, 0.4);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  min-width: 120px;
+}
+
+.fishing-balance-btn:hover {
+  background: rgba(72, 202, 228, 0.25);
+  border-color: rgba(72, 202, 228, 0.6);
+}
+
+.balance-icon {
+  font-size: 20px;
+}
+
+.balance-value {
+  flex: 1;
+  text-align: right;
+}
+
+.balance-arrow {
+  font-size: 12px;
+  transition: transform 0.3s ease;
+}
+
+.fishing-balance-btn:hover .balance-arrow {
+  transform: rotate(180deg);
+}
+
+/* ── Balance Dropdown ───────────────────────────────────────────────────── */
+.balance-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 220px;
+  background: rgba(7, 20, 50, 0.98);
+  border: 1px solid rgba(72, 202, 228, 0.4);
+  border-radius: var(--radius-md);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  padding: 12px;
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 1000;
+}
+
+.balance-dropdown.visible {
+  display: flex;
+  animation: dropdownSlide 0.3s ease;
+}
+
+@keyframes dropdownSlide {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.balance-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: rgba(72, 202, 228, 0.1);
+  border: 1px solid rgba(72, 202, 228, 0.2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.balance-option:hover {
+  background: rgba(72, 202, 228, 0.2);
+  border-color: rgba(72, 202, 228, 0.4);
+}
+
+.balance-opt-icon {
+  font-size: 20px;
+}
+
+.balance-opt-label {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.balance-opt-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.balance-action-btn {
+  padding: 10px;
+  background: linear-gradient(135deg, var(--teal) 0%, var(--teal-glow) 100%);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.balance-action-btn:hover {
+  background: linear-gradient(135deg, var(--teal-glow) 0%, var(--teal-light) 100%);
+  transform: scale(1.02);
+}
+
+.balance-divider {
+  height: 1px;
+  background: rgba(72, 202, 228, 0.3);
+  margin: 4px 0;
+}
+
+/* ── Slot Machine ───────────────────────────────────────────────────────── */
+.fishing-slots {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  background: rgba(8, 30, 65, 0.6);
+  border: 2px solid rgba(72, 202, 228, 0.4);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(10px);
+  box-shadow: inset 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.slot-reel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 90px;
+  height: 90px;
+  background: linear-gradient(135deg, rgba(7, 20, 50, 0.9) 0%, rgba(13, 31, 60, 0.9) 100%);
+  border: 2px solid rgba(244, 168, 46, 0.4);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4),
+              inset 0 2px 8px rgba(255, 255, 255, 0.05);
+}
+
+.slot-symbol {
+  font-size: 48px;
+  line-height: 1;
+  transition: transform 0.1s ease;
+}
+
+.slot-symbol.spinning {
+  animation: symbolSpin 0.1s linear infinite;
+}
+
+@keyframes symbolSpin {
+  0% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-5px) scale(0.9);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ── Fish Button ────────────────────────────────────────────────────────── */
+.fishing-fish-btn {
+  position: relative;
+  padding: 20px 40px;
+  background: linear-gradient(135deg, #ff6b6b 0%, #f4a82e 50%, #48cae4 100%);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: var(--radius-lg);
+  color: var(--text-primary);
+  font-size: 32px;
+  font-weight: 900;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 8px 24px rgba(255, 107, 107, 0.4),
+              0 0 40px rgba(244, 168, 46, 0.3);
+  animation: fishBtnPulse 2s ease-in-out infinite;
+}
+
+@keyframes fishBtnPulse {
+  0%, 100% {
+    box-shadow: 0 8px 24px rgba(255, 107, 107, 0.4),
+                0 0 40px rgba(244, 168, 46, 0.3);
+  }
+  50% {
+    box-shadow: 0 12px 32px rgba(255, 107, 107, 0.6),
+                0 0 60px rgba(244, 168, 46, 0.5);
+  }
+}
+
+.fishing-fish-btn:hover:not(.disabled) {
+  transform: scale(1.05);
+  box-shadow: 0 12px 32px rgba(255, 107, 107, 0.6),
+              0 0 60px rgba(244, 168, 46, 0.5);
+}
+
+.fishing-fish-btn:active:not(.disabled) {
+  transform: scale(0.98);
+}
+
+.fishing-fish-btn.disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  animation: none;
+}
+
+.fish-btn-cooldown {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 2px;
+}
+
+/* ── Location Selector ──────────────────────────────────────────────────── */
+.fishing-locations {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.location-btn {
+  padding: 14px;
+  background: rgba(8, 30, 65, 0.6);
+  border: 1px solid rgba(72, 202, 228, 0.3);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  backdrop-filter: blur(10px);
+}
+
+.location-btn:hover {
+  background: rgba(72, 202, 228, 0.15);
+  border-color: rgba(72, 202, 228, 0.5);
+  color: var(--text-primary);
+}
+
+.location-btn--active {
+  background: linear-gradient(135deg, rgba(72, 202, 228, 0.3) 0%, rgba(0, 180, 216, 0.2) 100%);
+  border-color: rgba(72, 202, 228, 0.6);
+  color: var(--teal-glow);
+  box-shadow: 0 0 20px rgba(72, 202, 228, 0.3);
+}
+
+/* ── Boat Status ────────────────────────────────────────────────────────── */
+.fishing-boat-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(8, 30, 65, 0.6);
+  border: 1px solid rgba(72, 202, 228, 0.3);
+  border-radius: var(--radius-sm);
+  backdrop-filter: blur(10px);
+}
+
+.boat-icon {
+  font-size: 24px;
+}
+
+.boat-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* ── Top-up Modal ───────────────────────────────────────────────────────── */
+.topup-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 12, 30, 0.8);
+  backdrop-filter: blur(10px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.topup-modal.visible {
+  display: flex;
+  animation: modalFade 0.3s ease;
+}
+
+@keyframes modalFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.topup-content {
+  position: relative;
+  width: 90%;
+  max-width: 400px;
+  padding: 24px;
+  background: rgba(7, 20, 50, 0.98);
+  border: 1px solid rgba(72, 202, 228, 0.4);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  animation: modalSlide 0.3s ease;
+}
+
+@keyframes modalSlide {
+  from {
+    transform: translateY(-20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.topup-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  background: rgba(255, 107, 107, 0.2);
+  border: 1px solid rgba(255, 107, 107, 0.4);
+  border-radius: 50%;
+  color: #ff6b6b;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.topup-close:hover {
+  background: rgba(255, 107, 107, 0.3);
+  transform: scale(1.1);
+}
+
+.topup-title {
+  font-size: 20px;
+  font-weight: 800;
+  text-align: center;
+  color: var(--text-primary);
+  margin-bottom: 20px;
+}
+
+.topup-input {
+  width: 100%;
+  padding: 14px;
+  background: rgba(8, 30, 65, 0.6);
+  border: 1px solid rgba(72, 202, 228, 0.3);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  transition: all 0.3s ease;
+}
+
+.topup-input:focus {
+  outline: none;
+  border-color: rgba(72, 202, 228, 0.6);
+  box-shadow: 0 0 20px rgba(72, 202, 228, 0.3);
+}
+
+.topup-pay-btn {
+  width: 100%;
+  padding: 14px;
+  background: linear-gradient(135deg, #48cae4 0%, #00b4d8 100%);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.topup-pay-btn:hover {
+  background: linear-gradient(135deg, #90e0ef 0%, #48cae4 100%);
+  transform: scale(1.02);
+  box-shadow: 0 8px 24px rgba(72, 202, 228, 0.4);
+}
+
+/* ── Fish Result Modal ──────────────────────────────────────────────────── */
+.fish-result-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 12, 30, 0.9);
+  backdrop-filter: blur(10px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 3000;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.fish-result-modal.visible {
+  display: flex;
+  opacity: 1;
+}
+
+.fish-result-content {
+  position: relative;
+  width: 90%;
+  max-width: 450px;
+  padding: 24px;
+  background: linear-gradient(135deg, rgba(7, 20, 50, 0.98) 0%, rgba(13, 31, 60, 0.98) 100%);
+  border: 2px solid rgba(72, 202, 228, 0.5);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7),
+              0 0 60px rgba(72, 202, 228, 0.3);
+  animation: fishResultSlide 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes fishResultSlide {
+  from {
+    transform: scale(0.8) translateY(30px);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+  }
+}
+
+.fish-result-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 36px;
+  height: 36px;
+  background: rgba(255, 107, 107, 0.2);
+  border: 1px solid rgba(255, 107, 107, 0.4);
+  border-radius: 50%;
+  color: #ff6b6b;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  z-index: 10;
+}
+
+.fish-result-close:hover {
+  background: rgba(255, 107, 107, 0.4);
+  transform: scale(1.1) rotate(90deg);
+}
+
+.fish-result-image-container {
+  width: 100%;
+  height: 250px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle, rgba(72, 202, 228, 0.1) 0%, transparent 70%);
+  border-radius: var(--radius-md);
+  margin-bottom: 20px;
+  overflow: hidden;
+  position: relative;
+}
+
+.fish-result-image-container::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(45deg, 
+    rgba(72, 202, 228, 0.1) 0%, 
+    transparent 50%, 
+    rgba(244, 168, 46, 0.1) 100%);
+  animation: shimmer 3s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0%, 100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.fish-result-image {
+  max-width: 90%;
+  max-height: 90%;
+  object-fit: contain;
+  filter: drop-shadow(0 4px 20px rgba(0, 0, 0, 0.5));
+  animation: fishFloat 3s ease-in-out infinite;
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes fishFloat {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+.fish-result-info {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.fish-result-name {
+  font-size: 24px;
+  font-weight: 900;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 12px;
+  text-shadow: 0 0 20px rgba(72, 202, 228, 0.5);
+}
+
+.fish-result-details {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-muted);
+  line-height: 1.6;
+  white-space: pre-line;
+}
+
+.fish-result-ok-btn {
+  width: 100%;
+  padding: 16px;
+  background: linear-gradient(135deg, #48cae4 0%, #00b4d8 100%);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 16px rgba(72, 202, 228, 0.3);
+}
+
+.fish-result-ok-btn:hover {
+  background: linear-gradient(135deg, #90e0ef 0%, #48cae4 100%);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 24px rgba(72, 202, 228, 0.5);
+}
+
+.fish-result-ok-btn:active {
+  transform: translateY(0);
+}

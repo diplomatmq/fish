@@ -92,6 +92,7 @@ export const TABS: TabConfig[] = [
   { id: 'friends',    icon: '👤', label: 'ДРУЗЬЯ'    },
   { id: 'guilds',     icon: '🔱', label: 'АРТЕЛИ'    },
   { id: 'book',       icon: '📖', label: 'КНИГА'     },
+  { id: 'games',      icon: '🎮', label: 'ИГРЫ'      },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

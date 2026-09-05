@@ -26,6 +26,16 @@ export class TabBar {
       if (screen) this.screens.set(tab.id, screen);
     });
 
+    // Добавляем экран fishing вручную (не в TAB, но нужно управлять переключением)
+    const fishingScreen = screensContainer.querySelector<HTMLElement>('#screen-fishing');
+    if (fishingScreen) this.screens.set('fishing' as any, fishingScreen);
+
+    // Listen for custom screen switch event
+    window.addEventListener('switch-to-screen', ((e: CustomEvent) => {
+      const { screenId } = e.detail;
+      this.switchTo(screenId);
+    }) as EventListener);
+
     // Show home, hide rest - ИСПРАВЛЕНИЕ: правильная инициализация
     this.screens.forEach((screen, id) => {
       if (id === 'home') {

@@ -11,6 +11,8 @@ import './friends.css';
 import './rating.css';
 import './achievements.css';
 import './captcha.css';
+import './games.css';
+import './fishing.css';
 
 import { buildLayout, buildEntryOverlay, hideEntryOverlay, bindQuickActions, bindTrophyButton } from './ui/layout';
 import { ProfilePanel }   from './ui/profile';
@@ -25,6 +27,8 @@ import { RatingScreen } from './ui/ratingScreen';
 import { ResultsScreen } from './ui/resultsScreen';
 import { AchievementsScreen } from './ui/achievementsScreen';
 import { CaptchaScreen } from './ui/captchaScreen';
+import { GamesScreen } from './ui/gamesScreen';
+import { FishingScreen } from './ui/fishingScreen';
 import { ParticleSystem } from './animations/particles';
 import { ParallaxController } from './animations/effects';
 
@@ -155,6 +159,16 @@ const achievementsScreen = new AchievementsScreen();
 const achievementsScreenEl = achievementsScreen.getElement();
 screensWrap.appendChild(achievementsScreenEl);
 
+// ── Games screen ──────────────────────────────────────────────────────────────
+const gamesScreen = new GamesScreen();
+const gamesScreenEl = gamesScreen.getElement();
+screensWrap.appendChild(gamesScreenEl);
+
+// ── Fishing screen ────────────────────────────────────────────────────────────
+const fishingScreen = new FishingScreen();
+const fishingScreenEl = fishingScreen.getElement();
+screensWrap.appendChild(fishingScreenEl);
+
 let bookInitialized = false;
 let shopInitialized = false;
 let guildsInitialized = false;
@@ -162,6 +176,8 @@ let friendsInitialized = false;
 let ratingInitialized = false;
 let resultsInitialized = false;
 let achievementsInitialized = false;
+let gamesInitialized = false;
+let fishingInitialized = false;
 
 // ── Shop screen ────────────────────────────────────────────────────────────────────
 const tabbarMount = document.getElementById('tabbar-mount')!;
@@ -220,6 +236,14 @@ tabBar.onChange((_prev, next) => {
     achievementsInitialized = true;
   } else if (next === 'achievements' && achievementsInitialized) {
     achievementsScreen.init();
+  }
+  if (next === 'games' && !gamesInitialized) {
+    gamesScreen.init();
+    gamesInitialized = true;
+  }
+  if (next === 'fishing' && !fishingInitialized) {
+    fishingScreen.init();
+    fishingInitialized = true;
   }
   
   // ИСПРАВЛЕНИЕ: При возврате на home - сбрасываем анимации и показываем контент

@@ -41,6 +41,26 @@ export const ICONS: Record<string, string> = {
       <path d="M18 3C18 3 19 5 19 7C19 9 18 11 18 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
     </svg>
   `, // Fishing Journal with texture
+  games: `
+    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="game-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:#ff6b6b;stop-opacity:1" />
+          <stop offset="50%" style="stop-color:#f4a82e;stop-opacity:1" />
+          <stop offset="100%" style="stop-color:#9b5de5;stop-opacity:1" />
+        </linearGradient>
+      </defs>
+      <rect x="3" y="8" width="18" height="11" rx="3" stroke="url(#game-grad)" stroke-width="2.5" fill="none"/>
+      <circle cx="7" cy="13" r="1.5" fill="url(#game-grad)"/>
+      <circle cx="10" cy="13" r="1.5" fill="url(#game-grad)"/>
+      <circle cx="16" cy="11" r="1.2" fill="url(#game-grad)"/>
+      <circle cx="18" cy="13" r="1.2" fill="url(#game-grad)"/>
+      <circle cx="16" cy="15" r="1.2" fill="url(#game-grad)"/>
+      <circle cx="14" cy="13" r="1.2" fill="url(#game-grad)"/>
+      <path d="M12 8L12 5" stroke="url(#game-grad)" stroke-width="2" stroke-linecap="round"/>
+      <animateTransform attributeName="transform" type="scale" values="1;1.05;1" dur="2s" repeatCount="indefinite" additive="sum" />
+    </svg>
+  `, // Gaming Controller with gradient
 
 
   // ── Fish Icons ──

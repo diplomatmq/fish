@@ -16,7 +16,7 @@ export interface FishData {
   trophyId?: string;
 }
 
-export type ScreenId = 'home' | 'adventures' | 'friends' | 'guilds' | 'book' | 'shop' | 'rating' | 'results' | 'achievements';
+export type ScreenId = 'home' | 'adventures' | 'friends' | 'guilds' | 'book' | 'shop' | 'rating' | 'results' | 'achievements' | 'games' | 'fishing';
 
 export type HapticStyle = 'light' | 'medium' | 'heavy' | 'selection' | 'impact' | 'error' | 'success';
 
