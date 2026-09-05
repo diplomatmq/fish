@@ -142,7 +142,12 @@
   height: 24px;
 }
 
-.fishing-balance-simple {
+/* ── Balance Container with Dropdown ────────────────────────────────────── */
+.fishing-balance-container {
+  position: relative;
+}
+
+.fishing-balance-btn {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -151,16 +156,116 @@
   border: 2px solid rgba(100, 200, 255, 0.5);
   border-radius: 24px;
   backdrop-filter: blur(10px);
+  cursor: pointer;
+  transition: all 0.3s ease;
 }
 
-.fishing-balance-simple .balance-icon {
+.fishing-balance-btn:hover {
+  background: rgba(0, 30, 80, 0.8);
+  border-color: rgba(120, 220, 255, 0.7);
+}
+
+.fishing-balance-btn .balance-icon {
   font-size: 24px;
 }
 
-.fishing-balance-simple .balance-value {
+.fishing-balance-btn .balance-value {
   font-size: 20px;
   font-weight: 700;
   color: #ffffff;
+  min-width: 40px;
+  text-align: right;
+}
+
+.balance-arrow {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  transition: transform 0.3s ease;
+}
+
+.fishing-balance-btn:hover .balance-arrow {
+  transform: rotate(180deg);
+}
+
+.balance-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 250px;
+  background: rgba(0, 30, 80, 0.95);
+  border: 2px solid rgba(100, 200, 255, 0.5);
+  border-radius: 16px;
+  padding: 12px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-10px);
+  transition: all 0.3s ease;
+  z-index: 1000;
+  backdrop-filter: blur(20px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+
+.balance-dropdown.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.balance-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.balance-option:hover {
+  background: rgba(100, 200, 255, 0.15);
+}
+
+.balance-opt-icon {
+  font-size: 24px;
+}
+
+.balance-opt-label {
+  flex: 1;
+  font-size: 16px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.balance-opt-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.balance-action-btn {
+  width: 100%;
+  padding: 10px;
+  margin-top: 4px;
+  background: linear-gradient(135deg, rgba(100, 200, 255, 0.2), rgba(80, 180, 235, 0.2));
+  border: 2px solid rgba(100, 200, 255, 0.4);
+  border-radius: 12px;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.balance-action-btn:hover {
+  background: linear-gradient(135deg, rgba(100, 200, 255, 0.3), rgba(80, 180, 235, 0.3));
+  border-color: rgba(120, 220, 255, 0.6);
+  transform: scale(1.02);
+}
+
+.balance-divider {
+  height: 1px;
+  background: rgba(100, 200, 255, 0.3);
+  margin: 8px 0;
 }
 
 /* ── Slot Container ─────────────────────────────────────────────────────── */
@@ -645,4 +750,116 @@
 .fish-result-ok-btn:hover {
   background: linear-gradient(135deg, #7c3aed, #6b21a8);
   transform: scale(1.05);
+}
+
+/* ── Top-up Modal ───────────────────────────────────────────────────────── */
+.topup-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2500;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.3s ease;
+  backdrop-filter: blur(10px);
+}
+
+.topup-modal.visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+.topup-content {
+  position: relative;
+  width: 90%;
+  max-width: 350px;
+  background: rgba(0, 30, 80, 0.95);
+  border: 2px solid rgba(100, 200, 255, 0.6);
+  border-radius: 24px;
+  padding: 32px 24px;
+  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(20px);
+  transform: scale(0.9);
+  transition: transform 0.3s ease;
+}
+
+.topup-modal.visible .topup-content {
+  transform: scale(1);
+}
+
+.topup-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 36px;
+  height: 36px;
+  background: rgba(255, 100, 100, 0.2);
+  border: 2px solid rgba(255, 100, 100, 0.5);
+  border-radius: 50%;
+  color: #ff6b6b;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.topup-close:hover {
+  background: rgba(255, 100, 100, 0.4);
+  transform: rotate(90deg);
+}
+
+.topup-title {
+  margin: 0 0 24px 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: #48cae4;
+  text-align: center;
+}
+
+.topup-input {
+  width: 100%;
+  padding: 14px;
+  background: rgba(0, 20, 60, 0.6);
+  border: 2px solid rgba(100, 200, 255, 0.4);
+  border-radius: 12px;
+  color: #ffffff;
+  font-size: 16px;
+  text-align: center;
+  margin-bottom: 16px;
+  transition: all 0.3s ease;
+}
+
+.topup-input:focus {
+  outline: none;
+  border-color: rgba(120, 220, 255, 0.7);
+  background: rgba(0, 30, 80, 0.8);
+}
+
+.topup-input::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.topup-pay-btn {
+  width: 100%;
+  padding: 14px;
+  background: linear-gradient(135deg, #6b46c1, #4c1d95);
+  border: 2px solid rgba(139, 92, 246, 0.6);
+  border-radius: 12px;
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.topup-pay-btn:hover {
+  background: linear-gradient(135deg, #7c3aed, #6b21a8);
+  transform: scale(1.02);
+  box-shadow: 0 4px 20px rgba(139, 92, 246, 0.4);
 }

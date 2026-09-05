@@ -56,9 +56,34 @@ export class FishingScreen {
             </svg>
           </button>
           
-          <div class="fishing-balance-simple">
-            <div class="balance-icon">⭐</div>
-            <div class="balance-value" id="balance-value">0</div>
+          <div class="fishing-balance-container">
+            <button class="fishing-balance-btn" id="balance-toggle-btn">
+              <div class="balance-icon" id="balance-icon">⭐</div>
+              <div class="balance-value" id="balance-value">0</div>
+              <div class="balance-arrow">▼</div>
+            </button>
+            
+            <div class="balance-dropdown" id="balance-dropdown">
+              <div class="balance-option" data-currency="stars">
+                <span class="balance-opt-icon">⭐</span>
+                <span class="balance-opt-label">Звезды</span>
+                <span class="balance-opt-value" id="stars-balance-opt">0</span>
+              </div>
+              <button class="balance-action-btn" id="topup-stars-btn">
+                Пополнить звезды
+              </button>
+              
+              <div class="balance-divider"></div>
+              
+              <div class="balance-option" data-currency="ton">
+                <span class="balance-opt-icon">💎</span>
+                <span class="balance-opt-label">TON</span>
+                <span class="balance-opt-value" id="ton-balance-opt">0.00</span>
+              </div>
+              <button class="balance-action-btn" id="topup-ton-btn">
+                Пополнить TON
+              </button>
+            </div>
           </div>
         </div>
 
@@ -125,16 +150,78 @@ export class FishingScreen {
 
     // Bind events
     const backBtn = this.el.querySelector('#fishing-back-btn') as HTMLButtonElement;
+    const balanceToggleBtn = this.el.querySelector('#balance-toggle-btn') as HTMLButtonElement;
+    const balanceDropdown = this.el.querySelector('#balance-dropdown') as HTMLElement;
     const fishBtn = this.el.querySelector('#fishing-fish-btn') as HTMLButtonElement;
     const locationCard = this.el.querySelector('#fishing-location-card') as HTMLElement;
     const locationModal = this.el.querySelector('#location-modal') as HTMLElement;
     const locationModalClose = this.el.querySelector('#location-modal-close') as HTMLButtonElement;
+    const topupStarsBtn = this.el.querySelector('#topup-stars-btn') as HTMLButtonElement;
+    const topupTonBtn = this.el.querySelector('#topup-ton-btn') as HTMLButtonElement;
+    const topupModal = this.el.querySelector('#topup-modal') as HTMLElement;
+    const topupClose = this.el.querySelector('#topup-close') as HTMLButtonElement;
+    const topupPayBtn = this.el.querySelector('#topup-pay-btn') as HTMLButtonElement;
 
     // Back button
     if (backBtn) {
       backBtn.addEventListener('click', () => {
         tgService.haptic('light');
         window.dispatchEvent(new CustomEvent('navigate-home'));
+      });
+    }
+
+    // Balance toggle dropdown
+    if (balanceToggleBtn && balanceDropdown) {
+      balanceToggleBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        tgService.haptic('selection');
+        balanceDropdown.classList.toggle('visible');
+      });
+
+      // Close dropdown on outside click
+      document.addEventListener('click', (e) => {
+        if (!balanceToggleBtn.contains(e.target as Node) && !balanceDropdown.contains(e.target as Node)) {
+          balanceDropdown.classList.remove('visible');
+        }
+      });
+
+      // Currency selection
+      const currencyOptions = balanceDropdown.querySelectorAll('.balance-option');
+      currencyOptions.forEach(option => {
+        option.addEventListener('click', () => {
+          const currency = option.getAttribute('data-currency') as 'stars' | 'ton';
+          this.selectCurrency(currency);
+          tgService.haptic('selection');
+        });
+      });
+    }
+
+    // Top-up buttons
+    if (topupStarsBtn) {
+      topupStarsBtn.addEventListener('click', () => {
+        this.openTopupModal('stars');
+        balanceDropdown.classList.remove('visible');
+      });
+    }
+
+    if (topupTonBtn) {
+      topupTonBtn.addEventListener('click', () => {
+        this.openTopupModal('ton');
+        balanceDropdown.classList.remove('visible');
+      });
+    }
+
+    // Top-up modal close
+    if (topupClose) {
+      topupClose.addEventListener('click', () => {
+        this.closeTopupModal();
+      });
+    }
+
+    // Top-up payment
+    if (topupPayBtn) {
+      topupPayBtn.addEventListener('click', () => {
+        this.processTopup();
       });
     }
 
@@ -300,12 +387,27 @@ export class FishingScreen {
     }
   }
 
+  private selectCurrency(currency: 'stars' | 'ton'): void {
+    this.selectedCurrency = currency;
+    this.updateBalanceDisplay();
+  }
+
   private updateBalanceDisplay(): void {
     const balanceValue = this.el.querySelector('#balance-value') as HTMLElement;
-    
-    if (balanceValue) {
-      balanceValue.textContent = this.starsBalance.toString();
+    const balanceIcon = this.el.querySelector('#balance-icon') as HTMLElement;
+    const starsBalanceOpt = this.el.querySelector('#stars-balance-opt') as HTMLElement;
+    const tonBalanceOpt = this.el.querySelector('#ton-balance-opt') as HTMLElement;
+
+    if (this.selectedCurrency === 'stars') {
+      if (balanceValue) balanceValue.textContent = this.starsBalance.toString();
+      if (balanceIcon) balanceIcon.textContent = '⭐';
+    } else {
+      if (balanceValue) balanceValue.textContent = this.tonBalance.toFixed(2);
+      if (balanceIcon) balanceIcon.textContent = '💎';
     }
+
+    if (starsBalanceOpt) starsBalanceOpt.textContent = this.starsBalance.toString();
+    if (tonBalanceOpt) tonBalanceOpt.textContent = this.tonBalance.toFixed(2);
   }
 
   private spinSlots(): void {
