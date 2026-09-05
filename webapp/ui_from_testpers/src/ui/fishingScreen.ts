@@ -14,6 +14,15 @@ export class FishingScreen {
   private starsBalance: number = 0;
   private tonBalance: number = 0;
   private selectedCurrency: 'stars' | 'ton' = 'stars';
+  private playerLevel: number = 0;
+
+  // Location requirements
+  private readonly LOCATIONS: Array<{name: string, icon: string, minLevel: number}> = [
+    { name: 'Городской пруд', icon: '🏞️', minLevel: 0 },
+    { name: 'Река', icon: '🌊', minLevel: 5 },
+    { name: 'Озеро', icon: '🏔️', minLevel: 10 },
+    { name: 'Море', icon: '🌅', minLevel: 15 },
+  ];
 
   constructor() {
     this.el = this.build();
@@ -64,16 +73,16 @@ export class FishingScreen {
           </div>
         </div>
 
-        <!-- Slot machine area -->
+        <!-- Current location display -->
+        <div class="fishing-current-location" id="current-location-display">
+          <span class="location-icon">🏞️</span>
+          <span class="location-name">Городской пруд</span>
+        </div>
+
+        <!-- Single slot reel -->
         <div class="fishing-slots">
-          <div class="slot-reel" id="slot-reel-1">
-            <div class="slot-symbol">🐟</div>
-          </div>
-          <div class="slot-reel" id="slot-reel-2">
-            <div class="slot-symbol">🦈</div>
-          </div>
-          <div class="slot-reel" id="slot-reel-3">
-            <div class="slot-symbol">🐠</div>
+          <div class="slot-reel-single" id="slot-reel">
+            <img src="/api/fish-image/fishdef.webp" alt="Fish" class="slot-image" />
           </div>
         </div>
 
@@ -82,22 +91,6 @@ export class FishingScreen {
           <span class="fish-btn-text">FISH</span>
           <span class="fish-btn-cooldown" id="fish-btn-cooldown" style="display: none;"></span>
         </button>
-
-        <!-- Location selector -->
-        <div class="fishing-locations">
-          <button class="location-btn location-btn--active" data-location="Городской пруд">
-            🏞️ Городской пруд
-          </button>
-          <button class="location-btn" data-location="Река">
-            🌊 Река
-          </button>
-          <button class="location-btn" data-location="Озеро">
-            🏔️ Озеро
-          </button>
-          <button class="location-btn" data-location="Море">
-            🌅 Море
-          </button>
-        </div>
 
         <!-- Boat status -->
         <div class="fishing-boat-status" id="boat-status">
@@ -115,6 +108,15 @@ export class FishingScreen {
           <button class="topup-pay-btn" id="topup-pay-btn">Оплатить</button>
         </div>
       </div>
+
+      <!-- Location selection modal -->
+      <div class="location-modal" id="location-modal">
+        <div class="location-modal-content">
+          <button class="location-modal-close" id="location-modal-close">&times;</button>
+          <h3 class="location-modal-title">Выбор локации</h3>
+          <div class="location-list" id="location-list"></div>
+        </div>
+      </div>
     `;
 
     return screen;
@@ -129,18 +131,35 @@ export class FishingScreen {
     const balanceToggleBtn = this.el.querySelector('#balance-toggle-btn') as HTMLButtonElement;
     const balanceDropdown = this.el.querySelector('#balance-dropdown') as HTMLElement;
     const fishBtn = this.el.querySelector('#fishing-fish-btn') as HTMLButtonElement;
-    const locationBtns = this.el.querySelectorAll('.location-btn') as NodeListOf<HTMLButtonElement>;
     const topupStarsBtn = this.el.querySelector('#topup-stars-btn') as HTMLButtonElement;
     const topupTonBtn = this.el.querySelector('#topup-ton-btn') as HTMLButtonElement;
     const topupModal = this.el.querySelector('#topup-modal') as HTMLElement;
     const topupClose = this.el.querySelector('#topup-close') as HTMLButtonElement;
     const topupPayBtn = this.el.querySelector('#topup-pay-btn') as HTMLButtonElement;
+    const locationDisplay = this.el.querySelector('#current-location-display') as HTMLElement;
+    const locationModal = this.el.querySelector('#location-modal') as HTMLElement;
+    const locationModalClose = this.el.querySelector('#location-modal-close') as HTMLButtonElement;
 
     // Back button
     if (backBtn) {
       backBtn.addEventListener('click', () => {
         tgService.haptic('light');
         window.dispatchEvent(new CustomEvent('navigate-home'));
+      });
+    }
+
+    // Location click - open modal
+    if (locationDisplay) {
+      locationDisplay.addEventListener('click', () => {
+        tgService.haptic('selection');
+        this.openLocationModal();
+      });
+    }
+
+    // Location modal close
+    if (locationModalClose) {
+      locationModalClose.addEventListener('click', () => {
+        this.closeLocationModal();
       });
     }
 
@@ -184,15 +203,6 @@ export class FishingScreen {
       });
     }
 
-    // Location buttons
-    locationBtns.forEach(btn => {
-      btn.addEventListener('click', () => {
-        const location = btn.getAttribute('data-location') || 'Городской пруд';
-        this.selectLocation(location);
-        tgService.haptic('selection');
-      });
-    });
-
     // Top-up buttons
     if (topupStarsBtn) {
       topupStarsBtn.addEventListener('click', () => {
@@ -234,15 +244,97 @@ export class FishingScreen {
         this.starsBalance = profile.stars || 0;
         this.tonBalance = profile.ton_balance || 0;
         this.currentLocation = profile.current_location || 'Городской пруд';
+        this.playerLevel = profile.level || 0;
         
         this.updateBalanceDisplay();
-        this.selectLocation(this.currentLocation);
+        this.updateLocationDisplay();
         
         // Update boat status
         this.updateBoatStatus(profile.is_on_boat || false);
       }
     } catch (error) {
       console.error('Failed to load player data:', error);
+    }
+  }
+
+  private updateLocationDisplay(): void {
+    const locationDisplay = this.el.querySelector('#current-location-display') as HTMLElement;
+    const locationName = locationDisplay?.querySelector('.location-name') as HTMLElement;
+    const locationIcon = locationDisplay?.querySelector('.location-icon') as HTMLElement;
+    
+    if (locationName) {
+      locationName.textContent = this.currentLocation;
+    }
+    
+    // Set appropriate icon
+    if (locationIcon) {
+      const loc = this.LOCATIONS.find(l => l.name === this.currentLocation);
+      locationIcon.textContent = loc?.icon || '🏞️';
+    }
+  }
+
+  private openLocationModal(): void {
+    const modal = this.el.querySelector('#location-modal') as HTMLElement;
+    const locationList = this.el.querySelector('#location-list') as HTMLElement;
+    
+    if (!locationList) return;
+    
+    // Clear and rebuild location list
+    locationList.innerHTML = '';
+    
+    this.LOCATIONS.forEach(location => {
+      const isLocked = this.playerLevel < location.minLevel;
+      const isCurrent = location.name === this.currentLocation;
+      
+      const btn = document.createElement('button');
+      btn.className = `location-modal-btn ${isCurrent ? 'location-modal-btn--active' : ''} ${isLocked ? 'location-modal-btn--locked' : ''}`;
+      btn.innerHTML = `
+        <span class="location-modal-icon">${location.icon}</span>
+        <span class="location-modal-name">${location.name}</span>
+        ${isLocked ? `<span class="location-modal-lock">🔒 ${location.minLevel} ур.</span>` : ''}
+        ${isCurrent ? '<span class="location-modal-check">✓</span>' : ''}
+      `;
+      
+      if (!isLocked) {
+        btn.addEventListener('click', () => {
+          this.selectLocation(location.name);
+          this.closeLocationModal();
+          tgService.haptic('selection');
+        });
+      } else {
+        btn.addEventListener('click', () => {
+          tgService.showAlert(`Локация "${location.name}" откроется на ${location.minLevel} уровне. Ваш уровень: ${this.playerLevel}`);
+          tgService.haptic('error');
+        });
+      }
+      
+      locationList.appendChild(btn);
+    });
+    
+    if (modal) {
+      modal.classList.add('visible');
+    }
+    
+    tgService.haptic('light');
+  }
+
+  private closeLocationModal(): void {
+    const modal = this.el.querySelector('#location-modal') as HTMLElement;
+    if (modal) {
+      modal.classList.remove('visible');
+    }
+    tgService.haptic('light');
+  }
+
+  private async selectLocation(location: string): Promise<void> {
+    this.currentLocation = location;
+    this.updateLocationDisplay();
+    
+    // Save to API
+    try {
+      await apiService.updateLocation(location);
+    } catch (error) {
+      console.error('Failed to update location:', error);
     }
   }
 
@@ -300,23 +392,47 @@ export class FishingScreen {
     if (tonBalanceOpt) tonBalanceOpt.textContent = this.tonBalance.toFixed(2);
   }
 
-  private selectLocation(location: string): void {
-    this.currentLocation = location;
+  private spinSlots(): void {
+    const reel = this.el.querySelector('#slot-reel') as HTMLElement;
+    const slotImage = reel?.querySelector('.slot-image') as HTMLImageElement;
     
-    // Update button states
-    const locationBtns = this.el.querySelectorAll('.location-btn') as NodeListOf<HTMLButtonElement>;
-    locationBtns.forEach(btn => {
-      if (btn.getAttribute('data-location') === location) {
-        btn.classList.add('location-btn--active');
-      } else {
-        btn.classList.remove('location-btn--active');
-      }
-    });
+    if (!slotImage) return;
 
-    // Save to API
-    apiService.updateLocation(location).catch(err => {
-      console.error('Failed to update location:', err);
-    });
+    // Массив случайных рыб для анимации
+    const fishImages = [
+      'amur_gudgeon.webp',
+      'carp.webp',
+      'pike.webp',
+      'perch.webp',
+      'catfish.webp',
+      'salmon.webp',
+      'trout.webp',
+      'tuna.webp',
+      'shark.webp',
+      'octopus.webp',
+      'jellyfish.webp',
+      'boot.webp',
+      'bottle.webp',
+      'can.webp'
+    ];
+
+    let spinCount = 0;
+    const maxSpins = 30;
+    
+    reel.classList.add('spinning');
+    
+    const spinInterval = setInterval(() => {
+      const randomFish = fishImages[Math.floor(Math.random() * fishImages.length)];
+      slotImage.src = `/api/fish-image/${randomFish}`;
+      slotImage.classList.add('spinning');
+      
+      spinCount++;
+      if (spinCount >= maxSpins) {
+        clearInterval(spinInterval);
+        slotImage.classList.remove('spinning');
+        reel.classList.remove('spinning');
+      }
+    }, 100);
   }
 
   private async fish(): Promise<void> {
@@ -420,129 +536,74 @@ export class FishingScreen {
     }
   }
 
-  private spinSlots(): void {
-    const reels = [
-      this.el.querySelector('#slot-reel-1'),
-      this.el.querySelector('#slot-reel-2'),
-      this.el.querySelector('#slot-reel-3')
-    ];
-
-    const symbols = ['🐟', '🦈', '🐠', '🐡', '🦑', '🦐', '🦞', '🐙', '🗑️', '❌'];
-
-    reels.forEach((reel, index) => {
-      if (!reel) return;
-      
-      let spinCount = 0;
-      const maxSpins = 20 + index * 5;
-      
-      const spinInterval = setInterval(() => {
-        const randomSymbol = symbols[Math.floor(Math.random() * symbols.length)];
-        const symbolEl = reel.querySelector('.slot-symbol');
-        if (symbolEl) {
-          symbolEl.textContent = randomSymbol;
-          symbolEl.classList.add('spinning');
-        }
-        
-        spinCount++;
-        if (spinCount >= maxSpins) {
-          clearInterval(spinInterval);
-          if (symbolEl) {
-            symbolEl.classList.remove('spinning');
-          }
-        }
-      }, 100);
-    });
-  }
-
   private async showFishResult(result: any): Promise<void> {
-    const reels = [
-      this.el.querySelector('#slot-reel-1'),
-      this.el.querySelector('#slot-reel-2'),
-      this.el.querySelector('#slot-reel-3')
-    ];
+    const reel = this.el.querySelector('#slot-reel') as HTMLElement;
+    const slotImage = reel?.querySelector('.slot-image') as HTMLImageElement;
 
-    // Determine symbols based on result
-    let symbols: string[] = [];
+    // Determine final image based on result
     let fishImageUrl: string | null = null;
+    let detailsMessage = '';
     
     if (result.fish) {
-      const raritySymbols: Record<string, string> = {
-        'Обычная': '🐟',
-        'Редкая': '🦈',
-        'Легендарная': '🐡',
-        'Мифическая': '🦑',
-        'Аномалия': '🐙',
-        'Аквариумная': '🐠'
-      };
-      const symbol = raritySymbols[result.fish.rarity] || '🐟';
-      symbols = [symbol, symbol, symbol];
-      
-      // Get fish image URL
       fishImageUrl = result.fish.image_url || `/api/fish-image/${result.fish.sticker_id || result.fish.name}.webp`;
+      
+      // Build detailed message like in bot
+      detailsMessage = `🎣 Поймана рыба!\n\n`;
+      detailsMessage += `🐟 ${result.fish.name}\n`;
+      detailsMessage += `⚖️ Вес: ${result.weight}кг\n`;
+      if (result.length) {
+        detailsMessage += `📏 Длина: ${result.length}см\n`;
+      }
+      detailsMessage += `✨ Редкость: ${result.fish.rarity}\n`;
+      detailsMessage += `📍 Локация: ${this.currentLocation}\n`;
+      
+      if (result.xp_earned) {
+        detailsMessage += `\n+${result.xp_earned} опыта`;
+      }
+      
+      if (result.level_info && result.level_info.leveled_up) {
+        detailsMessage += `\n\n🎉 Уровень повышен до ${result.level_info.new_level}!`;
+      }
     } else if (result.is_trash) {
-      symbols = ['🗑️', '🗑️', '🗑️'];
-      if (result.trash) {
-        fishImageUrl = `/api/fish-image/${result.trash.sticker_id || result.trash.name}.webp`;
+      const trashName = result.trash?.name || 'Мусор';
+      fishImageUrl = result.trash?.image_url || `/api/fish-image/${result.trash?.sticker_id || trashName}.webp`;
+      detailsMessage = `🗑️ Выловлен мусор: ${trashName}`;
+      
+      if (result.treasure_caught) {
+        detailsMessage += `\n\n💎 Бонус! Найдено сокровище: ${result.treasure_name}`;
       }
     } else if (result.no_bite) {
-      symbols = ['❌', '❌', '❌'];
+      fishImageUrl = '/api/fish-image/fishdef.webp';
+      detailsMessage = result.message || '❌ Рыба не клюет...';
     } else if (result.fish_inspector) {
-      symbols = ['👮', '👮', '👮'];
+      fishImageUrl = '/api/fish-image/fishdef.webp';
+      detailsMessage = result.message || '🚨 Рыбнадзор конфисковал улов!';
     } else if (result.snap) {
-      symbols = ['💔', '💔', '💔'];
+      fishImageUrl = '/api/fish-image/fishdef.webp';
+      detailsMessage = result.message || '💔 Рыба сорвалась!';
     }
 
-    // Set final symbols
-    reels.forEach((reel, index) => {
-      if (!reel) return;
-      const symbolEl = reel.querySelector('.slot-symbol');
-      if (symbolEl) {
-        symbolEl.textContent = symbols[index] || '❓';
-      }
-    });
+    // Set final image in slot
+    if (slotImage && fishImageUrl) {
+      setTimeout(() => {
+        slotImage.src = fishImageUrl;
+        slotImage.classList.add('result-shown');
+      }, 500);
+    }
 
-    // Show result message with image
+    // Show result modal with detailed info
     setTimeout(() => {
-      let message = '';
-      
-      if (result.fish_inspector) {
-        message = result.message || '🚨 Рыбнадзор конфисковал улов!';
-        tgService.showAlert(message);
-      } else if (result.snap) {
-        message = result.message || '💔 Рыба сорвалась!';
-        tgService.showAlert(message);
-      } else if (result.fish) {
-        message = `🎣 Поймана рыба!\n\n${result.fish.name}\n`;
-        message += `Вес: ${result.weight}кг\n`;
-        message += `Длина: ${result.length || 0}см\n`;
-        message += `Редкость: ${result.fish.rarity}\n`;
-        
-        if (result.xp_earned) {
-          message += `\n+${result.xp_earned} опыта`;
-        }
-        
-        // Show with image if available
-        if (fishImageUrl) {
-          this.showFishModal(result.fish.name, result.weight, result.length, result.fish.rarity, fishImageUrl, message);
-        } else {
-          tgService.showAlert(message);
-        }
-      } else if (result.is_trash) {
-        const trashName = result.trash?.name || 'Мусор';
-        message = `🗑️ Выловлен мусор: ${trashName}`;
-        
-        if (result.treasure_caught) {
-          message += `\n\n💎 Бонус! Найдено сокровище: ${result.treasure_name}`;
-        }
-        
-        if (fishImageUrl) {
-          this.showFishModal(trashName, result.trash?.weight || 0, 0, 'Мусор', fishImageUrl, message);
-        } else {
-          tgService.showAlert(message);
-        }
-      } else if (result.no_bite) {
-        message = result.message || '❌ Рыба не клюет...';
-        tgService.showAlert(message);
+      if (result.fish || result.is_trash) {
+        this.showFishModal(
+          result.fish?.name || result.trash?.name || 'Результат',
+          result.weight || result.trash?.weight || 0,
+          result.length || 0,
+          result.fish?.rarity || 'Мусор',
+          fishImageUrl || '/api/fish-image/fishdef.webp',
+          detailsMessage
+        );
+      } else {
+        tgService.showAlert(detailsMessage);
       }
       
       // Show special events
@@ -563,7 +624,13 @@ export class FishingScreen {
           tgService.showAlert(`🐠 Стайный инстинкт! Бонус к весу: +${result.school_bonus_percent}% (цепочка: ${result.school_chain_count})`);
         }, 1500);
       }
-    }, 500);
+      
+      if (result.boat_crash) {
+        setTimeout(() => {
+          tgService.showAlert(result.boat_crash_message || '⚠️ КРУШЕНИЕ! Лодка затонула!');
+        }, 2000);
+      }
+    }, 1000);
   }
 
   private showFishModal(name: string, _weight: number, _length: number, _rarity: string, imageUrl: string, message: string): void {
