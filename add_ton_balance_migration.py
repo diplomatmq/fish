@@ -17,8 +17,21 @@ def add_ton_balance_column():
         with db._connect() as conn:
             cursor = conn.cursor()
             
+            # Определяем тип БД автоматически
+            db_type = 'sqlite'
+            try:
+                cursor.execute("SELECT version()")
+                version_info = cursor.fetchone()
+                if version_info and 'PostgreSQL' in str(version_info[0]):
+                    db_type = 'postgres'
+                    print(f"Detected PostgreSQL database")
+                else:
+                    print(f"Detected SQLite database")
+            except:
+                print(f"Detected SQLite database (fallback)")
+            
             # Проверяем, существует ли уже колонка
-            if db.DB_TYPE == 'postgres':
+            if db_type == 'postgres':
                 cursor.execute("""
                     SELECT column_name 
                     FROM information_schema.columns 
@@ -32,7 +45,7 @@ def add_ton_balance_column():
             
             if not exists:
                 print("Adding ton_balance column to players table...")
-                if db.DB_TYPE == 'postgres':
+                if db_type == 'postgres':
                     cursor.execute("ALTER TABLE players ADD COLUMN ton_balance REAL DEFAULT 0")
                 else:
                     cursor.execute("ALTER TABLE players ADD COLUMN ton_balance REAL DEFAULT 0")
