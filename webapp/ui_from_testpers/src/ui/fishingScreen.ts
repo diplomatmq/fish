@@ -429,49 +429,61 @@ export class FishingScreen {
     const fishImages = locationFishMap[this.currentLocation] || locationFishMap['Городской пруд'];
     const drumImages = [...fishImages, ...fishImages, ...fishImages]; // Repeat for smooth loop
     
-    // Build drum HTML
-    reel.innerHTML = drumImages.map(img => `
-      <div class="drum-item">
-        <img src="/api/fish-image/${img}" alt="fish" class="drum-image" />
-      </div>
-    `).join('');
+    // Preload images to prevent dark screen
+    const imagePromises = drumImages.map(img => {
+      return new Promise<void>((resolve) => {
+        const imgEl = new Image();
+        imgEl.onload = () => resolve();
+        imgEl.onerror = () => resolve(); // Continue even if image fails to load
+        imgEl.src = `/api/fish-image/${img}`;
+      });
+    });
     
-    // Add drum container
-    const drumContainer = document.createElement('div');
-    drumContainer.className = 'drum-container';
-    drumContainer.innerHTML = reel.innerHTML;
-    reel.innerHTML = '';
-    reel.appendChild(drumContainer);
-    
-    let spinCount = 0;
-    const maxSpins = 30;
-    let position = 0;
-    const itemHeight = 180; // Height of each drum item
-    
-    reel.classList.add('spinning');
-    
-    const animate = () => {
-      if (spinCount >= maxSpins) {
-        reel.classList.remove('spinning');
-        return;
-      }
+    // Build drum HTML after images are preloaded
+    Promise.all(imagePromises).then(() => {
+      reel.innerHTML = drumImages.map(img => `
+        <div class="drum-item">
+          <img src="/api/fish-image/${img}" alt="fish" class="drum-image" />
+        </div>
+      `).join('');
       
-      spinCount++;
-      position -= 15; // Scroll speed
+      // Add drum container
+      const drumContainer = document.createElement('div');
+      drumContainer.className = 'drum-container';
+      drumContainer.innerHTML = reel.innerHTML;
+      reel.innerHTML = '';
+      reel.appendChild(drumContainer);
       
-      // Reset position for infinite loop
-      if (position <= -itemHeight * drumImages.length / 3) {
-        position = 0;
-      }
+      let spinCount = 0;
+      const maxSpins = 30;
+      let position = 0;
+      const itemHeight = 180; // Height of each drum item
       
-      drumContainer.style.transform = `translateY(${position}px)`;
+      reel.classList.add('spinning');
       
-      // Slow down at the end
-      const delay = spinCount > maxSpins - 5 ? 50 : 20;
-      setTimeout(() => requestAnimationFrame(animate), delay);
-    };
-    
-    requestAnimationFrame(animate);
+      const animate = () => {
+        if (spinCount >= maxSpins) {
+          reel.classList.remove('spinning');
+          return;
+        }
+        
+        spinCount++;
+        position -= 15; // Scroll speed
+        
+        // Reset position for infinite loop
+        if (position <= -itemHeight * drumImages.length / 3) {
+          position = 0;
+        }
+        
+        drumContainer.style.transform = `translateY(${position}px)`;
+        
+        // Slow down at the end
+        const delay = spinCount > maxSpins - 5 ? 50 : 20;
+        setTimeout(() => requestAnimationFrame(animate), delay);
+      };
+      
+      requestAnimationFrame(animate);
+    });
   }
 
   private async fish(): Promise<void> {
@@ -640,9 +652,18 @@ export class FishingScreen {
     // Show alert immediately for fish/trash
     if (result.fish || result.is_trash) {
       tgService.haptic('success');
+      // Ensure detailsMessage has content
+      if (!detailsMessage) {
+        detailsMessage = result.fish ? `🎣 Поймана рыба: ${result.fish.name}` : `🗑️ Выловлен мусор`;
+      }
       tgService.showAlert(detailsMessage);
       // Dispatch event to refresh profile catches
       window.dispatchEvent(new CustomEvent('refresh-profile'));
+    } else {
+      // Show alert for other cases (no bite, snap, etc.)
+      if (detailsMessage) {
+        tgService.showAlert(detailsMessage);
+      }
     }
 
     // Show result modal with detailed info after alert
@@ -656,8 +677,6 @@ export class FishingScreen {
           fishImageUrl || '/api/fish-image/fishdef.webp',
           detailsMessage
         );
-      } else {
-        tgService.showAlert(detailsMessage);
       }
       
       // Show special events
