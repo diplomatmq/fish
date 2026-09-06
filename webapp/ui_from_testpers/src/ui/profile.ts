@@ -121,13 +121,6 @@ export class ProfilePanel {
           <div class="progress-fill" id="progress-fill"></div>
         </div>
       </div>
-
-      <div class="recent-catches-section">
-        <h3 class="catches-title">🎣 Последний улов</h3>
-        <div id="recent-catches-container" class="catches-container">
-          <div class="loader-wrap"><div class="loader"></div></div>
-        </div>
-      </div>
     `;
 
     // Porthole wobble on click

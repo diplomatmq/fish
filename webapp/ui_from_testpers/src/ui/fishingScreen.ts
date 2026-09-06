@@ -415,8 +415,18 @@ export class FishingScreen {
     
     if (!reel) return;
     
-    // Create drum with multiple fish images
-    const fishImages = ['fishdef.webp', 'fish1.webp', 'fish2.webp', 'fish3.webp', 'fish4.webp'];
+    // Location-specific fish images
+    const locationFishMap: Record<string, string[]> = {
+      'Городской пруд': ['fishdef.webp', 'fish1.webp', 'fish2.webp', 'fish3.webp', 'fish4.webp'],
+      'Река': ['fish5.webp', 'fish6.webp', 'fish7.webp', 'fish8.webp', 'fish9.webp'],
+      'Озеро': ['fish10.webp', 'fish11.webp', 'fish12.webp', 'fish13.webp', 'fish14.webp'],
+      'Море': ['fish15.webp', 'fish16.webp', 'fish17.webp', 'fish18.webp', 'fish19.webp'],
+      'Коралловый риф': ['fish20.webp', 'fish21.webp', 'fish22.webp', 'fish23.webp', 'fish24.webp'],
+      'Глубоководный желоб': ['fish25.webp', 'fish26.webp', 'fish27.webp', 'fish28.webp', 'fish29.webp'],
+      'Мангровые заросли': ['fish30.webp', 'fish31.webp', 'fish32.webp', 'fish33.webp', 'fish34.webp'],
+    };
+    
+    const fishImages = locationFishMap[this.currentLocation] || locationFishMap['Городской пруд'];
     const drumImages = [...fishImages, ...fishImages, ...fishImages]; // Repeat for smooth loop
     
     // Build drum HTML
@@ -487,7 +497,7 @@ export class FishingScreen {
     try {
       // Call API with guaranteed flag if cooldown was active
       const guaranteed = this.cooldownEndTime > 0;
-      const result = await apiService.fish(this.currentLocation, guaranteed);
+      const result = await apiService.fish(this.currentLocation, guaranteed, this.selectedCurrency);
       
       if (result.success) {
         // Show fish result

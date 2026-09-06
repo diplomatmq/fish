@@ -195,6 +195,21 @@ def _safe_int(value: str | None) -> Optional[int]:
 		return None
 
 
+def _safe_float(value: str | None) -> Optional[float]:
+
+	if value is None:
+
+		return None
+
+	try:
+
+		return float(str(value).strip())
+
+	except (TypeError, ValueError):
+
+		return None
+
+
 
 
 

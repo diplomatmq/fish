@@ -57,11 +57,11 @@ class ApiService {
     }
   }
 
-  async fish(location: string, guaranteed: boolean = false) {
+  async fish(location: string, guaranteed: boolean = false, currency: 'stars' | 'ton' = 'stars') {
     try {
       const response = await fetchApi<any>('/api/fish', {
         method: 'POST',
-        body: JSON.stringify({ location, guaranteed })
+        body: JSON.stringify({ location, guaranteed, currency })
       });
       return response;
     } catch (error) {
