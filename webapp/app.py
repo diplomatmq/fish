@@ -1271,7 +1271,7 @@ def profile():
 
 		"coins": int(player.get("coins") or 0),
 
-		"stars": int(player.get("stars") or 0),
+		"stars": int(player.get("stars_balance") or player.get("stars") or 0),
 
 		"ton_balance": float(player.get("ton_balance") or 0.0),
 
@@ -3351,9 +3351,10 @@ def api_fish():
 			currency = data.get("currency", "stars")
 			
 			if currency == "stars":
-				if player.get('stars', 0) < 1:
+				stars_balance = int(player.get('stars_balance', 0) or player.get('stars', 0))
+				if stars_balance < 1:
 					return jsonify({"ok": False, "error": "insufficient_stars"}), 400
-				db.update_player(user_id, -1, stars=player['stars'] - 1)
+				db.update_player(user_id, -1, stars_balance=stars_balance - 1)
 			else:  # TON
 				ton_balance = float(player.get('ton_balance', 0))
 				if ton_balance < 0.01:
@@ -3363,17 +3364,43 @@ def api_fish():
 		# PERFORM FISHING - полная логика из game_logic.py
 		result = game_logic.fish(user_id, -1, location, guaranteed)
 		
+		# Only sync cooldown if fishing was successful
+		if result.get('success'):
+			# Sync with main chat
+			try:
+				main_player = db.get_player(user_id, 0)
+				if main_player:
+					db.update_player(user_id, 0, last_fish_time=datetime.now().isoformat())
+			except:
+				pass
+		else:
+			# If fishing failed, refund the payment for guaranteed catch
+			if guaranteed:
+				currency = data.get("currency", "stars")
+				if currency == "stars":
+					stars_balance = int(player.get('stars_balance', 0) or player.get('stars', 0))
+					db.update_player(user_id, -1, stars_balance=stars_balance + 1)
+				else:  # TON
+					ton_balance = float(player.get('ton_balance', 0))
+					db.update_player(user_id, -1, ton_balance=ton_balance + 0.01)
+		
 		# Add image URLs
 		if result.get('success') and result.get('fish'):
 			fish_name = result['fish'].get('name')
 			sticker_id = result['fish'].get('sticker_id')
-			image_file = FISH_STICKERS.get(fish_name) or sticker_id or f"{fish_name}.webp"
+			image_file = fish_stickers_dict.get(fish_name) or sticker_id or f"{fish_name}.webp"
+			# If no image file found, use default fish emoji
+			if not fish_stickers_dict.get(fish_name) and not sticker_id:
+				image_file = "fishdef.webp"
 			result['fish']['image_url'] = f"/api/fish-image/{image_file}"
 			result['fish']['sticker_id'] = image_file
 		
 		if result.get('is_trash') and result.get('trash'):
 			trash_name = result['trash'].get('name')
 			image_file = TRASH_STICKERS.get(trash_name) or f"{trash_name}.webp"
+			# If no trash image found, use default trash emoji
+			if not TRASH_STICKERS.get(trash_name):
+				image_file = "fishdef.webp"
 			result['trash']['image_url'] = f"/api/fish-image/{image_file}"
 			result['trash']['sticker_id'] = image_file
 		
@@ -3387,7 +3414,7 @@ def api_fish():
 				boat_data = db.get_boat_info(active_boat['boat_id'])
 				if boat_data:
 					max_weight = boat_data.get('max_weight', 1000)
-					current_weight = db.get_boat_current_weight(active_boat['id'])
+					current_weight = db.get_boat_current_weight(active_boat['id}')
 					fish_weight = result.get('weight', 0)
 					
 					if current_weight + fish_weight > max_weight:
@@ -3396,14 +3423,6 @@ def api_fish():
 						result['boat_crash_message'] = f"⚠️ КРУШЕНИЕ! Лодка затонула ({current_weight + fish_weight}кг > {max_weight}кг)"
 			except Exception as e:
 				logger.warning("Boat crash check failed: %s", e)
-		
-		# Sync with main chat
-		try:
-			main_player = db.get_player(user_id, 0)
-			if main_player:
-				db.update_player(user_id, 0, last_fish_time=datetime.now().isoformat())
-		except:
-			pass
 		
 		return jsonify({"ok": True, **result})
 		

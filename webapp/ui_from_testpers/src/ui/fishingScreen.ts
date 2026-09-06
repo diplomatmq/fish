@@ -429,21 +429,11 @@ export class FishingScreen {
     const fishImages = locationFishMap[this.currentLocation] || locationFishMap['Городской пруд'];
     const drumImages = [...fishImages, ...fishImages, ...fishImages]; // Repeat for smooth loop
     
-    // Preload images to prevent dark screen
-    const imagePromises = drumImages.map(img => {
-      return new Promise<void>((resolve) => {
-        const imgEl = new Image();
-        imgEl.onload = () => resolve();
-        imgEl.onerror = () => resolve(); // Continue even if image fails to load
-        imgEl.src = `/api/fish-image/${img}`;
-      });
-    });
-    
-    // Build drum HTML after images are preloaded
-    Promise.all(imagePromises).then(() => {
+    try {
+      // Build drum HTML directly
       reel.innerHTML = drumImages.map(img => `
         <div class="drum-item">
-          <img src="/api/fish-image/${img}" alt="fish" class="drum-image" />
+          <img src="/api/fish-image/${img}" alt="fish" class="drum-image" onerror="this.src='https://via.placeholder.com/180?text=🐟'" />
         </div>
       `).join('');
       
@@ -483,7 +473,15 @@ export class FishingScreen {
       };
       
       requestAnimationFrame(animate);
-    });
+    } catch (error) {
+      console.error('Spin slots error:', error);
+      // Fallback: show single fish image
+      reel.innerHTML = `
+        <div class="drum-item">
+          <img src="/api/fish-image/fishdef.webp" alt="fish" class="drum-image" />
+        </div>
+      `;
+    }
   }
 
   private async fish(): Promise<void> {

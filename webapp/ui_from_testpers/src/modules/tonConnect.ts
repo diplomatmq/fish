@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// TON Connect integration
+// TON Connect integration (now using GRAM testnet)
 // ─────────────────────────────────────────────────────────────────────────────
 import { TonConnectUI, Wallet } from '@tonconnect/ui';
 
@@ -16,7 +16,8 @@ class TonConnectService {
     try {
       this.tonConnectUI = new TonConnectUI({
         manifestUrl: MANIFEST_URL,
-        buttonRootId: null
+        buttonRootId: null,
+        network: 'testnet' // Use GRAM testnet
       });
 
       // Subscribe to wallet changes
