@@ -6,6 +6,8 @@
   position: relative;
   overflow: hidden;
   background: linear-gradient(180deg, #001a33 0%, #003d5c 50%, #001a33 100%);
+  height: 100vh;
+  max-height: 100vh;
 }
 
 /* ── Underwater Background ──────────────────────────────────────────────── */

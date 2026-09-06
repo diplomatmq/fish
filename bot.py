@@ -14550,12 +14550,50 @@ _«Прими этот дар — и помни, океан всегда смо�
                     or self.active_invoices[user_id].get('msg_id')
                 )
                 del self.active_invoices[user_id]
-            
+
             await _run_sync(db.clear_timed_effect, user_id, 'seasick')
             await self._safe_send_message(
                 chat_id=accounting_chat_id,
                 text="✅ Вы успешно вылечились от морской болезни! Теперь вы снова полны сил для рыбалки. 🚑",
                 reply_to_message_id=cure_reply_id,
+            )
+            return
+        elif payload and payload.startswith("stars_topup_"):
+            # Пополнение баланса звезд через мини-апп
+            topup_reply_id = None
+            if user_id in self.active_invoices:
+                topup_reply_id = (
+                    self.active_invoices[user_id].get('group_message_id')
+                    or self.active_invoices[user_id].get('message_id')
+                    or self.active_invoices[user_id].get('msg_id')
+                )
+                del self.active_invoices[user_id]
+
+            # Add stars directly to stars_balance column
+            with db._connect() as conn:
+                cursor = conn.cursor()
+                # Check if stars_balance column exists
+                cursor.execute("PRAGMA table_info(players)")
+                cols = [c[1] for c in cursor.fetchall()]
+
+                if 'stars_balance' in cols:
+                    cursor.execute(
+                        'UPDATE players SET stars_balance = COALESCE(stars_balance, 0) + ? WHERE user_id = ?',
+                        (total_amount, user_id)
+                    )
+                else:
+                    # If column doesn't exist, add it
+                    cursor.execute('ALTER TABLE players ADD COLUMN stars_balance INTEGER DEFAULT 0')
+                    cursor.execute(
+                        'UPDATE players SET stars_balance = COALESCE(stars_balance, 0) + ? WHERE user_id = ?',
+                        (total_amount, user_id)
+                    )
+                conn.commit()
+
+            await self._safe_send_message(
+                chat_id=accounting_chat_id,
+                text=f"✅ Баланс пополнен на {total_amount} ⭐!",
+                reply_to_message_id=topup_reply_id,
             )
             return
         elif payload and payload.startswith("repair_rod_"):

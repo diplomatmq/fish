@@ -1774,6 +1774,95 @@ def guild_donate_all():
 		return jsonify({"ok": False, "error": "db_write_failed"}), 500
 
 
+@app.post("/api/create-stars-invoice")
+def create_stars_invoice():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	data = request.get_json(silent=True) or {}
+	amount = _safe_int(data.get("amount"))
+
+	if not amount or amount <= 0:
+		return jsonify({"ok": False, "error": "invalid_amount"}), 400
+
+	try:
+		from bot import TelegramBotAPI
+		from config import BOT_TOKEN, STAR_NAME
+		import time
+		import asyncio
+
+		tg_api = TelegramBotAPI(BOT_TOKEN)
+		payload = f"stars_topup_{user_id}_{int(time.time())}"
+
+		# Run async function in sync context
+		loop = asyncio.new_event_loop()
+		asyncio.set_event_loop(loop)
+		invoice_url = loop.run_until_complete(tg_api.create_invoice_link(
+			title="Пополнение баланса звезд",
+			description=f"Пополнение баланса на {amount} {STAR_NAME}",
+			payload=payload,
+			currency="XTR",
+			prices=[{"label": f"{amount} {STAR_NAME}", "amount": amount}]
+		))
+		loop.close()
+
+		if invoice_url:
+			return jsonify({"ok": True, "invoice_link": invoice_url})
+		else:
+			return jsonify({"ok": False, "error": "invoice_creation_failed"}), 500
+	except Exception as e:
+		logger.exception("Failed to create stars invoice for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "server_error"}), 500
+
+
+@app.post("/api/confirm-ton-topup")
+def confirm_ton_topup():
+	auth_user, auth_error = _get_verified_user_from_request()
+	if auth_error:
+		return jsonify({"ok": False, "error": auth_error}), _auth_error_status(auth_error)
+
+	user_id = int(auth_user["id"])
+	data = request.get_json(silent=True) or {}
+	amount = _safe_float(data.get("amount"))
+
+	if not amount or amount <= 0:
+		return jsonify({"ok": False, "error": "invalid_amount"}), 400
+
+	db = _get_fish_db()
+	if not db:
+		return jsonify({"ok": False, "error": "db_unavailable"}), 500
+
+	try:
+		# Store TON amount directly (no conversion)
+		# Assuming there's a ton_balance column in players table
+		with db._connect() as conn:
+			cursor = conn.cursor()
+			# Check if ton_balance column exists
+			cursor.execute("PRAGMA table_info(players)")
+			cols = [c[1] for c in cursor.fetchall()]
+
+			if 'ton_balance' in cols:
+				cursor.execute(
+					'UPDATE players SET ton_balance = COALESCE(ton_balance, 0) + ? WHERE user_id = ?',
+					(amount, user_id)
+				)
+			else:
+				# If column doesn't exist, add it
+				cursor.execute('ALTER TABLE players ADD COLUMN ton_balance REAL DEFAULT 0')
+				cursor.execute(
+					'UPDATE players SET ton_balance = COALESCE(ton_balance, 0) + ? WHERE user_id = ?',
+					(amount, user_id)
+				)
+			conn.commit()
+
+		return jsonify({"ok": True, "ton_added": amount})
+	except Exception as e:
+		logger.exception("Failed to confirm TON topup for user_id=%s", user_id)
+		return jsonify({"ok": False, "error": "db_write_failed"}), 500
+
+
 @app.post("/api/guilds/upgrade")
 def guild_upgrade():
 	auth_user, auth_error = _get_verified_user_from_request()

@@ -412,51 +412,56 @@ export class FishingScreen {
 
   private spinSlots(): void {
     const reel = this.el.querySelector('#slot-reel') as HTMLElement;
-    const slotImage = reel?.querySelector('.slot-image') as HTMLImageElement;
     
-    if (!slotImage) return;
-
-    // Массив случайных рыб для анимации
-    const fishImages = [
-      'amur_gudgeon.webp', 'carp.webp', 'pike.webp', 'perch.webp',
-      'catfish.webp', 'salmon.webp', 'trout.webp', 'tuna.webp',
-      'shark.webp', 'octopus.webp', 'jellyfish.webp', 'squid.webp',
-      'boot.webp', 'bottle.webp', 'can.webp', 'tire.webp'
-    ];
-
+    if (!reel) return;
+    
+    // Create drum with multiple fish images
+    const fishImages = ['fishdef.webp', 'fish1.webp', 'fish2.webp', 'fish3.webp', 'fish4.webp'];
+    const drumImages = [...fishImages, ...fishImages, ...fishImages]; // Repeat for smooth loop
+    
+    // Build drum HTML
+    reel.innerHTML = drumImages.map(img => `
+      <div class="drum-item">
+        <img src="/api/fish-image/${img}" alt="fish" class="drum-image" />
+      </div>
+    `).join('');
+    
+    // Add drum container
+    const drumContainer = document.createElement('div');
+    drumContainer.className = 'drum-container';
+    drumContainer.innerHTML = reel.innerHTML;
+    reel.innerHTML = '';
+    reel.appendChild(drumContainer);
+    
     let spinCount = 0;
-    const maxSpins = 50; // Больше спинов для более долгой анимации
-    let currentIndex = 0;
+    const maxSpins = 30;
+    let position = 0;
+    const itemHeight = 180; // Height of each drum item
     
     reel.classList.add('spinning');
     
-    // Добавляем класс для эффекта "замедления" через CSS
-    slotImage.classList.add('spinning');
-    
-    const spinInterval = setInterval(() => {
-      // Циклично меняем изображения
-      currentIndex = (currentIndex + 1) % fishImages.length;
-      const fishImage = fishImages[currentIndex];
-      
-      // Плавная смена через vertical scroll effect
-      slotImage.style.transform = 'translateY(-50px) scale(0.7)';
-      slotImage.style.opacity = '0.3';
-      
-      setTimeout(() => {
-        slotImage.src = `/api/fish-image/${fishImage}`;
-        slotImage.style.transform = 'translateY(0) scale(1)';
-        slotImage.style.opacity = '1';
-      }, 50);
+    const animate = () => {
+      if (spinCount >= maxSpins) {
+        reel.classList.remove('spinning');
+        return;
+      }
       
       spinCount++;
+      position -= 15; // Scroll speed
       
-      // Постепенно замедляем анимацию к концу
-      if (spinCount >= maxSpins) {
-        clearInterval(spinInterval);
-        reel.classList.remove('spinning');
-        slotImage.classList.remove('spinning');
+      // Reset position for infinite loop
+      if (position <= -itemHeight * drumImages.length / 3) {
+        position = 0;
       }
-    }, 100 + Math.floor(spinCount / 10) * 20); // Замедление: +20ms каждые 10 спинов
+      
+      drumContainer.style.transform = `translateY(${position}px)`;
+      
+      // Slow down at the end
+      const delay = spinCount > maxSpins - 5 ? 50 : 20;
+      setTimeout(() => requestAnimationFrame(animate), delay);
+    };
+    
+    requestAnimationFrame(animate);
   }
 
   private async fish(): Promise<void> {
@@ -562,8 +567,7 @@ export class FishingScreen {
 
   private async showFishResult(result: any): Promise<void> {
     const reel = this.el.querySelector('#slot-reel') as HTMLElement;
-    const slotImage = reel?.querySelector('.slot-image') as HTMLImageElement;
-
+    
     // Determine final image based on result
     let fishImageUrl: string | null = null;
     let detailsMessage = '';
@@ -607,15 +611,31 @@ export class FishingScreen {
       detailsMessage = result.message || '💔 Рыба сорвалась!';
     }
 
-    // Set final image in slot
-    if (slotImage && fishImageUrl) {
-      setTimeout(() => {
-        slotImage.src = fishImageUrl;
-        slotImage.classList.add('result-shown');
-      }, 500);
+    // Stop spinning and show final result
+    if (reel) {
+      reel.classList.remove('spinning');
+      
+      // Replace drum with single result image
+      if (fishImageUrl) {
+        setTimeout(() => {
+          reel.innerHTML = `
+            <div class="drum-item">
+              <img src="${fishImageUrl}" alt="result" class="drum-image result-shown" />
+            </div>
+          `;
+        }, 300);
+      }
     }
 
-    // Show result modal with detailed info
+    // Show alert immediately for fish/trash
+    if (result.fish || result.is_trash) {
+      tgService.haptic('success');
+      tgService.showAlert(detailsMessage);
+      // Dispatch event to refresh profile catches
+      window.dispatchEvent(new CustomEvent('refresh-profile'));
+    }
+
+    // Show result modal with detailed info after alert
     setTimeout(() => {
       if (result.fish || result.is_trash) {
         this.showFishModal(
@@ -654,7 +674,7 @@ export class FishingScreen {
           tgService.showAlert(result.boat_crash_message || '⚠️ КРУШЕНИЕ! Лодка затонула!');
         }, 2000);
       }
-    }, 1000);
+    }, 500);
   }
 
   private showFishModal(name: string, _weight: number, _length: number, _rarity: string, imageUrl: string, message: string): void {

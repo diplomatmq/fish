@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// ProfilePanel — porthole avatar, name, progress bar
+// ProfilePanel — porthole avatar, name, progress bar, recent catches
 // ─────────────────────────────────────────────────────────────────────────────
 import { USER_PROFILE } from '../data';
 import { tgService } from '../modules/telegram';
@@ -11,10 +11,12 @@ export class ProfilePanel {
   private fillEl: HTMLElement | null = null;
   private wobbling = false;
   private profile: UserProfile = { ...USER_PROFILE };
+  private recentCatches: any[] = [];
 
   constructor() {
     this.el = this.build();
     this.loadProfile();
+    this.loadRecentCatches();
   }
 
   private async loadProfile() {
@@ -33,17 +35,56 @@ export class ProfilePanel {
     }
   }
 
+  private async loadRecentCatches() {
+    try {
+      const data = await fetchApi<any>('/api/inventory');
+      if (data && data.items) {
+        this.recentCatches = data.items.slice(0, 5); // Show last 5 catches
+        this.renderRecentCatches();
+      }
+    } catch (e) {
+      console.error('Failed to load recent catches:', e);
+    }
+  }
+
+  private renderRecentCatches() {
+    const catchesContainer = this.el.querySelector('#recent-catches-container') as HTMLElement;
+    if (!catchesContainer) return;
+
+    if (this.recentCatches.length === 0) {
+      catchesContainer.innerHTML = '<p class="no-catches">Пока нет улова</p>';
+      return;
+    }
+
+    catchesContainer.innerHTML = `
+      <div class="catches-grid">
+        ${this.recentCatches.map(item => `
+          <div class="catch-item">
+            <img src="${item.image_url}" alt="${item.name}" class="catch-image" />
+            <div class="catch-info">
+              <div class="catch-name">${item.name}</div>
+              <div class="catch-details">
+                ${item.weight ? `<span>⚖️ ${item.weight}кг</span>` : ''}
+                ${item.rarity ? `<span>✨ ${item.rarity}</span>` : ''}
+              </div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
   private updateUI() {
     const nameEl = this.el.querySelector<HTMLElement>('#profile-name');
     const tagEl = this.el.querySelector<HTMLElement>('#profile-tag');
     const levelEl = this.el.querySelector<HTMLElement>('.level-label');
     const xpEl = this.el.querySelector<HTMLElement>('.xp-label');
-    
+
     if (nameEl) nameEl.textContent = this.profile.name.toUpperCase();
     if (tagEl) tagEl.textContent = this.profile.tag;
     if (levelEl) levelEl.textContent = `Уровень ${this.profile.level}`;
     if (xpEl) xpEl.textContent = `${this.profile.xp.toLocaleString('ru')} XP`;
-    
+
     this.animateProgress(0);
   }
 
@@ -78,6 +119,13 @@ export class ProfilePanel {
         </div>
         <div class="progress-track" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100">
           <div class="progress-fill" id="progress-fill"></div>
+        </div>
+      </div>
+
+      <div class="recent-catches-section">
+        <h3 class="catches-title">🎣 Последний улов</h3>
+        <div id="recent-catches-container" class="catches-container">
+          <div class="loader-wrap"><div class="loader"></div></div>
         </div>
       </div>
     `;
@@ -141,5 +189,10 @@ export class ProfilePanel {
       const tagEl = this.el.querySelector<HTMLElement>('#profile-tag');
       if (tagEl) tagEl.textContent = tag;
     }
+  }
+
+  // ── Refresh catches after fishing ────────────────────────────────────────
+  refreshCatches(): void {
+    this.loadRecentCatches();
   }
 }

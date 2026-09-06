@@ -285,6 +285,12 @@ window.addEventListener('navigate-home', () => {
   tabBar.switchTo('home');
 });
 
+// ── Refresh profile event listener ───────────────────────────────────────────
+window.addEventListener('refresh-profile', () => {
+  console.log('Refresh profile event received');
+  profilePanel.refreshCatches();
+});
+
 // ── Animate progress bar after boot sequence ──────────────────────────────────
 setTimeout(() => profilePanel.animateProgress(0), 2000);
 
