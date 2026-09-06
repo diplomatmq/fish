@@ -16,8 +16,7 @@ class TonConnectService {
     try {
       this.tonConnectUI = new TonConnectUI({
         manifestUrl: MANIFEST_URL,
-        buttonRootId: null,
-        network: 'testnet' // Use GRAM testnet
+        buttonRootId: null
       });
 
       // Subscribe to wallet changes
