@@ -415,25 +415,29 @@ export class FishingScreen {
     
     if (!reel) return;
     
-    // Location-specific fish images
-    const locationFishMap: Record<string, string[]> = {
-      'Городской пруд': ['fishdef.webp', 'fish1.webp', 'fish2.webp', 'fish3.webp', 'fish4.webp'],
-      'Река': ['fish5.webp', 'fish6.webp', 'fish7.webp', 'fish8.webp', 'fish9.webp'],
-      'Озеро': ['fish10.webp', 'fish11.webp', 'fish12.webp', 'fish13.webp', 'fish14.webp'],
-      'Море': ['fish15.webp', 'fish16.webp', 'fish17.webp', 'fish18.webp', 'fish19.webp'],
-      'Коралловый риф': ['fish20.webp', 'fish21.webp', 'fish22.webp', 'fish23.webp', 'fish24.webp'],
-      'Глубоководный желоб': ['fish25.webp', 'fish26.webp', 'fish27.webp', 'fish28.webp', 'fish29.webp'],
-      'Мангровые заросли': ['fish30.webp', 'fish31.webp', 'fish32.webp', 'fish33.webp', 'fish34.webp'],
-    };
+    // Use actual fish images - common fish that exist in the system
+    const commonFishImages = [
+      'fishdef.webp',
+      'fish1.webp',
+      'fish2.webp',
+      'fish3.webp',
+      'fish4.webp',
+      'fish5.webp',
+      'fish6.webp',
+      'fish7.webp',
+      'fish8.webp',
+      'fish9.webp'
+    ];
     
-    const fishImages = locationFishMap[this.currentLocation] || locationFishMap['Городской пруд'];
-    const drumImages = [...fishImages, ...fishImages, ...fishImages]; // Repeat for smooth loop
+    const drumImages = [...commonFishImages, ...commonFishImages, ...commonFishImages]; // Repeat for smooth loop
     
     try {
-      // Build drum HTML directly
+      // Build drum HTML directly with actual fish images
       reel.innerHTML = drumImages.map(img => `
         <div class="drum-item">
-          <img src="/api/fish-image/${img}" alt="fish" class="drum-image" onerror="this.src='https://via.placeholder.com/180?text=🐟'" />
+          <img src="/api/fish-image/${img}" alt="fish" class="drum-image" 
+               onerror="this.src='/api/fish-image/fishdef.webp'" 
+               style="width: 100%; height: 100%; object-fit: contain;" />
         </div>
       `).join('');
       
@@ -509,10 +513,10 @@ export class FishingScreen {
       const guaranteed = this.cooldownEndTime > 0;
       const result = await apiService.fish(this.currentLocation, guaranteed, this.selectedCurrency);
       
+      // Show fish result for all cases (success, trash, snap, etc.)
+      await this.showFishResult(result);
+      
       if (result.success) {
-        // Show fish result
-        await this.showFishResult(result);
-        
         // Start cooldown (10 minutes = 600 seconds)
         this.startCooldown(600);
         
@@ -521,11 +525,13 @@ export class FishingScreen {
       } else if (result.cooldown_remaining) {
         this.startCooldown(result.cooldown_remaining);
       } else if (result.error) {
-        tgService.showAlert(`Ошибка: ${result.error}`);
+        // Show error in mini-app, not alert
+        console.error(`Ошибка: ${result.error}`);
       }
     } catch (error) {
       console.error('Fishing failed:', error);
-      tgService.showAlert('Ошибка при ловле рыбы');
+      // Show error in mini-app, not alert
+      await this.showFishResult({ error: 'Ошибка при ловле рыбы', no_bite: true });
     } finally {
       this.isSpinning = false;
       if (this.cooldownEndTime === 0) {
@@ -555,7 +561,9 @@ export class FishingScreen {
           tgService.showAlert('Недостаточно звезд. Пополните баланс.');
           return false;
         }
-        // Stars will be deducted by backend
+        // Deduct stars locally immediately
+        this.starsBalance -= 1;
+        this.updateBalanceDisplay();
         return true;
       } else {
         // TON payment
@@ -647,26 +655,13 @@ export class FishingScreen {
       }
     }
 
-    // Show alert immediately for fish/trash
-    if (result.fish || result.is_trash) {
-      tgService.haptic('success');
-      // Ensure detailsMessage has content
-      if (!detailsMessage) {
-        detailsMessage = result.fish ? `🎣 Поймана рыба: ${result.fish.name}` : `🗑️ Выловлен мусор`;
-      }
-      tgService.showAlert(detailsMessage);
-      // Dispatch event to refresh profile catches
-      window.dispatchEvent(new CustomEvent('refresh-profile'));
-    } else {
-      // Show alert for other cases (no bite, snap, etc.)
-      if (detailsMessage) {
-        tgService.showAlert(detailsMessage);
-      }
-    }
+    // Dispatch event to refresh profile catches
+    window.dispatchEvent(new CustomEvent('refresh-profile'));
 
-    // Show result modal with detailed info after alert
+    // Show result modal with detailed info
     setTimeout(() => {
       if (result.fish || result.is_trash) {
+        tgService.haptic('success');
         this.showFishModal(
           result.fish?.name || result.trash?.name || 'Результат',
           result.weight || result.trash?.weight || 0,
@@ -675,31 +670,33 @@ export class FishingScreen {
           fishImageUrl || '/api/fish-image/fishdef.webp',
           detailsMessage
         );
+      } else if (result.no_bite || result.snap || result.fish_inspector) {
+        // Show modal for no bite, snap, fish inspector
+        this.showFishModal(
+          'Результат',
+          0,
+          0,
+          '-',
+          fishImageUrl || '/api/fish-image/fishdef.webp',
+          detailsMessage
+        );
       }
       
-      // Show special events
+      // Show special events as inline notifications in modal
       if (result.spawn_event_active) {
-        setTimeout(() => {
-          tgService.showAlert('🐟 На локации активен нерест! Повышенный шанс улова!');
-        }, 1500);
+        console.log('🐟 На локации активен нерест! Повышенный шанс улова!');
       }
       
       if (result.murder_event_active && result.murder_fish_name) {
-        setTimeout(() => {
-          tgService.showAlert(`☠️ На локации объявлена охота на ${result.murder_fish_name}!`);
-        }, 1500);
+        console.log(`☠️ На локации объявлена охота на ${result.murder_fish_name}!`);
       }
       
       if (result.school_event_active && result.school_bonus_percent > 0) {
-        setTimeout(() => {
-          tgService.showAlert(`🐠 Стайный инстинкт! Бонус к весу: +${result.school_bonus_percent}% (цепочка: ${result.school_chain_count})`);
-        }, 1500);
+        console.log(`🐠 Стайный инстинкт! Бонус к весу: +${result.school_bonus_percent}% (цепочка: ${result.school_chain_count})`);
       }
       
       if (result.boat_crash) {
-        setTimeout(() => {
-          tgService.showAlert(result.boat_crash_message || '⚠️ КРУШЕНИЕ! Лодка затонула!');
-        }, 2000);
+        console.log(result.boat_crash_message || '⚠️ КРУШЕНИЕ! Лодка затонула!');
       }
     }, 500);
   }
