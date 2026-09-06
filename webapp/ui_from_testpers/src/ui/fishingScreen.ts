@@ -415,18 +415,18 @@ export class FishingScreen {
     
     if (!reel) return;
     
-    // Use actual fish images - common fish that exist in the system
+    // Use actual fish images from repository
     const commonFishImages = [
-      'fishdef.webp',
-      'fish1.webp',
-      'fish2.webp',
-      'fish3.webp',
-      'fish4.webp',
-      'fish5.webp',
-      'fish6.webp',
-      'fish7.webp',
-      'fish8.webp',
-      'fish9.webp'
+      'carp.webp',
+      'bream.webp',
+      'catfish.webp',
+      'pike.webp',
+      'perch.webp',
+      'roach.webp',
+      'trout.webp',
+      'salmon.webp',
+      'bass.webp',
+      'crucian.webp'
     ];
     
     const drumImages = [...commonFishImages, ...commonFishImages, ...commonFishImages]; // Repeat for smooth loop
