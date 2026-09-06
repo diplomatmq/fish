@@ -3350,6 +3350,9 @@ def api_fish():
 		if guaranteed:
 			currency = data.get("currency", "stars")
 			
+			# ВАЖНО: Оплата дает ГАРАНТИРОВАННЫЙ РЕЗУЛЬТАТ (рыба/мусор/NFT), без срывов и "не клюёт"!
+			# Деньги списываются за пропуск кулдауна + гарантию получить хоть что-то
+			
 			if currency == "stars":
 				stars_balance = int(player.get('stars_balance', 0) or player.get('stars', 0))
 				if stars_balance < 1:
@@ -3364,25 +3367,17 @@ def api_fish():
 		# PERFORM FISHING - полная логика из game_logic.py
 		result = game_logic.fish(user_id, -1, location, guaranteed)
 		
-		# Only sync cooldown if fishing was successful
-		if result.get('success'):
-			# Sync with main chat
-			try:
-				main_player = db.get_player(user_id, 0)
-				if main_player:
-					db.update_player(user_id, 0, last_fish_time=datetime.now().isoformat())
-			except:
-				pass
-		else:
-			# If fishing failed, refund the payment for guaranteed catch
-			if guaranteed:
-				currency = data.get("currency", "stars")
-				if currency == "stars":
-					stars_balance = int(player.get('stars_balance', 0) or player.get('stars', 0))
-					db.update_player(user_id, -1, stars_balance=stars_balance + 1)
-				else:  # TON
-					ton_balance = float(player.get('ton_balance', 0))
-					db.update_player(user_id, -1, ton_balance=ton_balance + 0.01)
+		# ВСЕГДА синхронизируем кулдаун с основным чатом
+		# Попытка рыбалки = кулдаун, независимо от результата
+		try:
+			main_player = db.get_player(user_id, 0)
+			if main_player:
+				db.update_player(user_id, 0, last_fish_time=datetime.now().isoformat())
+		except:
+			pass
+		
+		# Деньги не возвращаются - они списаны за ГАРАНТИРОВАННЫЙ РЕЗУЛЬТАТ
+		# (рыба/мусор/NFT, без срывов и "не клюёт")
 		
 		# Add image URLs
 		if result.get('success') and result.get('fish'):

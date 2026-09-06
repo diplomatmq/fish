@@ -492,13 +492,19 @@ export class FishingScreen {
     if (this.isSpinning) return;
 
     // Check if cooldown is active and user wants guaranteed catch
-    if (this.cooldownEndTime > 0) {
-      const guaranteed = await this.confirmGuaranteedCatch();
-      if (!guaranteed) return;
+    const guaranteedCatch = this.cooldownEndTime > 0;
+    
+    if (guaranteedCatch) {
+      const confirmed = await this.confirmGuaranteedCatch();
+      if (!confirmed) return;
 
-      // Process payment and guaranteed catch
+      // Process payment BEFORE fishing
       const paymentSuccess = await this.processGuaranteedPayment();
-      if (!paymentSuccess) return;
+      if (!paymentSuccess) {
+        // Restore balance if payment failed
+        await this.loadPlayerData();
+        return;
+      }
     }
 
     this.isSpinning = true;
@@ -509,31 +515,36 @@ export class FishingScreen {
     this.spinSlots();
 
     try {
-      // Call API with guaranteed flag if cooldown was active
-      const guaranteed = this.cooldownEndTime > 0;
-      const result = await apiService.fish(this.currentLocation, guaranteed, this.selectedCurrency);
+      // Call API with guaranteed flag and currency
+      const result = await apiService.fish(this.currentLocation, guaranteedCatch, this.selectedCurrency);
       
-      // Show fish result for all cases (success, trash, snap, etc.)
+      // ВАЖНО: Проверяем любой результат - успех ИЛИ неудача
+      // Backend всегда устанавливает cooldown после попытки
+      
+      // Show fish result for all cases (success, trash, snap, no_bite, etc.)
       await this.showFishResult(result);
       
-      if (result.success) {
-        // Start cooldown (10 minutes = 600 seconds)
-        this.startCooldown(600);
-        
-        // Reload balance
-        await this.loadPlayerData();
-      } else if (result.cooldown_remaining) {
-        this.startCooldown(result.cooldown_remaining);
-      } else if (result.error) {
-        // Show error in mini-app, not alert
-        console.error(`Ошибка: ${result.error}`);
-      }
+      // ВСЕГДА запускаем кулдаун после любой попытки рыбалки
+      // Кулдаун = 10 минут = 600 секунд
+      this.startCooldown(600);
+      
+      // Reload balance from server to sync
+      await this.loadPlayerData();
+      
     } catch (error) {
       console.error('Fishing failed:', error);
-      // Show error in mini-app, not alert
-      await this.showFishResult({ error: 'Ошибка при ловле рыбы', no_bite: true });
+      // Show error in modal
+      await this.showFishResult({ 
+        error: 'Ошибка при ловле рыбы', 
+        no_bite: true,
+        message: 'Произошла ошибка. Попробуйте снова.'
+      });
+      
+      // Restore balance on error
+      await this.loadPlayerData();
     } finally {
       this.isSpinning = false;
+      // Button state controlled by cooldown
       if (this.cooldownEndTime === 0) {
         fishBtn.classList.remove('disabled');
       }
@@ -541,8 +552,8 @@ export class FishingScreen {
   }
 
   private async confirmGuaranteedCatch(): Promise<boolean> {
-    const currency = this.selectedCurrency === 'stars' ? 'звезду' : '0.01 TON';
-    const message = `Кулдаун активен. Хотите потратить ${currency} на гарантированный улов?`;
+    const currency = this.selectedCurrency === 'stars' ? '1 звезду' : '0.01 TON';
+    const message = `Кулдаун активен. Хотите потратить ${currency} на гарантированный результат? (Может выпасть рыба, мусор или NFT)`;
     
     return new Promise((resolve) => {
       if (confirm(message)) {
@@ -554,6 +565,8 @@ export class FishingScreen {
   }
 
   private async processGuaranteedPayment(): Promise<boolean> {
+    // ВАЖНО: Оплата дает ГАРАНТИРОВАННЫЙ РЕЗУЛЬТАТ (рыба/мусор/NFT), БЕЗ срывов!
+    // Деньги списываются за пропуск кулдауна + гарантию получить хоть что-то
     try {
       if (this.selectedCurrency === 'stars') {
         // Check stars balance
@@ -561,9 +574,8 @@ export class FishingScreen {
           tgService.showAlert('Недостаточно звезд. Пополните баланс.');
           return false;
         }
-        // Deduct stars locally immediately
-        this.starsBalance -= 1;
-        this.updateBalanceDisplay();
+        // DON'T deduct locally - backend will handle it
+        // Just return true to proceed with fishing
         return true;
       } else {
         // TON payment
@@ -573,17 +585,14 @@ export class FishingScreen {
         }
         
         // Send TON transaction
-        const result = await tonConnectService.sendTransaction(0.01, 'Guaranteed Fish');
+        const result = await tonConnectService.sendTransaction(0.01, 'Fishing Attempt');
         
         if (!result.success) {
           tgService.showAlert(`Ошибка оплаты: ${result.error || 'Неизвестная ошибка'}`);
           return false;
         }
         
-        // Deduct from local balance (will be synced with backend)
-        this.tonBalance -= 0.01;
-        this.updateBalanceDisplay();
-        
+        // DON'T deduct locally - backend will handle it after transaction confirmation
         return true;
       }
     } catch (error) {
@@ -599,9 +608,11 @@ export class FishingScreen {
     // Determine final image based on result
     let fishImageUrl: string | null = null;
     let detailsMessage = '';
+    let modalTitle = 'Результат';
     
     if (result.fish) {
       fishImageUrl = result.fish.image_url || `/api/fish-image/${result.fish.sticker_id || result.fish.name}.webp`;
+      modalTitle = result.fish.name;
       
       // Build detailed message like in bot
       detailsMessage = `🎣 Поймана рыба!\n\n`;
@@ -623,20 +634,48 @@ export class FishingScreen {
     } else if (result.is_trash) {
       const trashName = result.trash?.name || 'Мусор';
       fishImageUrl = result.trash?.image_url || `/api/fish-image/${result.trash?.sticker_id || trashName}.webp`;
+      modalTitle = trashName;
       detailsMessage = `🗑️ Выловлен мусор: ${trashName}`;
+      
+      if (result.xp_earned) {
+        detailsMessage += `\n\n+${result.xp_earned} опыта`;
+      }
       
       if (result.treasure_caught) {
         detailsMessage += `\n\n💎 Бонус! Найдено сокровище: ${result.treasure_name}`;
       }
     } else if (result.no_bite) {
       fishImageUrl = '/api/fish-image/fishdef.webp';
-      detailsMessage = result.message || '❌ Рыба не клюет...';
+      modalTitle = 'Не клюёт';
+      // Use message from backend or default messages
+      const noBiteMessages = [
+        "❌ Рыба не клюет...",
+        "🐟 Поклевки нет",
+        "💤 Рыба спит на дне",
+        "🌊 Сегодня плохой клев",
+        "🎣 Рыба не интересуется приманкой",
+        "🗺️ Попробуйте другую локацию",
+        "🧊 Вода слишком холодная",
+        "⬇️ Рыба ушла на глубину"
+      ];
+      detailsMessage = result.message || noBiteMessages[Math.floor(Math.random() * noBiteMessages.length)];
     } else if (result.fish_inspector) {
       fishImageUrl = '/api/fish-image/fishdef.webp';
-      detailsMessage = result.message || '🚨 Рыбнадзор конфисковал улов!';
+      modalTitle = 'Рыбнадзор!';
+      detailsMessage = result.message || '🚨 Рыбнадзор конфисковал улов! Вас оштрафовали.';
     } else if (result.snap) {
       fishImageUrl = '/api/fish-image/fishdef.webp';
-      detailsMessage = result.message || '💔 Рыба сорвалась!';
+      modalTitle = 'Сорвалась!';
+      detailsMessage = result.message || '💔 Рыба сорвалась с крючка! Попробуйте снова.';
+    } else if (result.error) {
+      fishImageUrl = '/api/fish-image/fishdef.webp';
+      modalTitle = 'Ошибка';
+      detailsMessage = result.message || '❌ ' + (result.error || 'Произошла ошибка');
+    } else {
+      // Fallback for unknown result type
+      fishImageUrl = '/api/fish-image/fishdef.webp';
+      modalTitle = 'Результат';
+      detailsMessage = result.message || '🎣 Попытка не удалась. Попробуйте снова.';
     }
 
     // Stop spinning and show final result
@@ -658,45 +697,41 @@ export class FishingScreen {
     // Dispatch event to refresh profile catches
     window.dispatchEvent(new CustomEvent('refresh-profile'));
 
-    // Show result modal with detailed info
+    // Show result modal ALWAYS (for all cases)
     setTimeout(() => {
-      if (result.fish || result.is_trash) {
-        tgService.haptic('success');
-        this.showFishModal(
-          result.fish?.name || result.trash?.name || 'Результат',
-          result.weight || result.trash?.weight || 0,
-          result.length || 0,
-          result.fish?.rarity || 'Мусор',
-          fishImageUrl || '/api/fish-image/fishdef.webp',
-          detailsMessage
-        );
-      } else if (result.no_bite || result.snap || result.fish_inspector) {
-        // Show modal for no bite, snap, fish inspector
-        this.showFishModal(
-          'Результат',
-          0,
-          0,
-          '-',
-          fishImageUrl || '/api/fish-image/fishdef.webp',
-          detailsMessage
-        );
-      }
+      tgService.haptic(result.fish || result.is_trash ? 'success' : 'light');
+      this.showFishModal(
+        modalTitle,
+        result.weight || result.trash?.weight || 0,
+        result.length || 0,
+        result.fish?.rarity || (result.is_trash ? 'Мусор' : '-'),
+        fishImageUrl || '/api/fish-image/fishdef.webp',
+        detailsMessage
+      );
       
-      // Show special events as inline notifications in modal
+      // Show special events as additional alerts after modal
       if (result.spawn_event_active) {
-        console.log('🐟 На локации активен нерест! Повышенный шанс улова!');
+        setTimeout(() => {
+          tgService.showAlert('🐟 На локации активен нерест! Повышенный шанс улова!');
+        }, 1500);
       }
       
       if (result.murder_event_active && result.murder_fish_name) {
-        console.log(`☠️ На локации объявлена охота на ${result.murder_fish_name}!`);
+        setTimeout(() => {
+          tgService.showAlert(`☠️ На локации объявлена охота на ${result.murder_fish_name}!`);
+        }, 1500);
       }
       
       if (result.school_event_active && result.school_bonus_percent > 0) {
-        console.log(`🐠 Стайный инстинкт! Бонус к весу: +${result.school_bonus_percent}% (цепочка: ${result.school_chain_count})`);
+        setTimeout(() => {
+          tgService.showAlert(`🐠 Стайный инстинкт! Бонус к весу: +${result.school_bonus_percent}%`);
+        }, 2000);
       }
       
       if (result.boat_crash) {
-        console.log(result.boat_crash_message || '⚠️ КРУШЕНИЕ! Лодка затонула!');
+        setTimeout(() => {
+          tgService.showAlert(result.boat_crash_message || '⚠️ КРУШЕНИЕ! Лодка затонула!');
+        }, 2500);
       }
     }, 500);
   }

@@ -1057,11 +1057,43 @@ class FishingGame:
                 "location": location,
             }
 
-        # In guaranteed mode, skip trash - always return fish
-        # Adjust roll to be in fish range if it's in trash range
-        if adjusted_roll <= TRASH_MAX:
-            adjusted_roll = TRASH_MAX + 1
-            logger.info("   🎯 Guaranteed mode: adjusted roll from trash range to fish range")
+        # В гарантированном режиме мусор тоже может выпасть (0-7999)
+        if force_trash_only or adjusted_roll <= TRASH_MAX:
+            logger.info("   📊 Guaranteed result: TRASH (adjusted roll in trash range 0-7999)")
+            trash = db.get_random_trash(location)
+            if trash:
+                logger.info(f"   🗑️ Caught trash: {trash['name']}")
+                
+                # Применяем урон прочности удочки
+                damage = self.get_durability_damage("trash", is_guaranteed=True)
+                db.reduce_rod_durability(user_id, player['current_rod'], damage, chat_id)
+
+                xp_earned = db.calculate_item_xp({
+                    'rarity': 'Мусор',
+                    'weight': trash.get('weight', 0),
+                    'min_weight': 0,
+                    'max_weight': 0,
+                    'is_trash': True,
+                })
+
+                level_info = db.add_player_xp(user_id, chat_id, xp_earned)
+                
+                # Находится ли игрок на лодке
+                active_boat = db.get_active_boat_by_user(user_id)
+                is_on_boat = active_boat is not None
+                
+                # Мусор не добавляется в улов лодки
+                db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
+                
+                return {
+                    "success": False,
+                    "is_trash": True,
+                    "trash": trash,
+                    "location": location,
+                    "xp_earned": xp_earned,
+                    "level_info": level_info,
+                    "is_on_boat": is_on_boat,
+                }
 
         # Determine rarity based on adjusted roll
         if adjusted_roll <= 700:
