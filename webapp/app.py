@@ -556,6 +556,15 @@ def transferred_background():
 
 
 
+@app.get("/tonconnect-manifest.json")
+def tonconnect_manifest():
+	"""Serve TON Connect manifest"""
+	manifest_path = TRANSFERRED_UI_DIST.parent / "public" / "tonconnect-manifest.json"
+	if manifest_path.exists():
+		return send_from_directory(str(manifest_path.parent), "tonconnect-manifest.json")
+	return jsonify({"error": "manifest_not_found"}), 404
+
+
 @app.get("/health")
 
 def health():

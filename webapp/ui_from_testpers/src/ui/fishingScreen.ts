@@ -418,39 +418,45 @@ export class FishingScreen {
 
     // Массив случайных рыб для анимации
     const fishImages = [
-      'amur_gudgeon.webp',
-      'carp.webp',
-      'pike.webp',
-      'perch.webp',
-      'catfish.webp',
-      'salmon.webp',
-      'trout.webp',
-      'tuna.webp',
-      'shark.webp',
-      'octopus.webp',
-      'jellyfish.webp',
-      'boot.webp',
-      'bottle.webp',
-      'can.webp'
+      'amur_gudgeon.webp', 'carp.webp', 'pike.webp', 'perch.webp',
+      'catfish.webp', 'salmon.webp', 'trout.webp', 'tuna.webp',
+      'shark.webp', 'octopus.webp', 'jellyfish.webp', 'squid.webp',
+      'boot.webp', 'bottle.webp', 'can.webp', 'tire.webp'
     ];
 
     let spinCount = 0;
-    const maxSpins = 30;
+    const maxSpins = 50; // Больше спинов для более долгой анимации
+    let currentIndex = 0;
     
     reel.classList.add('spinning');
     
+    // Добавляем класс для эффекта "замедления" через CSS
+    slotImage.classList.add('spinning');
+    
     const spinInterval = setInterval(() => {
-      const randomFish = fishImages[Math.floor(Math.random() * fishImages.length)];
-      slotImage.src = `/api/fish-image/${randomFish}`;
-      slotImage.classList.add('spinning');
+      // Циклично меняем изображения
+      currentIndex = (currentIndex + 1) % fishImages.length;
+      const fishImage = fishImages[currentIndex];
+      
+      // Плавная смена через vertical scroll effect
+      slotImage.style.transform = 'translateY(-50px) scale(0.7)';
+      slotImage.style.opacity = '0.3';
+      
+      setTimeout(() => {
+        slotImage.src = `/api/fish-image/${fishImage}`;
+        slotImage.style.transform = 'translateY(0) scale(1)';
+        slotImage.style.opacity = '1';
+      }, 50);
       
       spinCount++;
+      
+      // Постепенно замедляем анимацию к концу
       if (spinCount >= maxSpins) {
         clearInterval(spinInterval);
-        slotImage.classList.remove('spinning');
         reel.classList.remove('spinning');
+        slotImage.classList.remove('spinning');
       }
-    }, 100);
+    }, 100 + Math.floor(spinCount / 10) * 20); // Замедление: +20ms каждые 10 спинов
   }
 
   private async fish(): Promise<void> {
@@ -671,10 +677,10 @@ export class FishingScreen {
     
     this.el.appendChild(modal);
     
-    // Show with animation
-    requestAnimationFrame(() => {
+    // Show with animation - need delay for CSS transition
+    setTimeout(() => {
       modal.classList.add('visible');
-    });
+    }, 10);
     
     // Close handlers
     const closeBtn = modal.querySelector('#fish-result-close') as HTMLButtonElement;
@@ -777,13 +783,28 @@ export class FishingScreen {
 
     try {
       if (currency === 'stars') {
-        // Use Telegram Stars payment
-        // This should call backend API that creates invoice
+        // Create invoice through backend API
         const result = await apiService.createStarsInvoice(amount);
         if (result.invoice_link) {
-          // Open Telegram invoice
-          window.open(result.invoice_link, '_blank');
-          this.closeTopupModal();
+          // Open Telegram Stars payment directly in WebApp
+          if (tgService.webApp && tgService.webApp.openInvoice) {
+            tgService.webApp.openInvoice(result.invoice_link, (status: string) => {
+              if (status === 'paid') {
+                tgService.showAlert(`✅ Баланс пополнен на ${amount} ⭐`);
+                this.starsBalance += amount;
+                this.updateBalanceDisplay();
+                this.closeTopupModal();
+              } else if (status === 'cancelled') {
+                tgService.showAlert('Оплата отменена');
+              } else if (status === 'failed') {
+                tgService.showAlert('Ошибка оплаты');
+              }
+            });
+          } else {
+            // Fallback - open in new window
+            window.open(result.invoice_link, '_blank');
+            this.closeTopupModal();
+          }
         } else {
           tgService.showAlert('Ошибка создания счета');
         }

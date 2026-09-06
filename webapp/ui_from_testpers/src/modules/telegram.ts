@@ -20,6 +20,7 @@ interface TelegramWebApp {
   setHeaderColor(color: string): void;
   setBackgroundColor(color: string): void;
   showAlert(message: string): void;
+  openInvoice?(url: string, callback?: (status: string) => void): void;
   HapticFeedback?: {
     impactOccurred(style: 'light' | 'medium' | 'heavy' | 'rigid' | 'soft'): void;
     notificationOccurred(type: 'error' | 'success' | 'warning'): void;
@@ -36,9 +37,11 @@ interface TelegramWebApp {
 
 class TelegramService {
   private tg: TelegramWebApp | null;
+  public webApp: TelegramWebApp | null;
 
   constructor() {
     this.tg = window.Telegram?.WebApp ?? null;
+    this.webApp = this.tg; // Expose for invoice usage
 
     if (this.tg) {
       this.tg.ready();
