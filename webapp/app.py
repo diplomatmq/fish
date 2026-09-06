@@ -3414,7 +3414,7 @@ def api_fish():
 				boat_data = db.get_boat_info(active_boat['boat_id'])
 				if boat_data:
 					max_weight = boat_data.get('max_weight', 1000)
-					current_weight = db.get_boat_current_weight(active_boat['id}')
+					current_weight = db.get_boat_current_weight(active_boat['id'])
 					fish_weight = result.get('weight', 0)
 					
 					if current_weight + fish_weight > max_weight:
