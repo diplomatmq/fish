@@ -8342,7 +8342,7 @@ class Database:
 
         # Allow only specific fields to be updated to avoid SQL injection
         allowed_fields = {
-            'username', 'coins', 'stars', 'xp', 'level', 'current_rod', 'current_bait',
+            'username', 'coins', 'stars', 'stars_balance', 'ton_balance', 'xp', 'level', 'current_rod', 'current_bait',
             'current_location', 'last_fish_time', 'last_boat_return_time', 'last_dynamite_use_time', 'dynamite_ban_until', 'is_banned', 'ban_until', 'ref', 'ref_link', 'last_net_use_time', 'diamonds', 'tickets', 'dynamite_upgrade_level'
         }
 
