@@ -4,6 +4,10 @@
 Мини-игра "Морской охотник" - поле 5x5 с кнопками
 Случайно появляется при рыбалке (30% шанс)
 
+Работает для:
+- Бесплатной рыбалки (команда /fish)
+- Оплаченной рыбалки (гарантированный улов за 1 звезду)
+
 ВАЖНО: Эта мини-игра работает ТОЛЬКО в текстовой части Telegram бота,
        НЕ в мини-приложении (chat_id != -1)
 """
@@ -20,9 +24,15 @@ EMOJI_BEAR = "5397915559037785261"     # Медведь
 # Состав поля (всего 25 клеток)
 FIELD_SIZE = 5
 TOTAL_CELLS = FIELD_SIZE * FIELD_SIZE
+
+# Бесплатная рыбалка
 BEAR_COUNT = 1
 MISS_COUNT = 13
 FISH_COUNT = 11
+
+# Платная рыбалка (гарантированный улов)
+PAID_BEAR_COUNT = 1
+PAID_FISH_COUNT = 24  # Все остальные клетки - рыба
 
 # Хранилище активных игр: {user_id: GameState}
 active_games: Dict[int, 'SeaHunterGame'] = {}
@@ -31,10 +41,11 @@ active_games: Dict[int, 'SeaHunterGame'] = {}
 class SeaHunterGame:
     """Состояние одной игры"""
     
-    def __init__(self, user_id: int, username: str, location: str):
+    def __init__(self, user_id: int, username: str, location: str, is_paid: bool = False):
         self.user_id = user_id
         self.username = username
         self.location = location
+        self.is_paid = is_paid  # Платная рыбалка (гарантированный улов)
         self.field: List[str] = []  # Скрытое поле с типами клеток
         self.revealed: List[bool] = [False] * TOTAL_CELLS  # Открыты ли клетки
         self.game_over = False
@@ -45,12 +56,19 @@ class SeaHunterGame:
     
     def _generate_field(self):
         """Генерирует случайное поле с заданным составом"""
-        # Создаем массив типов клеток
-        cells = (
-            ['bear'] * BEAR_COUNT +
-            ['miss'] * MISS_COUNT +
-            ['fish'] * FISH_COUNT
-        )
+        if self.is_paid:
+            # Платная рыбалка: 24 рыбы + 1 медведь (БЕЗ промахов)
+            cells = (
+                ['bear'] * PAID_BEAR_COUNT +
+                ['fish'] * PAID_FISH_COUNT
+            )
+        else:
+            # Бесплатная рыбалка: 11 рыб + 13 промахов + 1 медведь
+            cells = (
+                ['bear'] * BEAR_COUNT +
+                ['miss'] * MISS_COUNT +
+                ['fish'] * FISH_COUNT
+            )
         
         # Проверка правильности количества
         if len(cells) != TOTAL_CELLS:
@@ -146,9 +164,9 @@ def should_trigger_minigame() -> bool:
     return random.random() < 0.30
 
 
-def start_game(user_id: int, username: str, location: str) -> SeaHunterGame:
+def start_game(user_id: int, username: str, location: str, is_paid: bool = False) -> SeaHunterGame:
     """Начинает новую игру для пользователя"""
-    game = SeaHunterGame(user_id, username, location)
+    game = SeaHunterGame(user_id, username, location, is_paid=is_paid)
     active_games[user_id] = game
     return game
 
@@ -167,15 +185,28 @@ def end_game(user_id: int):
 def format_game_message(game: SeaHunterGame) -> str:
     """Форматирует текст сообщения игры"""
     if not game.game_over:
-        return (
-            "🎯 <b>Морской охотник</b>\n\n"
-            "Выберите одну клетку на поле!\n"
-            "В поле спрятаны:\n"
-            "🐟 11 рыб - получите улов\n"
-            "💨 13 промахов - ничего не получите\n"
-            "🐻 1 медведь - редкий приз!\n\n"
-            "Удачи! 🍀"
-        )
+        if game.is_paid:
+            # Платная рыбалка
+            return (
+                "🎯 <b>Морской охотник (Гарантированный улов)</b>\n\n"
+                "Выберите одну клетку на поле!\n"
+                "В поле спрятаны:\n"
+                "🐟 24 рыбы - получите улов\n"
+                "🐻 1 медведь - редкий приз!\n\n"
+                "⭐ Промахов нет - результат гарантирован!\n\n"
+                "Удачи! 🍀"
+            )
+        else:
+            # Бесплатная рыбалка
+            return (
+                "🎯 <b>Морской охотник</b>\n\n"
+                "Выберите одну клетку на поле!\n"
+                "В поле спрятаны:\n"
+                "🐟 11 рыб - получите улов\n"
+                "💨 13 промахов - ничего не получите\n"
+                "🐻 1 медведь - редкий приз!\n\n"
+                "Удачи! 🍀"
+            )
     else:
         return (
             f"🎯 <b>Морской охотник - Результат</b>\n\n"

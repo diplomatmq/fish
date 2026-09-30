@@ -15228,6 +15228,41 @@ _«Прими этот дар — и помни, океан всегда смо�
 
             result = await _run_sync(game.fish, user_id, group_chat_id, location, guaranteed=True)
             
+            # === МИНИ-ИГРА "МОРСКОЙ ОХОТНИК" для гарантированного улова ===
+            # С вероятностью 30% появляется мини-игра
+            from sea_hunter_minigame import should_trigger_minigame, start_game, format_game_message
+            
+            if should_trigger_minigame() and result.get('success'):
+                # Запускаем мини-игру ДЛЯ ПЛАТНОЙ РЫБАЛКИ (is_paid=True)
+                chat_title = accounting_chat_title or 'Личные сообщения'
+                logger.info(
+                    "🎮 MINIGAME (PAID) triggered for user=%s chat=%s chat_title='%s' location=%s",
+                    user_id, group_chat_id, chat_title, location
+                )
+                minigame = start_game(user_id, update.effective_user.username or str(user_id), location, is_paid=True)
+                game_text = format_game_message(minigame)
+                keyboard = minigame.build_keyboard()
+                
+                try:
+                    # Отправляем в тот чат, где была команда
+                    await self._safe_send_message(
+                        chat_id=group_chat_id,
+                        text=game_text,
+                        reply_markup=keyboard,
+                        reply_to_message_id=group_message_id,
+                        parse_mode='HTML'
+                    )
+                    logger.info(
+                        "🎮 MINIGAME (PAID) sent successfully to user=%s chat=%s chat_title='%s'",
+                        user_id, group_chat_id, chat_title
+                    )
+                    # Ждем выбора пользователя через callback
+                    # Результат рыбалки будет обработан в обработчике callback
+                    return
+                except Exception as e:
+                    logger.error(f"🎮 MINIGAME (PAID) error sending to user={user_id}: {e}")
+                    # Если не удалось показать игру, продолжаем обычную рыбалку
+            
             # Check for NFT win FIRST!
             if result.get('nft_win'):
                 nft_message = (
