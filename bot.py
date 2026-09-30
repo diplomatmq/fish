@@ -3709,6 +3709,161 @@ class FishBot:
         message += tickets_line
 
         try:
+            await query.edit_message_text(message)
+        except Exception:
+            pass
+
+        if fish_name := fight_result.get('fish', {}).get('name'):
+            asyncio.create_task(self._send_catch_image(
+                chat_id=update.effective_chat.id,
+                item_name=fish_name,
+                item_type="fish",
+                reply_to_message_id=query.message.message_id if query.message else None,
+            ))
+
+        try:
+            await self._maybe_process_duel_catch(
+                user_id=user_id,
+                chat_id=chat_id,
+                fish_name=str(fish.get('name') or ''),
+                weight=weight,
+                length=length,
+                catch_id=fight_result.get('catch_id'),
+                resolve_latest_catch=False,
+            )
+        except Exception:
+            logger.exception("Failed to process duel after fight session=%s", session_id)
+
+    async def handle_sea_hunter_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик выбора клетки в мини-игре Морской охотник"""
+        query = update.callback_query
+        data = query.data or ""
+        
+        # Формат: sea_hunter:user_id:position
+        parts = data.split(':')
+        if len(parts) != 3 or parts[0] != 'sea_hunter':
+            await query.answer("Некорректная кнопка", show_alert=True)
+            return
+        
+        try:
+            game_owner_id = int(parts[1])
+            position = int(parts[2])
+        except ValueError:
+            await query.answer("Некорректная кнопка", show_alert=True)
+            return
+        
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        
+        # Проверяем, что игра принадлежит этому пользователю
+        if user_id != game_owner_id:
+            await query.answer("Эта игра не для вас", show_alert=True)
+            return
+        
+        from sea_hunter_minigame import get_game, end_game, format_game_message
+        
+        minigame = get_game(user_id)
+        if not minigame:
+            await query.answer("Игра уже завершена", show_alert=True)
+            return
+        
+        # Обрабатываем выбор
+        result_type, result_message = minigame.make_choice(position)
+        
+        # Обновляем клавиатуру (все эмодзи теперь видны)
+        updated_keyboard = minigame.build_keyboard()
+        
+        try:
+            await query.edit_message_reply_markup(reply_markup=updated_keyboard)
+        except Exception as e:
+            logger.error(f"Error updating sea hunter keyboard: {e}")
+        
+        await query.answer()
+        
+        # Обрабатываем результат
+        if result_type == 'fish':
+            # Пользователь попал в рыбу - даем улов
+            # Получаем рыбу из той локации где он находится
+            player = await _run_sync(db.get_player, user_id, chat_id)
+            if not player:
+                await query.message.reply_text("❌ Профиль не найден")
+                end_game(user_id)
+                return
+            
+            location = player['current_location']
+            
+            # Используем ту же логику что и при обычной рыбалке
+            from game_logic import FishingGame
+            game_logic = FishingGame()
+            
+            # Генерируем случайную рыбу с локации (гарантированный улов)
+            fish_result = await _run_sync(game_logic.fish, user_id, chat_id, location, guaranteed=True)
+            
+            if fish_result.get('success') and fish_result.get('fish'):
+                fish = fish_result['fish']
+                weight = fish_result['weight']
+                length = fish_result['length']
+                fish_price = fish_result.get('fish_price', fish.get('price', 0))
+                
+                xp_line = ""
+                if fish_result.get('xp_earned'):
+                    xp_line = f"\n✨ Опыт: +{fish_result['xp_earned']}"
+                
+                message = f"""
+🎯 Морской охотник: Попадание!
+
+🐟 {fish['name']}
+
+⚖️ Вес: {weight} кг
+📏 Длина: {length} см
+💰 Цена: {fish_price} 🪙
+✨ Редкость: {fish['rarity']}
+📍 Место: {location}{xp_line}
+                """
+                
+                await query.message.reply_text(message.strip())
+                
+                # Отправляем стикер рыбы
+                if fish.get('name'):
+                    asyncio.create_task(self._send_catch_image(
+                        chat_id=chat_id,
+                        item_name=fish['name'],
+                        item_type="fish",
+                        reply_to_message_id=query.message.message_id,
+                    ))
+            else:
+                await query.message.reply_text("🎣 Вы поймали рыбу!")
+        
+        elif result_type == 'bear':
+            # Медведь - отправляем сообщение пользователю и админу
+            await query.message.reply_text("🐻 Поздравляю! Вы выбили медведя!")
+            
+            # Отправляем сообщение админу
+            try:
+                admin_message = (
+                    f"🐻 <b>МЕДВЕДЬ ВЫБИТ!</b>\n\n"
+                    f"👤 User ID: {user_id}\n"
+                    f"👤 Username: @{update.effective_user.username or 'нет'}\n"
+                    f"👤 Имя: {update.effective_user.full_name}\n"
+                    f"💬 Chat ID: {chat_id}\n"
+                    f"💬 Chat: {update.effective_chat.title or 'Личные сообщения'}"
+                )
+                await context.bot.send_message(
+                    chat_id=793216884,  # VLD бота
+                    text=admin_message,
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                logger.error(f"Error sending bear notification to admin: {e}")
+        
+        elif result_type == 'miss':
+            # Промах - ничего не делаем, пользователь уже видит результат
+            pass
+        
+        # Завершаем игру
+        end_game(user_id)
+
+        try:
             await query.edit_message_text("✅ Верное действие! Рыба у вас на крючке.")
         except Exception:
             pass
@@ -6270,6 +6425,30 @@ _«Прими этот дар — и помни, океан всегда смо�
                     logger.error(f"Error sending population warning: {e}")
 
             result = await _run_sync(game.fish, user_id, chat_id, player['current_location'])
+
+            # === МИНИ-ИГРА "МОРСКОЙ ОХОТНИК" ===
+            # С вероятностью 30% появляется мини-игра перед получением результата
+            # ТОЛЬКО в текстовой игре (chat_id != -1), НЕ в мини-приложении
+            from sea_hunter_minigame import should_trigger_minigame, start_game, format_game_message
+            
+            if chat_id != -1 and should_trigger_minigame() and result.get('success'):  # Только при успешной ловле в текстовой игре
+                # Запускаем мини-игру
+                minigame = start_game(user_id, update.effective_user.username or str(user_id), player['current_location'])
+                game_text = format_game_message(minigame)
+                keyboard = minigame.build_keyboard()
+                
+                try:
+                    await update.message.reply_text(
+                        game_text,
+                        reply_markup=keyboard,
+                        parse_mode='HTML'
+                    )
+                    # Ждем выбора пользователя через callback
+                    # Результат рыбалки будет обработан в обработчике callback
+                    return
+                except Exception as e:
+                    logger.error(f"Error showing sea hunter minigame: {e}")
+                    # Если не удалось показать игру, продолжаем обычную рыбалку
 
             storm_result = await self._maybe_trigger_boat_storm(user_id, result)
             if storm_result and storm_result.get('applied'):
@@ -16357,6 +16536,7 @@ def main():
     application.add_handler(CallbackQueryHandler(bot_instance.handle_unreg_raf, pattern=r"^unreg_raf$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_start_fishing, pattern="^start_fishing_"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_fight_action, pattern=r"^fight_[a-f0-9]{10}_(jerk|hold|slack)_\d+$"))
+    application.add_handler(CallbackQueryHandler(bot_instance.handle_sea_hunter_choice, pattern=r"^sea_hunter:\d+:\d+$"))
     application.add_handler(CallbackQueryHandler(bot_instance.handle_change_location, pattern="^change_location_"))
     # Важно: более специфичные паттерны должны идти первыми
     application.add_handler(CallbackQueryHandler(bot_instance.handle_change_bait_location, pattern="^change_bait_loc_"))
