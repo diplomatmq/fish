@@ -136,18 +136,12 @@ class SeaHunterGame:
                 else:
                     button_style = 'primary'  # Синяя для остальных
                 
-                # Создаем кнопку с параметрами (требуется python-telegram-bot >= 22.8)
-                # ВАЖНО: icon_custom_emoji_id и style передаются при создании, не устанавливаются после!
                 button = InlineKeyboardButton(
-                    text=" ",  # Текст кнопки пустой, т.к. эмодзи в icon_custom_emoji_id
+                    text=" ",
                     callback_data=f"sea_hunter:{self.user_id}:{position}",
-                    icon_custom_emoji_id=emoji_id,  # Правильное имя параметра!
+                    icon_custom_emoji_id=emoji_id,
+                    style=button_style,
                 )
-                
-                # Примечание: В python-telegram-bot 22.8+ параметр style пока не поддерживается
-                # в стандартном API InlineKeyboardButton. Оставляем кнопки синими.
-                # Цвет меняется только через текст или эмодзи.
-                
                 row_buttons.append(button)
             
             keyboard.append(row_buttons)

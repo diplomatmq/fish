@@ -3886,55 +3886,11 @@ class FishBot:
         elif result_type == 'miss':
             # Промах - ничего не делаем, пользователь уже видит результат
             logger.info("🎮 MINIGAME miss: user=%s chat=%s chat_title='%s'", user_id, chat_id, chat_title)
+            await query.message.reply_text(result_message)
         
         # Завершаем игру
         end_game(user_id)
         logger.info("🎮 MINIGAME ended for user=%s", user_id)
-
-        try:
-            await query.edit_message_text("✅ Верное действие! Рыба у вас на крючке.")
-        except Exception:
-            pass
-
-        sticker_message = await self._send_catch_image(
-            chat_id=chat_id,
-            item_name=str(fish.get('name') or ''),
-            item_type="fish",
-            reply_to_message_id=session.get('reply_to_message_id'),
-        )
-
-        await self._safe_send_message(
-            chat_id=chat_id,
-            text=message,
-            reply_to_message_id=(
-                sticker_message.message_id
-                if sticker_message
-                else session.get('reply_to_message_id')
-            ),
-        )
-
-        try:
-            await self._maybe_process_duel_catch(
-                user_id=user_id,
-                chat_id=chat_id,
-                fish_name=str(fish.get('name') or 'Неизвестная рыба'),
-                weight=weight,
-                length=length,
-                catch_id=fight_result.get('catch_id'),
-                resolve_latest_catch=not bool(fight_result.get('catch_id')),
-            )
-        except Exception:
-            logger.exception("Failed to process duel success from fight session=%s", session_id)
-
-        if fight_result.get('temp_rod_broken'):
-            await self._safe_send_message(
-                chat_id=chat_id,
-                text=(
-                    "💥 Временная удочка сломалась после удачного улова.\n"
-                    "Теперь активна бамбуковая. Купить новую можно в магазине."
-                ),
-                reply_to_message_id=session.get('reply_to_message_id'),
-            )
 
     def _format_raf_prizes_summary(self, prizes: List[Dict[str, Any]]) -> str:
         lines = []
