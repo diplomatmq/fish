@@ -93,12 +93,6 @@ class SeaHunterGame:
         else:
             return EMOJI_DEFAULT
     
-    def get_button_style(self, position: int) -> str:
-        """Возвращает стиль кнопки (PRIMARY или SUCCESS)"""
-        if self.selected_position == position:
-            return 'SUCCESS'  # Зеленая кнопка для выбранной клетки
-        return 'PRIMARY'  # Синяя кнопка для всех остальных
-    
     def make_choice(self, position: int) -> Tuple[str, str]:
         """
         Обрабатывает выбор клетки
@@ -135,22 +129,24 @@ class SeaHunterGame:
             for col in range(FIELD_SIZE):
                 position = row * FIELD_SIZE + col
                 emoji_id = self.get_emoji_for_cell(position, self.revealed[position])
-                style = self.get_button_style(position)
                 
-                # Формируем кнопку
+                # Определяем стиль кнопки
+                if self.selected_position == position:
+                    button_style = 'success'  # Зеленая для выбранной
+                else:
+                    button_style = 'primary'  # Синяя для остальных
+                
+                # Создаем кнопку с параметрами (требуется python-telegram-bot >= 22.8)
+                # ВАЖНО: icon_custom_emoji_id и style передаются при создании, не устанавливаются после!
                 button = InlineKeyboardButton(
-                    text=" ",  # Текст кнопки (можно пустой, т.к. эмодзи в custom_emoji_id)
+                    text=" ",  # Текст кнопки пустой, т.к. эмодзи в icon_custom_emoji_id
                     callback_data=f"sea_hunter:{self.user_id}:{position}",
+                    icon_custom_emoji_id=emoji_id,  # Правильное имя параметра!
                 )
                 
-                # Добавляем кастомные параметры (требуется python-telegram-bot >= 22.8)
-                button.custom_emoji_id = emoji_id
-                
-                # Устанавливаем стиль кнопки
-                if style == 'SUCCESS':
-                    button.style = 'success'  # Зеленая
-                else:
-                    button.style = 'primary'  # Синяя (по умолчанию)
+                # Примечание: В python-telegram-bot 22.8+ параметр style пока не поддерживается
+                # в стандартном API InlineKeyboardButton. Оставляем кнопки синими.
+                # Цвет меняется только через текст или эмодзи.
                 
                 row_buttons.append(button)
             
