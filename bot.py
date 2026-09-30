@@ -3754,9 +3754,19 @@ class FishBot:
         
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
+        chat_title = update.effective_chat.title or 'Личные сообщения'
+        
+        logger.info(
+            "🎮 MINIGAME choice: user=%s chat=%s chat_title='%s' position=%s",
+            user_id, chat_id, chat_title, position
+        )
         
         # Проверяем, что игра принадлежит этому пользователю
         if user_id != game_owner_id:
+            logger.warning(
+                "🎮 MINIGAME wrong user: user=%s tried to click game of user=%s",
+                user_id, game_owner_id
+            )
             await query.answer("Эта игра не для вас", show_alert=True)
             return
         
@@ -3764,11 +3774,17 @@ class FishBot:
         
         minigame = get_game(user_id)
         if not minigame:
+            logger.warning("🎮 MINIGAME not found for user=%s", user_id)
             await query.answer("Игра уже завершена", show_alert=True)
             return
         
         # Обрабатываем выбор
         result_type, result_message = minigame.make_choice(position)
+        
+        logger.info(
+            "🎮 MINIGAME result: user=%s chat=%s chat_title='%s' result=%s position=%s",
+            user_id, chat_id, chat_title, result_type, position
+        )
         
         # Обновляем клавиатуру (все эмодзи теперь видны)
         updated_keyboard = minigame.build_keyboard()
@@ -3783,6 +3799,8 @@ class FishBot:
         # Обрабатываем результат
         if result_type == 'fish':
             # Пользователь попал в рыбу - даем улов
+            logger.info("🎮 MINIGAME fish hit: user=%s chat=%s chat_title='%s'", user_id, chat_id, chat_title)
+            
             # Получаем рыбу из той локации где он находится
             player = await _run_sync(db.get_player, user_id, chat_id)
             if not player:
@@ -3804,6 +3822,11 @@ class FishBot:
                 weight = fish_result['weight']
                 length = fish_result['length']
                 fish_price = fish_result.get('fish_price', fish.get('price', 0))
+                
+                logger.info(
+                    "🎮 MINIGAME fish reward: user=%s chat=%s chat_title='%s' fish=%s weight=%.2f location=%s",
+                    user_id, chat_id, chat_title, fish['name'], weight, location
+                )
                 
                 xp_line = ""
                 if fish_result.get('xp_earned'):
@@ -3836,12 +3859,15 @@ class FishBot:
         
         elif result_type == 'bear':
             # Медведь - отправляем сообщение пользователю и админу
+            logger.info("🎮 MINIGAME BEAR HIT: user=%s username=%s chat=%s chat_title='%s'", 
+                       user_id, update.effective_user.username, chat_id, chat_title)
+            
             await query.message.reply_text("🐻 Поздравляю! Вы выбили медведя!")
             
             # Отправляем сообщение админу
             try:
                 admin_message = (
-                    f"🐻 <b>МЕДВЕДЬ ВЫБИТ!</b>\n\n"
+                    f"🐻 <b>МЕДВЕДЬ ВЫБИТ В МИНИ-ИГРЕ!</b>\n\n"
                     f"👤 User ID: {user_id}\n"
                     f"👤 Username: @{update.effective_user.username or 'нет'}\n"
                     f"👤 Имя: {update.effective_user.full_name}\n"
@@ -3853,15 +3879,17 @@ class FishBot:
                     text=admin_message,
                     parse_mode='HTML'
                 )
+                logger.info("🎮 MINIGAME bear notification sent to admin for user=%s", user_id)
             except Exception as e:
-                logger.error(f"Error sending bear notification to admin: {e}")
+                logger.error(f"🎮 MINIGAME error sending bear notification to admin: {e}")
         
         elif result_type == 'miss':
             # Промах - ничего не делаем, пользователь уже видит результат
-            pass
+            logger.info("🎮 MINIGAME miss: user=%s chat=%s chat_title='%s'", user_id, chat_id, chat_title)
         
         # Завершаем игру
         end_game(user_id)
+        logger.info("🎮 MINIGAME ended for user=%s", user_id)
 
         try:
             await query.edit_message_text("✅ Верное действие! Рыба у вас на крючке.")
@@ -6433,6 +6461,11 @@ _«Прими этот дар — и помни, океан всегда смо�
             
             if chat_id != -1 and should_trigger_minigame() and result.get('success'):  # Только при успешной ловле в текстовой игре
                 # Запускаем мини-игру
+                chat_title = update.effective_chat.title or 'Личные сообщения'
+                logger.info(
+                    "🎮 MINIGAME triggered for user=%s chat=%s chat_title='%s' location=%s",
+                    user_id, chat_id, chat_title, player['current_location']
+                )
                 minigame = start_game(user_id, update.effective_user.username or str(user_id), player['current_location'])
                 game_text = format_game_message(minigame)
                 keyboard = minigame.build_keyboard()
@@ -6443,11 +6476,15 @@ _«Прими этот дар — и помни, океан всегда смо�
                         reply_markup=keyboard,
                         parse_mode='HTML'
                     )
+                    logger.info(
+                        "🎮 MINIGAME sent successfully to user=%s chat=%s chat_title='%s'",
+                        user_id, chat_id, chat_title
+                    )
                     # Ждем выбора пользователя через callback
                     # Результат рыбалки будет обработан в обработчике callback
                     return
                 except Exception as e:
-                    logger.error(f"Error showing sea hunter minigame: {e}")
+                    logger.error(f"🎮 MINIGAME error sending to user={user_id}: {e}")
                     # Если не удалось показать игру, продолжаем обычную рыбалку
 
             storm_result = await self._maybe_trigger_boat_storm(user_id, result)
