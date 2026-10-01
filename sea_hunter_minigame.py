@@ -214,8 +214,8 @@ def end_game(user_id: int):
 def format_game_message(game: SeaHunterGame) -> str:
     """Форматирует текст сообщения игры"""
     special_line = (
-        f"Особая клетка (1 шт.): {DIAMOND_CELL_HTML} бриллиант — 85%, "
-        f"{BEAR_CELL_HTML} медведь — 15%\n"
+        f"Особая клетка (1 шт.): {DIAMOND_CELL_HTML} бриллиант/"
+        f"{BEAR_CELL_HTML} медведь\n"
     )
     if not game.game_over:
         if game.is_paid:
