@@ -21,10 +21,10 @@ EMOJI_DEFAULT = "5463406036410969564"  # Базовый эмодзи (волна
 EMOJI_FISH = "5411555580600936946"     # Рыба
 EMOJI_MISS = "5210952531676504517"     # Промах
 EMOJI_DIAMOND = "5366124516055487969"  # Бриллиант на поле
-EMOJI_BEAR = "5427168083074628963"     # Медведь (кастомный эмодзи)
+EMOJI_BEAR = "5397915559037785261"     # Медведь (кастомный эмодзи)
 
 DIAMOND_CELL_HTML = '<tg-emoji emoji-id="5366124516055487969">💎</tg-emoji>'
-BEAR_CELL_HTML = '<tg-emoji emoji-id="5427168083074628963">🐻</tg-emoji>'
+BEAR_CELL_HTML = '<tg-emoji emoji-id="5397915559037785261">🐻</tg-emoji>'
 
 SPECIAL_BEAR_CHANCE = 0.15  # иначе 85% — бриллиант
 
