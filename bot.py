@@ -51,7 +51,7 @@ from image_file_id_cache import ImageFileIdCache, collect_catch_image_paths, nor
 
 # --- TelegramBotAPI for invoice link creation ---
 import httpx
-from typing import Any, Optional, Dict, List
+from typing import Any, Optional, Dict, List, Tuple
 
 HTTP_SESSION: Optional[aiohttp.ClientSession] = None
 ASYNC_PG_POOL: Optional[asyncpg.Pool] = None
@@ -3734,6 +3734,145 @@ class FishBot:
         except Exception:
             logger.exception("Failed to process duel after fight session=%s", session_id)
 
+    async def _resolve_sea_hunter_fish_result(
+        self,
+        minigame,
+        user_id: int,
+        chat_id: int,
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Возвращает результат улова для мини-игры (уже пойманный или новый с локации игрока)."""
+        result = minigame.pending_catch_result
+        if result and result.get('fish'):
+            location = str(result.get('location') or minigame.location or '')
+            return result, location
+
+        player = await _run_sync(db.get_player, user_id, chat_id)
+        location = str((player or {}).get('current_location') or minigame.location or '')
+        from game_logic import FishingGame
+        game_logic = FishingGame()
+        result = await _run_sync(
+            game_logic.fish,
+            user_id,
+            chat_id,
+            location,
+            guaranteed=True,
+            force_fish_only=True,
+        )
+        if result.get('fish'):
+            return result, location
+        return result, location
+
+    async def _send_sea_hunter_fish_reward(
+        self,
+        query,
+        context: ContextTypes.DEFAULT_TYPE,
+        update: Update,
+        minigame,
+        user_id: int,
+        chat_id: int,
+    ) -> None:
+        fish_result, location = await self._resolve_sea_hunter_fish_result(minigame, user_id, chat_id)
+        fish = (fish_result or {}).get('fish')
+        if not fish:
+            err = (fish_result or {}).get('message') or 'Не удалось определить улов.'
+            await query.message.reply_text(
+                f"🎯 Морской охотник: попадание!\n\n❌ {err}\n📍 Локация: {location}"
+            )
+            return
+
+        weight = fish_result.get('weight')
+        length = fish_result.get('length')
+        fish_price = fish_result.get('fish_price', fish.get('price', 0))
+        display_location = str(fish_result.get('location') or location)
+
+        tickets_line = ''
+        if minigame.is_paid:
+            paid_meta = minigame.paid_delivery or {}
+            username = update.effective_user.username or update.effective_user.first_name or str(user_id)
+            tickets_awarded_gold, tickets_jackpot_gold, tickets_total_gold = await _run_sync(
+                self._award_tickets,
+                user_id,
+                self._calculate_tickets_for_result(fish_result),
+                username=username,
+                source_type='guaranteed_fish',
+                source_ref=str(display_location),
+                ticket_type='gold',
+            )
+            tickets_awarded_normal, tickets_jackpot_normal, tickets_total_normal = await _run_sync(
+                self._award_tickets,
+                user_id,
+                self._calculate_tickets_for_result(fish_result),
+                username=username,
+                source_type='guaranteed_fish',
+                source_ref=str(display_location),
+                ticket_type='normal',
+            )
+            tickets_line_gold = self._format_tickets_award_line(
+                tickets_awarded_gold, tickets_jackpot_gold, tickets_total_gold, ticket_type='gold',
+            )
+            tickets_line_normal = self._format_tickets_award_line(
+                tickets_awarded_normal, tickets_jackpot_normal, tickets_total_normal, ticket_type='normal',
+            )
+            tickets_line = tickets_line_gold + tickets_line_normal
+        else:
+            tickets_awarded, tickets_jackpot, tickets_total = await _run_sync(
+                self._award_tickets,
+                user_id,
+                self._calculate_tickets_for_result(fish_result),
+                username=update.effective_user.username or update.effective_user.first_name,
+                source_type='fish_command',
+                source_ref=str(display_location),
+            )
+            tickets_line = self._format_tickets_award_line(tickets_awarded, tickets_jackpot, tickets_total)
+
+        xp_line = ""
+        if fish_result.get('xp_earned'):
+            xp_line = f"\n✨ Опыт: +{fish_result['xp_earned']}"
+
+        fish_name_display = format_fish_name(fish['name'])
+        message = (
+            f"🎯 Морской охотник: попадание!\n\n"
+            f"🐟 {fish_name_display}\n\n"
+            f"⚖️ Вес: {weight} кг\n"
+            f"📏 Длина: {length} см\n"
+            f"💰 Цена: {fish_price} 🪙\n"
+            f"✨ Редкость: {fish['rarity']}\n"
+            f"📍 Место: {display_location}{xp_line}{tickets_line}"
+        )
+        if minigame.is_paid:
+            message += "\n⭐ Гарантированный улов!"
+
+        reply_to = query.message.message_id
+        paid_meta = minigame.paid_delivery or {}
+        group_message_id = paid_meta.get('group_message_id')
+        target_chat_id = chat_id
+
+        await query.message.reply_text(message.strip())
+
+        try:
+            await self._send_catch_image(
+                chat_id=target_chat_id,
+                item_name=fish['name'],
+                item_type="fish",
+                reply_to_message_id=group_message_id or reply_to,
+            )
+        except Exception as e:
+            logger.warning("Sea hunter catch image failed user=%s: %s", user_id, e)
+
+        player = await _run_sync(db.get_player, user_id, chat_id)
+        if player:
+            self._schedule_fish_catch_followups(
+                update=update,
+                context=context,
+                user_id=user_id,
+                chat_id=chat_id,
+                result=fish_result,
+                player=player,
+                fish_name=str(fish.get('name') or ''),
+                weight=float(weight or 0),
+                length=float(length or 0),
+            )
+
     async def handle_sea_hunter_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик выбора клетки в мини-игре Морской охотник"""
         query = update.callback_query
@@ -3777,9 +3916,17 @@ class FishBot:
             logger.warning("🎮 MINIGAME not found for user=%s", user_id)
             await query.answer("Игра уже завершена", show_alert=True)
             return
+
+        if minigame.is_expired() and not minigame.game_over:
+            await query.answer("⏱ Время вышло! Кнопки больше не активны.", show_alert=True)
+            return
         
         # Обрабатываем выбор
         result_type, result_message = minigame.make_choice(position)
+
+        if result_type == 'expired':
+            await query.answer(result_message, show_alert=True)
+            return
         
         logger.info(
             "🎮 MINIGAME result: user=%s chat=%s chat_title='%s' result=%s position=%s",
@@ -3798,76 +3945,36 @@ class FishBot:
         
         # Обрабатываем результат
         if result_type == 'fish':
-            # Пользователь попал в рыбу - даем улов
             logger.info("🎮 MINIGAME fish hit: user=%s chat=%s chat_title='%s'", user_id, chat_id, chat_title)
-            
-            # Получаем рыбу из той локации где он находится
-            player = await _run_sync(db.get_player, user_id, chat_id)
-            if not player:
-                await query.message.reply_text("❌ Профиль не найден")
-                end_game(user_id)
-                return
-            
-            location = player['current_location']
-            
-            # Используем ту же логику что и при обычной рыбалке
-            from game_logic import FishingGame
-            game_logic = FishingGame()
-            
-            # Генерируем случайную рыбу с локации (гарантированный улов)
-            fish_result = await _run_sync(game_logic.fish, user_id, chat_id, location, guaranteed=True)
-            
-            if fish_result.get('success') and fish_result.get('fish'):
-                fish = fish_result['fish']
-                weight = fish_result['weight']
-                length = fish_result['length']
-                fish_price = fish_result.get('fish_price', fish.get('price', 0))
-                
-                logger.info(
-                    "🎮 MINIGAME fish reward: user=%s chat=%s chat_title='%s' fish=%s weight=%.2f location=%s",
-                    user_id, chat_id, chat_title, fish['name'], weight, location
-                )
-                
-                xp_line = ""
-                if fish_result.get('xp_earned'):
-                    xp_line = f"\n✨ Опыт: +{fish_result['xp_earned']}"
-                
-                message = f"""
-🎯 Морской охотник: Попадание!
-
-🐟 {fish['name']}
-
-⚖️ Вес: {weight} кг
-📏 Длина: {length} см
-💰 Цена: {fish_price} 🪙
-✨ Редкость: {fish['rarity']}
-📍 Место: {location}{xp_line}
-                """
-                
-                await query.message.reply_text(message.strip())
-                
-                # Отправляем стикер рыбы
-                if fish.get('name'):
-                    asyncio.create_task(self._send_catch_image(
-                        chat_id=chat_id,
-                        item_name=fish['name'],
-                        item_type="fish",
-                        reply_to_message_id=query.message.message_id,
-                    ))
-            else:
-                await query.message.reply_text("🎣 Вы поймали рыбу!")
+            await self._send_sea_hunter_fish_reward(
+                query, context, update, minigame, user_id, chat_id,
+            )
         
+        elif result_type == 'diamond':
+            logger.info(
+                "🎮 MINIGAME DIAMOND HIT: user=%s username=%s chat=%s chat_title='%s'",
+                user_id, update.effective_user.username, chat_id, chat_title,
+            )
+            await _run_sync(db.add_diamonds, user_id, chat_id, 1)
+            player = await _run_sync(db.get_player, user_id, chat_id)
+            new_diamonds = int((player or {}).get('diamonds') or 0)
+            await query.message.reply_text(
+                f"{result_message}\n\n"
+                f"На баланс зачислен +1 {DIAMOND_EMOJI_TAG}\n"
+                f"Всего бриллиантов: {new_diamonds}",
+                parse_mode='HTML',
+            )
+
         elif result_type == 'bear':
-            # Медведь - отправляем сообщение пользователю и админу
-            logger.info("🎮 MINIGAME BEAR HIT: user=%s username=%s chat=%s chat_title='%s'", 
-                       user_id, update.effective_user.username, chat_id, chat_title)
-            
-            await query.message.reply_text("🐻 Поздравляю! Вы выбили медведя!")
-            
-            # Отправляем сообщение админу
+            logger.info(
+                "🎮 MINIGAME BEAR HIT: user=%s username=%s chat=%s chat_title='%s'",
+                user_id, update.effective_user.username, chat_id, chat_title,
+            )
+            await query.message.reply_text(result_message, parse_mode='HTML')
             try:
                 admin_message = (
-                    f"🐻 <b>МЕДВЕДЬ ВЫБИТ В МИНИ-ИГРЕ!</b>\n\n"
+                    f"{result_message}\n\n"
+                    f"<b>МЕДВЕДЬ ВЫБИТ В МИНИ-ИГРЕ!</b>\n\n"
                     f"👤 User ID: {user_id}\n"
                     f"👤 Username: @{update.effective_user.username or 'нет'}\n"
                     f"👤 Имя: {update.effective_user.full_name}\n"
@@ -3875,11 +3982,10 @@ class FishBot:
                     f"💬 Chat: {update.effective_chat.title or 'Личные сообщения'}"
                 )
                 await context.bot.send_message(
-                    chat_id=793216884,  # VLD бота
+                    chat_id=793216884,
                     text=admin_message,
-                    parse_mode='HTML'
+                    parse_mode='HTML',
                 )
-                logger.info("🎮 MINIGAME bear notification sent to admin for user=%s", user_id)
             except Exception as e:
                 logger.error(f"🎮 MINIGAME error sending bear notification to admin: {e}")
         
@@ -6422,7 +6528,12 @@ _«Прими этот дар — и помни, океан всегда смо�
                     "🎮 MINIGAME triggered for user=%s chat=%s chat_title='%s' location=%s",
                     user_id, chat_id, chat_title, player['current_location']
                 )
-                minigame = start_game(user_id, update.effective_user.username or str(user_id), player['current_location'])
+                minigame = start_game(
+                    user_id,
+                    update.effective_user.username or str(user_id),
+                    player['current_location'],
+                    pending_catch_result=result,
+                )
                 game_text = format_game_message(minigame)
                 keyboard = minigame.build_keyboard()
                 
@@ -6436,8 +6547,6 @@ _«Прими этот дар — и помни, океан всегда смо�
                         "🎮 MINIGAME sent successfully to user=%s chat=%s chat_title='%s'",
                         user_id, chat_id, chat_title
                     )
-                    # Ждем выбора пользователя через callback
-                    # Результат рыбалки будет обработан в обработчике callback
                     return
                 except Exception as e:
                     logger.error(f"🎮 MINIGAME error sending to user={user_id}: {e}")
@@ -15195,12 +15304,22 @@ _«Прими этот дар — и помни, океан всегда смо�
                     "🎮 MINIGAME (PAID) triggered for user=%s chat=%s chat_title='%s' location=%s",
                     user_id, group_chat_id, chat_title, location
                 )
-                minigame = start_game(user_id, update.effective_user.username or str(user_id), location, is_paid=True)
+                minigame = start_game(
+                    user_id,
+                    update.effective_user.username or str(user_id),
+                    location,
+                    is_paid=True,
+                    pending_catch_result=result,
+                    paid_delivery={
+                        'group_message_id': group_message_id,
+                        'telegram_payment_charge_id': telegram_payment_charge_id,
+                        'accounting_chat_title': accounting_chat_title,
+                    },
+                )
                 game_text = format_game_message(minigame)
                 keyboard = minigame.build_keyboard()
                 
                 try:
-                    # Отправляем в тот чат, где была команда
                     await self._safe_send_message(
                         chat_id=group_chat_id,
                         text=game_text,
@@ -15212,8 +15331,6 @@ _«Прими этот дар — и помни, океан всегда смо�
                         "🎮 MINIGAME (PAID) sent successfully to user=%s chat=%s chat_title='%s'",
                         user_id, group_chat_id, chat_title
                     )
-                    # Ждем выбора пользователя через callback
-                    # Результат рыбалки будет обработан в обработчике callback
                     return
                 except Exception as e:
                     logger.error(f"🎮 MINIGAME (PAID) error sending to user={user_id}: {e}")

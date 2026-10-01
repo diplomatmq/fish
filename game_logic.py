@@ -255,7 +255,14 @@ class FishingGame:
             "harpoon": True,
         }
     
-    def fish(self, user_id: int, chat_id: int, location: str = "Городской пруд", guaranteed: bool = False) -> Dict[str, Any]:
+    def fish(
+        self,
+        user_id: int,
+        chat_id: int,
+        location: str = "Городской пруд",
+        guaranteed: bool = False,
+        force_fish_only: bool = False,
+    ) -> Dict[str, Any]:
         """Основная функция ловли рыбы"""
         # Проверка на арест рыбнадзором
         player = db.get_player(user_id, chat_id)
@@ -331,6 +338,7 @@ class FishingGame:
                 feeder_bonus,
                 clothing_bonus_percent,
                 beer_bonus_percent,
+                force_fish_only=force_fish_only,
             )
 
         # Получаем погоду и применяем бонус
@@ -1014,6 +1022,7 @@ class FishingGame:
         feeder_bonus: int = 0,
         clothing_bonus_percent: float = 0.0,
         beer_bonus_percent: float = 0.0,
+        force_fish_only: bool = False,
     ) -> Dict[str, Any]:
         """Гарантированный улов с фиксированными шансами."""
         ROLL_MAX = 20000
@@ -1048,7 +1057,7 @@ class FishingGame:
             eco_disaster = db.maybe_start_ecological_disaster(location)
         force_trash_only = bool(eco_disaster)
 
-        if roll == ROLL_MAX: # NFT win only on exact raw roll 20000, no buffs
+        if not force_fish_only and roll == ROLL_MAX: # NFT win only on exact raw roll 20000, no buffs
             logger.info("   🏆 Guaranteed result: NFT WIN (raw roll %s, lucky_rod=%s)", roll, is_lucky_rod_g)
             db.update_player(user_id, chat_id, last_fish_time=datetime.now().isoformat())
             return {
@@ -1057,8 +1066,12 @@ class FishingGame:
                 "location": location,
             }
 
+        if force_fish_only:
+            force_trash_only = False
+            adjusted_roll = 10000
+
         # В гарантированном режиме мусор тоже может выпасть (0-7999)
-        if force_trash_only or adjusted_roll <= TRASH_MAX:
+        if not force_fish_only and (force_trash_only or adjusted_roll <= TRASH_MAX):
             logger.info("   📊 Guaranteed result: TRASH (adjusted roll in trash range 0-7999)")
             trash = db.get_random_trash(location)
             if trash:
@@ -1129,6 +1142,11 @@ class FishingGame:
             # Расширяем поиск: игнорируем сезон — гарантия ВСЕГДА должна давать шанс, если рыба есть в локации в принципе
             logger.info(f"   ⚠️ No seasonal fish for {location}, season {self.current_season} — expanding to all seasons in this location")
             fish_list = self._normalize_fish_list(db.get_fish_by_location(location, 'Все', min_level=0))
+
+        if not fish_list and force_fish_only:
+            fish_list = self._normalize_fish_list(
+                db.get_fish_by_location_any_season(location, min_level=0)
+            )
 
         if not fish_list:
             # Совсем нет рыбы в локации — понятное сообщение
